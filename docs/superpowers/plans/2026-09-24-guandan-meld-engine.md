@@ -497,8 +497,7 @@ def decision_points(g: GameLog) -> list:
     snaps = []
     table = None
     table_seat = None
-    prev_nxt = None
-    prev_left = None
+    prev_left = None          # 上一手 PlayRec.left；判队友接风要用
 
     for p in g.plays:
         if table is not None:
@@ -532,7 +531,6 @@ def decision_points(g: GameLog) -> list:
 
         table = list(p.cards)
         table_seat = p.seat
-        prev_nxt = p.nxt
         prev_left = p.left
     return snaps
 ```
@@ -1486,8 +1484,11 @@ def check_real_moves(games=None) -> Result:
 def _bomb_pairs(g):
     """同一轮内「炸弹 A 之后又出了炸弹 B」的证据对。
 
-    轮次边界判据与 tools/decision_points.py 一致：同一座位又出牌、或服务器说
-    下一手轮到桌面主人/队友 —— 都是新领出。
+    轮次边界判据与 tools/decision_points.py **完全一致**：
+    同一座位又出牌、或队友接风（桌面主人上一手已出完）。
+
+    ⚠️ **不要用 PlayRec.nxt 判** —— 服务器算下一手时会跳过已出完的座位，
+    所以 nxt 指到队友既可能是接风、也可能只是在跳过。详见 Task 3 的原理说明。
 
     这条**独立于 legal_moves**：它只从出牌序列推「谁大」，所以 ① 全绿它仍可能红。
     """
