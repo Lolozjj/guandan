@@ -1759,6 +1759,11 @@ def main() -> int:
     games = load_games()
     print(f"载入对局 {len(games)} 局，其中有结算的 "
           f"{sum(1 for g in games if g.settle)} 局\n")
+    dropped = sum(g.unparsed for g in games)
+    # R7：日志解析失败的行必须**可见**，不能静默 ——
+    # 这个数字不为 0 就说明语料有缺失，下面四项结论都要打折看。
+    print(f"解析失败的行合计 unparsed = {dropped}"
+          + ("  <- 非 0！语料有缺失，结论要打折看" if dropped else ""))
     failed = 0
     for fn in CHECKS:
         res = fn(games)
