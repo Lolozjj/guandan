@@ -1847,7 +1847,13 @@ from live import rules
 
 
 def test_ten_is_handled():
-    """旧实现遇到 10 会直接崩（bug #1）。"""
+    """十的口径。⚠️ 这条**不是**在钉「旧实现会崩」—— 旧实现在生产词表下不崩
+    （见 spec §2.3 对 bug #1 的更正）。它钉的是**适配层要收生产那一套写法**：
+    十是 `"T"` 不是 `"10"`。真正会崩的是旧代码内部 `10`/`T` 不一致，但它的真实输入
+    永远触发不到。"""
+    # 生产词表（synth/layout.py 的 CLASSES）：十写作 "T"
+    assert rules.classify(["ST", "HT", "DT"], "2") == "三张"
+    # 两种写法都收，兼容老测试与手写调用
     assert rules.classify(["S10", "H10", "D10"], "2") == "三张"
 
 
@@ -1878,7 +1884,12 @@ def test_describe_falls_back():
 - [ ] **Step 2: 跑测试，确认失败**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_rules_adapter.py -q`
-Expected: FAIL（`test_ten_is_handled` 报 `ValueError: substring not found`）
+Expected: **部分** FAIL —— 但**不是全红**。
+
+⚠️ **实测只有 3 条会红**，`test_ten_is_handled` 在新旧实现下**都通过**：
+老实现的 `_legal_exact` 在 `n == 3` 就 return 了，走不到那行会崩的 `_idx()`；
+`"10"` 崩溃要 n ≥ 4 或走逢人配路径才触发。**所以那条断言根本没钉住它声称要钉的 bug #1** ——
+必须另外补能真正触发崩溃的断言（4 张以上同点数、或含逢人配的路径），否则 bug #1 无覆盖。
 
 - [ ] **Step 3: 实现**
 
@@ -1950,7 +1961,8 @@ def level_idx(level) -> Optional[int]:
 **牌型真源在 `net/sim/meld.py`**（网络直读 + RL 是主路径）。这里只做
 「牌面名 <-> 牌 ID」的转换再转发。
 
-老实现有 6 处已证实的错（见 spec §2.3）："10" vs "T" 直接崩、A 不能当小牌、
+老实现有已证实的错（见 spec §2.3，其中 bug #1「10/T 直接崩」已更正为**不成立**）：
+A 不能当小牌、
 两个王不算对子、二连对判合法、docstring 说有三带一、逢人配能力低估。
 **不要再改回老实现**，那等于把 bug 固化。
 """
@@ -1968,20 +1980,44 @@ def _to_ids(names: list) -> list:
     return out
 
 
+def _stronger(a: meld.Meld, b: meld.Meld) -> bool:
+    """同一组牌能解释成多个牌型时，a 是不是更强的那条。
+
+    口径与 `tools/accept_meld.py` 的 `_stronger` 一致（那边是验收①「取最强解释」用的）。
+
+    ⚠️ **这一步不能省**：`melds_from` 对同一组牌会给出多条解释（天然 vs 逢人配补的、
+    顺子 vs 同花顺，枚举顺序里顺子在前）。**取第一条会把 `9♣10♣J♣Q♣+♥2` 报成「顺子」，
+    而它是同花顺（炸弹，压 5 炸）** —— 老实现在这一点上是对的，换适配层不能弄丢。
+    实测影响 49/1740 手（2.8%）。
+    """
+    ca, cb = meld.bomb_class(a), meld.bomb_class(b)
+    if (ca is None) != (cb is None):
+        return ca is not None
+    if ca is not None and cb is not None and ca != cb:
+        return ca > cb
+    return a.kind > b.kind
+
+
 def classify(cards: list, level: str = "2") -> str | None:
     """判牌型。合法返回牌型名，不合法返回 None。
 
     level 是当前级牌（'2'..'10' / 'J' / 'Q' / 'K' / 'A'）。
+    **认不出的牌名或级别会抛 ValueError**，不返回 None —— 把「认不出」悄悄变成
+    「不合法」正是老实现那种静默的坑。
     """
     if not cards:
         return None
     lv = meld.level_idx(level)
     ids = _to_ids(cards)
-    for m in meld.melds_from(ids, level=lv):
-        if sorted(m.cards) == sorted(ids):
-            got = meld.describe_meld(m)
-            return got + ("（含逢人配）" if m.wild_used else "")
-    return None
+    want = sorted(ids)
+    hits = [m for m in meld.melds_from(ids, level=lv) if sorted(m.cards) == want]
+    if not hits:
+        return None
+    best = hits[0]
+    for m in hits[1:]:
+        if _stronger(m, best):
+            best = m
+    return meld.describe_meld(best) + ("（含逢人配）" if best.wild_used else "")
 
 
 def describe(cards: list, level: str = "2") -> str:
