@@ -344,9 +344,25 @@ git commit -m "feat: 游戏日志解析器（含 108 张守恒校验）"
 
 每家起手牌 = **他出过的所有牌 ∪ 他结算时剩的牌**。进贡/还贡发生在任何出牌之前，所以这样重建出来的正好是「进贡之后、第一手之前」的手牌，之后只减不增 —— 因此对局中每个时刻的手牌 = 该重建集合减去他此刻已出过的牌。
 
-桌面的判定**不看牌型**（否则就循环依赖了，比较函数 Task 4 才实现）：
-- 某一手是「领出」，当且仅当**上一手服务器给的 `nxt` 正好指回当前桌面的主人或他的队友**（说明这一轮转完了 / 队友接风）。
-- 这是本局第一手时，桌面为空。
+桌面的判定**不看牌型**（否则就循环依赖了，比较函数 Task 4 才实现）。
+「新领出」只有两种情况：
+
+1. **同一座位又出牌了** —— 其余三家都要不起，他重新领出；
+2. **队友接风** —— 桌面主人上一手把牌打完了（`left == 0`），队友接着领出。
+
+⚠️ **不能用服务器的 `NextTurnSeatID`（`PlayRec.nxt`）判领出 —— 已用 55 局实测证伪：**
+
+- `nxt == 桌面主人` 全量 **0 次**（`nxt` 是「我这一手之后轮到谁」，不会绕回自己；
+  其余三家要不起走的是 3006 报文，不会更新这一手记录里的 `nxt`）
+- `nxt == 队友` 命中 44 次，但**成因是服务器算下一手时跳过已出完的座位**，不是接风
+- 按 `nxt` 判的后果：全 55 局出现 **27 手「轮内不同型且非炸弹」的非法响应**（该清的桌没清）
+
+改成「同座位 或（队友 且 主人已出完）」后，同一口径下非法响应 **0 手**。
+反方向也验过：队友紧接着出牌的 114 手里，**主人没出完的 63 手中 0 手需要清桌**
+（56 手与桌面同型、本就是合法响应），**主人已出完的 51 手中 33 手必须清桌** ——
+所以「主人已出完」这个附加条件不是可选项，是必需的。
+
+本局第一手时桌面为空。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -482,14 +498,19 @@ def decision_points(g: GameLog) -> list:
     table = None
     table_seat = None
     prev_nxt = None
+    prev_left = None
 
     for p in g.plays:
         if table is not None:
             partner = (table_seat + 2) % 4
-            # 两种情况都是「新领出」：
+            # 新领出只有两种情况：
             #   1) 同一座位又出牌了 —— 其余三家都要不起，他重新领出
-            #   2) 服务器说下一手轮到桌面主人（或队友接风）—— 这一轮走完了
-            if p.seat == table_seat or prev_nxt in (table_seat, partner):
+            #   2) 队友接风 —— 桌面主人上一手把牌打完了（left == 0），队友接着领出
+            #
+            # **不要用 prev_nxt 判**：服务器算 nxt 时会跳过已出完的座位，所以 nxt 指到
+            # 队友既可能是接风、也可能只是跳过了一个出完的座位（那时队友其实在压牌）。
+            # 实测按 nxt 判会有 27 手非法响应；按下面这个判法 0 手。
+            if p.seat == table_seat or (p.seat == partner and prev_left == 0):
                 table = None
 
         snaps.append(Snapshot(seat=p.seat,
@@ -512,13 +533,14 @@ def decision_points(g: GameLog) -> list:
         table = list(p.cards)
         table_seat = p.seat
         prev_nxt = p.nxt
+        prev_left = p.left
     return snaps
 ```
 
 - [ ] **Step 4: 跑测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_decision_points.py -q`
-Expected: `4 passed`
+Expected: `5 passed`
 
 若 `test_last_snapshot_hand_matches_settlement` 失败：**不要改测试去迁就实现。**
 那说明领出/桌面的判定有问题。先打印失败局的 `plays` 与 `LeftCards` 人工核对，
@@ -1472,42 +1494,19 @@ def _bomb_pairs(g):
     pairs = []
     table = None
     table_seat = None
-    prev_nxt = None
+    prev_left = None
     for p in g.plays:
         if table is not None:
             partner = (table_seat + 2) % 4
+            # 与 tools/decision_points.py 同一判据。**不能用 nxt**：
+            # 服务器算 nxt 时会跳过已出完的座位，会把它误判成接风。
             is_new_lead = (p.seat == table_seat
-                           or prev_nxt in (table_seat, partner))
+                           or (p.seat == partner and prev_left == 0))
             if not is_new_lead:
                 pairs.append((table, p))
         table = p
         table_seat = p.seat
-        prev_nxt = p.nxt
-    return pairs
-
-
-def _bomb_pairs(g):
-    """同一轮内「炸弹 A 之后又出了炸弹 B」的证据对。
-
-    轮次边界判据与 tools/decision_points.py 一致：同一座位又出牌、或服务器说
-    下一手轮到桌面主人/队友 —— 都是新领出。
-
-    这条**独立于 legal_moves**：它只从出牌序列推「谁大」，所以 ① 全绿它仍可能红。
-    """
-    pairs = []
-    table = None
-    table_seat = None
-    prev_nxt = None
-    for p in g.plays:
-        if table is not None:
-            partner = (table_seat + 2) % 4
-            is_new_lead = (p.seat == table_seat
-                           or prev_nxt in (table_seat, partner))
-            if not is_new_lead:
-                pairs.append((table, p))
-        table = p
-        table_seat = p.seat
-        prev_nxt = p.nxt
+        prev_left = p.left
     return pairs
 
 
