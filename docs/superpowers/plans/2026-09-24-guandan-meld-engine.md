@@ -629,6 +629,31 @@ def test_two_decks_are_two_cards():
     assert len(pairs[0].cards) == 2 and len(set(pairs[0].cards)) == 2
 
 
+def test_triple_pair_allows_joker_pair():
+    """王可以当三带二里的对子。
+
+    真实数据里有一手 card_type=5：2♦ 2♦(二副) 2♣ + 小王 小王(二副)。
+    排除王的话这手枚举不出来，Task 7 的验收①会直接报红。
+    """
+    hand = C("2♦", "2♦(二副)", "2♣", "小王", "小王(二副)")
+    tp = [m for m in meld.melds_from(hand, level=9)
+          if m.kind == meld.TRIPLE_PAIR]
+    assert len(tp) == 1
+    assert sorted(tp[0].cards) == sorted(hand)
+    assert tp[0].rank == meld.point_value(2, 9)      # 主键是三张的点数，不是王的
+
+
+def test_two_jokers_make_a_pair_but_not_a_triple():
+    """两张王成对；但凑不出三张，也凑不出普通炸弹。"""
+    pair = C("小王", "小王(二副)")
+    kinds = {m.kind for m in meld.melds_from(pair, level=9)}
+    assert kinds == {meld.SINGLE, meld.PAIR}
+
+    mixed = C("小王", "大王")
+    kinds = {m.kind for m in meld.melds_from(mixed, level=9)}
+    assert kinds == {meld.SINGLE}                     # 小王+大王 不成对
+
+
 def test_bomb_sizes():
     hand = C("5♦", "5♦(二副)", "5♣", "5♣(二副)", "5♠", "5♠(二副)", "5♥")
     sizes = sorted(m.size for m in meld.melds_from(hand, level=9)
@@ -920,8 +945,9 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
     out = _melds_basic(hand, level)
     triples = [(i, v[:3]) for i, v in g.items()
                if i < JOKER_SMALL and len(v) >= 3]
-    pairs = [(i, v[:2]) for i, v in g.items()
-             if i < JOKER_SMALL and len(v) >= 2]
+    # 王**可以**当三带二里的对子（真实数据：2♦2♦2♣ + 小王 小王(二副)，card_type=5）。
+    # 但王**不能**凑三张 —— 每种王只有两张，所以下面 triples 保持排除王。
+    pairs = [(i, v[:2]) for i, v in g.items() if len(v) >= 2]
     out += _melds_triple_pair(level, triples, pairs)
     out += _melds_joker_bomb(hand)
     return out
@@ -1123,8 +1149,9 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
     out = _melds_basic(hand, level)
     triples = [(i, v[:3]) for i, v in g.items()
                if i < JOKER_SMALL and len(v) >= 3]
-    pairs = [(i, v[:2]) for i, v in g.items()
-             if i < JOKER_SMALL and len(v) >= 2]
+    # 王**可以**当三带二里的对子（真实数据：2♦2♦2♣ + 小王 小王(二副)，card_type=5）。
+    # 但王**不能**凑三张 —— 每种王只有两张，所以下面 triples 保持排除王。
+    pairs = [(i, v[:2]) for i, v in g.items() if len(v) >= 2]
     out += _melds_triple_pair(level, triples, pairs)
     out += _melds_joker_bomb(hand)          # <-- 别漏！Task 4 加的，漏了天王炸就没了
     out += _melds_straights(g, level)
