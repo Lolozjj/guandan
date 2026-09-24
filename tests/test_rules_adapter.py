@@ -199,3 +199,45 @@ def test_jokers():
         assert cards.parts(meld.cid_from_name(short)) == (idx, "", 1)
         assert meld.cid_from_name(short) == meld.cid_from_name(long_)
         assert meld.cid_from_name(short, 2) == meld.cid_from_name(long_, 2) == idx + 256
+
+
+# =============== 5. 真·端到端：面板的渲染入口（live/main.py）
+# 「live/main.py 还能用」不能只靠 `import live.main` 证明 —— 出错的地方在
+# `render_lines`，它由 tkinter 的 after 回调调用、且**不在** tick 的 try 内，
+# 抛错会永久断掉刷新链。所以这里直接调它，输入就是模型类名。
+
+
+def _panel_input(table, level="T"):
+    """live/main.py:render_lines 要的那份字典（字段照 Worker 的产物）。"""
+    return {"phase": "normal", "status": "ok", "level": level, "mine": False,
+            "turn_side": "left", "hand": [("ST", .9), ("JOKER_S", .9)],
+            "table": table, "elapsed": .05, "level_conf": .9, "orange": .0}
+
+
+def test_panel_render_path_handles_ten_jokers_and_level_T():
+    """打十那一局、桌上出现 10 与王 —— 面板必须照常渲染出结论。
+
+    第一版适配层在这里抛 ValueError（词表用的是 `"S10"`），而这条路径一抛错
+    面板就再也不刷新了（桌上那张牌还是用户自己打出去的）。这条测试就是那个
+    Critical 的回归网：它跑的是**真实渲染入口**，不是 `classify` 单点。
+    """
+    import live.main as panel        # 依赖 cv2/mss/win32，本机有
+
+    def render(table):
+        return "".join(t for t, _ in panel.render_lines(_panel_input(table)))
+
+    empty = {"机器人1": [], "机器人3": [], "队友": [], "我": []}
+    # 三张 10（打十）：十在词表里是 ST，级别是 T —— 第一版这里就炸了
+    assert "三张" in render({**empty, "机器人1": [("ST", .9), ("HT", .9), ("DT", .9)]})
+    # 单张王
+    assert "单张" in render({**empty, "机器人1": [("JOKER_S", .9)]})
+    # 四大天王
+    assert "四大天王" in render({**empty, "机器人1": [("JOKER_S", .9), ("JOKER_S", .9),
+                                                   ("JOKER_B", .9), ("JOKER_B", .9)]})
+    # 三连对：面板文字必须是「三连对」（见 _KIND_NAMES 的说明）
+    assert "三连对" in render({**empty, "机器人1": [("S5", .9), ("H5", .9), ("S6", .9),
+                                                ("H6", .9), ("S7", .9), ("H7", .9)]})
+    # 认不出/不合法的组合走「警告」分支，**不是**抛错（这是 live/main.py 自己的措辞）
+    assert "不是合法牌型" in render({**empty, "机器人1": [("S5", .9), ("H7", .9), ("D9", .9)]})
+    # 一张小王 + 一张大王不是对子（各有各的那张，配不成对）
+    assert "不是合法牌型" in render({**empty, "机器人1": [("JOKER_S", .9), ("JOKER_B", .9)]})
