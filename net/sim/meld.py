@@ -36,6 +36,13 @@ _BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6}
 CLASS_FLUSH = 3
 CLASS_JOKER_BOMB = 7
 
+# --- 序列类牌型（顺子 / 连对 / 钢板）--------------------------------------
+# 规模是定死的：数据里 4 张只有炸弹（没有二连对），顺子也只出现 5 张的。
+_SEQ_LEN = 5
+_PAIR_RUN_LEN = 3
+_PLATE_LEN = 2
+_NAT_MAX = 14          # A 当大牌时的自然值；也是序列能给到的最大值
+
 
 def norm_level(level: Optional[int]) -> Optional[int]:
     """级别归一。**日志里偶尔用 14 表示 A**（net/cards.py 的 sort_key 也处理过这条），
@@ -64,6 +71,22 @@ def is_wild(cid: int, level: Optional[int]) -> bool:
         return False
     idx, suit, _ = cards.parts(cid)
     return idx == level and suit == "♥"
+
+
+def nat_values(idx: int) -> tuple:
+    """这个点数在序列里的自然值。**A 可作最小也可作最大**，王不参与序列。
+
+    A2345 与 10JQKA 都合法，所以 A 同时给 1 和 14；这比「比较时特判 A」干净，
+    因为枚举端（_seq_lookup）和比较端（rank 取顶端自然值）只有这一个真源。
+
+    王返回空元组 —— 顺子/连对/钢板的「王不能进序列」就落在这一条上，
+    枚举端不需要再写一遍 `idx < JOKER_SMALL` 判断。
+    """
+    if idx == 1:
+        return (1, _NAT_MAX)
+    if 2 <= idx <= 13:
+        return (idx,)
+    return ()
 
 
 @dataclass(frozen=True)
@@ -172,9 +195,81 @@ def _melds_joker_bomb(hand: Sequence[int]) -> list:
     return []
 
 
-def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
-    """枚举手牌能组成的所有牌型（本任务：单/对/三/三带二/炸弹/天王炸）。
+def _seq_lookup(g: dict) -> dict:
+    """自然值 -> 能占这个位置的牌（都按 `_by_idx` 的顺序，取 [0] 就是最小的那组）。
 
+    A 同时落进 1 和 14 两格，王两格都不落 —— 全部由 `nat_values` 决定。
+    同一个窗口内 1 与 14 不可能同时出现（窗口最长 5 个连续自然值，
+    取值域 1..14），所以 A 不会被同一个顺子用两次。
+    """
+    nat = {}
+    for idx, ids in g.items():
+        for nv in nat_values(idx):
+            nat.setdefault(nv, []).extend(ids)
+    return nat
+
+
+def _window(nat: dict, top: int, span: int):
+    """[top-span+1, top] 这一段连续自然值；只要有一格没牌就返回 None。
+
+    张数够不够（连对要 2、钢板要 3）由调用方自己判 —— 顺子一格一张就够。
+    """
+    nats = list(range(top - span + 1, top + 1))
+    if any(not nat.get(n) for n in nats):
+        return None
+    return nats
+
+
+def _melds_straights(g: dict, level) -> list:
+    """顺子（恰好 5 张连续）与同花顺。比较主键 = 顶端自然值。"""
+    nat = _seq_lookup(g)
+    out = []
+    for top in range(_SEQ_LEN, _NAT_MAX + 1):
+        nats = _window(nat, top, _SEQ_LEN)
+        if nats is None:
+            continue
+        ids = [nat[n][0] for n in nats]
+        out.append(Meld(STRAIGHT, _SEQ_LEN, top, tuple(ids)))
+        # 同花顺 = 顺子且五张同花色；王的花色是空串，进不了这里（也进不了顺子）
+        if len({cards.parts(c)[1] for c in ids}) == 1:
+            out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(ids)))
+    return out
+
+
+def _melds_pair_run(g: dict, level) -> list:
+    """连对（恰好 3 个连续对子）。4 张只有炸弹，所以没有二连对。"""
+    nat = _seq_lookup(g)
+    out = []
+    for top in range(_PAIR_RUN_LEN, _NAT_MAX + 1):
+        nats = _window(nat, top, _PAIR_RUN_LEN)
+        if nats is None:
+            continue
+        if any(len(nat[n]) < 2 for n in nats):
+            continue
+        ids = [c for n in nats for c in nat[n][:2]]
+        out.append(Meld(PAIR_RUN, _PAIR_RUN_LEN * 2, top, tuple(ids)))
+    return out
+
+
+def _melds_plate(g: dict, level) -> list:
+    """钢板（恰好 2 个连续三张）。"""
+    nat = _seq_lookup(g)
+    out = []
+    for top in range(_PLATE_LEN, _NAT_MAX + 1):
+        nats = _window(nat, top, _PLATE_LEN)
+        if nats is None:
+            continue
+        if any(len(nat[n]) < 3 for n in nats):
+            continue
+        ids = [c for n in nats for c in nat[n][:3]]
+        out.append(Meld(PLATE, _PLATE_LEN * 3, top, tuple(ids)))
+    return out
+
+
+def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
+    """枚举手牌能组成的所有牌型。
+
+    单/对/三/三带二/炸弹/天王炸 + 顺子/同花顺/连对/钢板。
     逢人配在这里**当作它自己那张级牌**参与枚举（Task 6 再加替代能力）。
     """
     level = norm_level(level)
@@ -188,7 +283,10 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
     # 所以小王只跟小王成对、大王只跟大王成对，不会跨 idx 凑一对。
     pairs = [(i, v[:2]) for i, v in g.items() if len(v) >= 2]
     out += _melds_triple_pair(level, triples, pairs)
-    out += _melds_joker_bomb(hand)
+    out += _melds_joker_bomb(hand)      # 天王炸（王在 _melds_basic 里是 continue 掉的）
+    out += _melds_straights(g, level)
+    out += _melds_pair_run(g, level)
+    out += _melds_plate(g, level)
     return out
 
 
