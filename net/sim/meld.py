@@ -502,9 +502,10 @@ def legal_moves(hand: Sequence[int], table: Optional[Meld],
 # **词表以生产者为准，不是我们编的**：live/ 那条线（live/main.py:229）喂进来的
 # 是模型自己的 54 个类名 —— `synth/layout.py` 的 `CLASSES = [f"S{r}" for r in
 # "A23456789TJQK"] + …`，即 **十是 `T`**、王是 **`JOKER_S` / `JOKER_B`**。
-# 第一版适配层只认 `"S10"` / `"JOKER_SMALL"`（那是 `predict_cards` 之外的
-# 另一套臆想词表），结果真实着法里 29% 会抛错 —— 而牌子已经打出去了，
-# live/main.py 的 render_lines 又不在 tick 的 try 里，抛错会**打断面板刷新链**。
+# 第一版适配层只认 `"S10"` / `"JOKER_SMALL"` —— 那套词表是照着 `net/cards.py`
+# 的**显示**习惯编的，生产根本不产它 —— 结果真实着法里 29% 直接抛错。
+# 而牌子那时已经打出去了，live/main.py 的 render_lines 又不在 tick 的 try 里，
+# 抛错会**永久打断面板刷新链**。
 # 所以：`T` 与 `10` 都收，`JOKER_S/B` 与 `JOKER_SMALL/BIG` 都收，
 # 但**测试必须从 `synth.layout.CLASSES` 取材**（见 tests/test_rules_adapter.py）。
 #
