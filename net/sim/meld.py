@@ -463,11 +463,26 @@ def _melds_natural(hand: Sequence[int], level: Optional[int]) -> list:
 
 
 def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
-    """枚举手牌能组成的所有牌型。逢人配当万能牌，但**先试天然的**。
+    """枚举手牌能组成的牌型，逢人配当万能牌，但**先试天然的**。
 
     两段拼起来：天然牌型（`_melds_natural`，`wild_used == 0`）+ 补牌牌型
     （`_melds_wild`，只在天然凑不成时才出）。逢人配一张都没有、只有一张、
     两张齐全都能正常工作（`_split_wild` 不假设张数）。
+
+    ⚠️ **契约：每个 `(kind, size, rank)` 只返回一个「代表」，不保证牌张级完整。**
+
+    这里曾被 docstring 写成「所有牌型」—— 那是**过度承诺**，实际产出的是
+    「每个形状一条代表」：
+
+      - 顺子 / 同花顺：每格取 `nat[n][0]`（同花顺按 `_SUITS` 逐花色各给一条）
+      - 炸弹：取 `ids[:n]` —— 同一点数手里有 8 张时，不会再给「换 4 张」的组合
+      - 连对 / 钢板：每格取前 2 / 前 3 张
+      - 三带二：三张那一半与对子那一半**两边都枚举**（`_melds_triple_pair`）
+
+    Plan 2 拿它当 RL 的动作空间时按这个契约用：同一个 `(kind, size, rank)` 只会
+    出现一次，但**不要**指望它把同一点数里「选哪几张」的所有组合都列出来。
+    验收脚本的 `shape()`（`(kind, size, rank)` 键）依赖这条 —— 所以**不要**
+    为了「补全」而去改枚举本身，那会让验收①的比对口径当场失效。
     """
     rest, wilds = _split_wild(hand, level)
     out = _melds_natural(hand, level)
@@ -494,6 +509,58 @@ def legal_moves(hand: Sequence[int], table: Optional[Meld],
     return [m for m in moves if beats(m, table)]
 
 
+def _stronger(a: Meld, b: Meld) -> bool:
+    """同一组牌的两个解释里，a 是不是更强的那条（`strongest` 的比较口径）。"""
+    ca, cb = bomb_class(a), bomb_class(b)
+    if (ca is None) != (cb is None):
+        return ca is not None                 # 炸弹类优先
+    if ca is not None and cb is not None and ca != cb:
+        return ca > cb
+    return a.kind > b.kind
+
+
+def strongest(melds: Sequence[Meld]) -> Optional[Meld]:
+    """从一组候选里挑最强的一个；没有候选返回 None。
+
+    **「同一组牌符合多个牌型时取最强」是一条规则，不是顺手写下的比较。**
+    一手 5 张同花连续的牌**同时**是顺子(4)与同花顺(9)，`melds_from` 两条都产出；
+    取第一条（顺子在枚举顺序里靠前）会把
+      - 真实打出的同花顺当成顺子（面板上显示错）
+      - 桌面上的同花顺低估成顺子 -> `legal_moves` 放进本该压不过的顺子
+    游戏自己把它叫同花顺（card_type 9）。
+
+    这条规则在 Plan 1 里被**两处副本各修过一次**（`tools/accept_meld.py` 的
+    `as_meld` 与 `live/rules.py` 的适配层）—— 副本会漂，所以只留这一份。
+    """
+    best: Optional[Meld] = None
+    for m in melds:
+        if best is None or _stronger(m, best):
+            best = m
+    return best
+
+
+def as_meld(ids: Sequence[int], level: Optional[int] = None) -> Optional[Meld]:
+    """把一组**具体**的牌判成一个 Meld；判不出返回 None。
+
+    参数就是那一手**确切的牌**（不是「代表牌」），所以按精确集合比对：
+    `sorted(m.cards) == sorted(ids)`；同一组牌若符合多个牌型，取最强的那个
+    （见 `strongest`：一手 5 张同花连续的牌必须是同花顺，不能降级成顺子）。
+
+    **为什么这个原语在引擎里、而不是留在验收脚本里**：生产推理链
+    （spec §3 / §8.1：`net/advise.py -> legal_moves(hand, table=…)`）拿到的桌面是
+    `net/state.py` 的 `Play.cards`（一串牌 ID）+ `card_type`，喂给 `beats()` 之前
+    必须先把这串牌解释成**带 rank 的 Meld** —— 用的正是这一个函数。留在
+    `tools/`（离线验收目录）里会让 Plan 3/4 走错方向的 import，或者被抄出第三份。
+    """
+    best: Optional[Meld] = None
+    for m in melds_from(list(ids), level):
+        if sorted(m.cards) != sorted(ids):
+            continue
+        if best is None or _stronger(m, best):
+            best = m
+    return best
+
+
 # ------------------------------------------------- 适配层用的名字转换
 # 只在 live/rules.py 这个适配层里用；本模块内部一律用 ID。
 # 这是**全项目唯一允许出现牌名字符串**的地方（spec §2.3：旧 live/rules.py 的
@@ -505,7 +572,9 @@ def legal_moves(hand: Sequence[int], table: Optional[Meld],
 # 第一版适配层只认 `"S10"` / `"JOKER_SMALL"` —— 那套词表是照着 `net/cards.py`
 # 的**显示**习惯编的，生产根本不产它 —— 结果真实着法里 29% 直接抛错。
 # 而牌子那时已经打出去了，live/main.py 的 render_lines 又不在 tick 的 try 里，
-# 抛错会**永久打断面板刷新链**。
+# 抛错会**永久打断面板刷新链**（那条路径现已由 live/main.py 的
+# `safe_render_lines` 兜住 —— 链不再断、错也不再吞，但词表对不齐照样会
+# 让面板每次都显示「渲染出错」，所以这条词表要求不因那次修复而放松）。
 # 所以：`T` 与 `10` 都收，`JOKER_S/B` 与 `JOKER_SMALL/BIG` 都收，
 # 但**测试必须从 `synth.layout.CLASSES` 取材**（见 tests/test_rules_adapter.py）。
 #
@@ -583,22 +652,35 @@ def describe_meld(m: Meld) -> str:
 
 
 def level_idx(level) -> Optional[int]:
-    """级别 -> 点数索引。接受 1~13 或 'A'/'T'/'J'/'Q'/'K'/'2'..'10'。
+    """级别 -> 点数索引。接受 **1~13** 或 'A'/'T'/'J'/'Q'/'K'/'2'..'10'。
 
     旧接口给的 level 是**字符串**，词表与牌名同一套（live/level.py 打十返回 `'T'`，
     不是 `'10'`）：'2'..'9' / 'T' / '10' / 'J' / 'Q' / 'K' / 'A'。
     引擎要的是**整数 idx**，转换只在这里做（A=1，与日志的 Trump 字段同口径；
-    `norm_level` 会再把 14 折回 1）。认不出的级别抛 ValueError —— 不返回 None
-    蒙混过去，`None` 只表示「没有级牌」这一个合法含义。
+    `norm_level` 会再把 14 折回 1）。`None` 只表示「没有级牌」这一个合法含义。
+
+    认不出的级别抛 ValueError —— 不返回 None 蒙混过去。**数值范围严格限 1~13**：
+    `'0'` / `'99'` 这种「是数字、却不是一个级别」的输入必须炸（旧版 `isdigit()`
+    会原样放过去 —— docstring 写着「不返回 None 蒙混」，实现却对它们蒙混了）。
+    这不是理论问题：**live/level.py 的字形表里有 '0'**（打十时面板上是「1」+「0」
+    两个字形），而它的 `_normalize` 只把 `'1'`/`'10'` 折成 `'T'` —— 打十被切坏、
+    只剩「0」时会读出 `'0'`，放过去就会把**合法着法判成「不合法」**，
+    正是 spec §6⑥ 要防的那种「把错结论端到用户脸上」。
     """
     if level is None:
         return None
     if isinstance(level, int):
-        return level
-    text = str(level).strip().upper()
-    if text in _RANK_LETTER:
-        return _RANK_LETTER[text]
-    if text.isdigit():
-        return int(text)
-    raise ValueError(
-        f"认不出的级别：{level!r}（'2'~'10' / 'T' / 'J' / 'Q' / 'K' / 'A'）")
+        idx = level
+    else:
+        text = str(level).strip().upper()
+        if text in _RANK_LETTER:
+            return _RANK_LETTER[text]
+        if not text.isdigit():
+            raise ValueError(
+                f"认不出的级别：{level!r}"
+                f"（'2'~'10' / 'T' / 'J' / 'Q' / 'K' / 'A'）")
+        idx = int(text)
+    if not 1 <= idx <= 13:
+        raise ValueError(
+            f"认不出的级别：{level!r}（数值必须是 1~13；'0' / '99' 这类不是级别）")
+    return idx

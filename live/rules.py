@@ -8,17 +8,24 @@
 **不要再改回老实现**，那等于把 bug 固化。
 
 老实现的判型主体（`RANK_SEQ` / `_rank` / `_idx` / `_legal_exact` /
-老 `classify` / 老 `describe`）已整体删除。留在这里的只有三件：
+老 `classify` / 老 `describe`）已整体删除。留在这里的只有两件：
   - `_to_ids`  牌名 -> ID（词表是生产者那一套，见下）
-  - `_stronger` 同一组牌有多个解释时取最强的那条
   - `classify` / `describe`  对外的旧接口（签名与旧版完全一致）
+
+原先这里还有一份 `_stronger`（「同一组牌有多个解释时取最强」）。它和
+`tools/accept_meld.py` 里那份**逐字相同**，而且这条规则在两边各修过一次 ——
+现在只有一份：`net/sim/meld.py` 的 `meld.strongest`（那边同时也有
+`meld.as_meld`，生产推理链判桌面牌用的就是它）。
 
 ⚠️ **词表是 `synth/layout.py` 的 `CLASSES`（54 类），不是我们编的**：
 `ST` 是十、王是 `JOKER_S` / `JOKER_B`、打十的级别是 `'T'` —— 因为
 `live/main.py:229` 传进来的就是模型类名本身。词表对不上的后果**不是少个功能**：
-`render_lines` 在 tkinter 的 `after` 回调里、且不在 `tick` 的 try 内，
-抛错会打断刷新链，面板从此不再更新。所以 `tests/test_rules_adapter.py`
-里有一条测试**直接拿 `synth.layout.CLASSES` 当输入**（见该测试的 docstring）。
+`render_lines` 在 tkinter 的 `after` 回调里，抛错曾经会**永久打断刷新链**。
+现在那条路径由 `live/main.py` 的 `safe_render_lines` 兜住（不再打断、也不再吞，
+而是在面板上显示一行错误 + 往 stderr 打栈）—— 但**适配层仍然不许自己吞**：
+吞掉就等于把「认不出」洗成一个看起来正常的牌型结论。
+所以 `tests/test_rules_adapter.py` 里有一条测试**直接拿 `synth.layout.CLASSES`
+当输入**（见该测试的 docstring）。
 """
 from __future__ import annotations
 
@@ -31,30 +38,11 @@ def _to_ids(names: list) -> list:
     认不出的名字由 `meld.cid_from_name` **抛 ValueError**，这里不 try/except：
     把「认不出」悄悄变成「不合法」正是老实现那种「静默返回 None」的坑
     （识别错了却看起来像规则判的）。它会一路抛到 `live/main.py` 的
-    `render_lines`，那里没兜住 —— 这是**有意的**（宁可响也不要面板显示假结论），
-    代价是词表必须与生产者对齐，所以有测试从生产者取材。
+    `render_lines` —— 那里现在由 `safe_render_lines` 接住并**显示出来**
+    （链不再断、错也不吞），但**这里依旧不许吞**：吞掉就等于把「认不出」
+    洗成一个看着正常的结论。代价是词表必须与生产者对齐，所以有测试从生产者取材。
     """
     return [meld.cid_from_name(name) for name in names]
-
-
-def _stronger(a: meld.Meld, b: meld.Meld) -> bool:
-    """同一组牌能解释成多个牌型时，a 是不是更强的那条。
-
-    口径与 `tools/accept_meld.py` 的 `_stronger` 一致（那边是验收①
-    「取最强解释」用的）：先比炸弹层级，再比牌型大小。
-
-    **这一步不能省**：`melds_from` 对同一组牌会给出多条解释 —— 天然牌型与
-    逢人配补出来的牌型、顺子与同花顺（枚举顺序里顺子在前面）。取第一条会把
-    `9♣10♣J♣Q♣+♥2` 报成「顺子」，而它是**同花顺**（炸弹，压 5 炸）——
-    旧实现在这一点上是对的（`return "同花顺" if len(set(suits)) == 1`），
-    换成适配层不能把它弄丢。
-    """
-    ca, cb = meld.bomb_class(a), meld.bomb_class(b)
-    if (ca is None) != (cb is None):
-        return ca is not None                 # 炸弹类优先
-    if ca is not None and cb is not None and ca != cb:
-        return ca > cb
-    return a.kind > b.kind
 
 
 def classify(cards: list[str], level: str = "2") -> str | None:
@@ -62,6 +50,13 @@ def classify(cards: list[str], level: str = "2") -> str | None:
 
     level 是当前级牌（'2'..'10' / 'J' / 'Q' / 'K' / 'A'）。
     **认不出的牌名或级别会抛 ValueError**（不是返回 None）—— 见 `_to_ids`。
+
+    「同一组牌可能解释成多个牌型，取最强的那条」由 **`meld.strongest`** 负责
+    （规则真源在引擎里，不在这里）：`melds_from` 对同一组牌会给出多条 ——
+    天然牌型与逢人配补出来的牌型、顺子与同花顺（枚举顺序里顺子在前面）。取第一条
+    会把 `9♣10♣J♣Q♣+♥2` 报成「顺子」，而它是**同花顺**（炸弹，压 5 炸）——
+    旧实现在这一点上是对的（`return "同花顺" if len(set(suits)) == 1`），
+    换成适配层不能把它弄丢。
     """
     if not cards:
         return None
@@ -69,12 +64,9 @@ def classify(cards: list[str], level: str = "2") -> str | None:
     ids = _to_ids(cards)
     want = sorted(ids)
     hits = [m for m in meld.melds_from(ids, level=lv) if sorted(m.cards) == want]
-    if not hits:
+    best = meld.strongest(hits)
+    if best is None:
         return None
-    best = hits[0]
-    for m in hits[1:]:
-        if _stronger(m, best):
-            best = m
     return meld.describe_meld(best) + ("（含逢人配）" if best.wild_used else "")
 
 

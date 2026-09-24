@@ -14,6 +14,13 @@ _BOMB_TYPES = {8, 9, 10, 11}
 
 
 def _settled():
+    """全部有结算的局（实测 55 局）。
+
+    ⚠️ **不要加 `[:20]` 之类的切片**：报告一直说的是「55 局 x 4 座位」，
+    而前 4 条测试只跑前 20 局 —— 剩下 35 局的重建错了也照样绿，
+    「跑了」与「报的」不是一回事（终审修复 R）。整份文件全量跑实测只要几秒
+    （重建是 O(手数)，1706 手），省这点时间换不来任何东西。
+    """
     return [g for g in load_games() if g.settle]
 
 
@@ -22,7 +29,7 @@ def test_last_snapshot_hand_matches_settlement():
 
     这是重建正确性最直接的证据 —— 手牌少算或多算都会在这里露出来。
     """
-    for g in _settled()[:20]:
+    for g in _settled():
         snaps = decision_points(g)
         assert snaps, f"{g.t0} 一个决策点都没有"
         left = {i: set(e.get("Cards") or [])
@@ -39,7 +46,7 @@ def test_last_snapshot_hand_matches_settlement():
 
 def test_hand_never_grows():
     """一局之内手牌只减不增。"""
-    for g in _settled()[:20]:
+    for g in _settled():
         prev = {}
         for s in decision_points(g):
             if s.seat in prev:
@@ -53,7 +60,7 @@ def test_same_seat_playing_again_is_a_new_lead():
 
     漏了这条，会把「他重新领出」误当成「他压自己」，验收①就会报假红。
     """
-    for g in _settled()[:20]:
+    for g in _settled():
         snaps = decision_points(g)
         prev = None
         for s in snaps:
@@ -65,13 +72,13 @@ def test_same_seat_playing_again_is_a_new_lead():
 
 def test_first_snapshot_is_a_lead():
     """本局第一手的桌面必须是空的。"""
-    for g in _settled()[:10]:
+    for g in _settled():
         assert decision_points(g)[0].table is None
 
 
 def test_actual_cards_are_in_hand():
     """真实出的牌必须在他当时的手里 —— 否则重建错了。"""
-    for g in _settled()[:20]:
+    for g in _settled():
         for s in decision_points(g):
             missing = set(s.actual) - set(s.hand)
             assert not missing, \

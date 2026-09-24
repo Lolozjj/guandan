@@ -18,6 +18,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 from collections import defaultdict
 from pathlib import Path
 
@@ -238,6 +239,26 @@ def render_lines(d) -> list[tuple[str, str]]:
     return out
 
 
+def safe_render_lines(d) -> list[tuple[str, str]]:
+    """`render_lines` 的**不会打断刷新链**版本，给 tkinter 的 after 回调用。
+
+    为什么必须是它：`render_lines` 在 `tick()` 里被调用，而那条路径**不在**
+    `tick` 的 try 内 —— after 回调抛一次错，刷新链就**永久、静默地**停掉，
+    面板定格在旧画面上，用户还以为是当前局面（本分支唯一的 Critical 就是这个
+    机制：适配层词表对不上，真实着法 29% 抛错，面板从此不再更新）。
+
+    所以异常在这里兜住 —— 但**不吞**：stderr 打完整栈（`print_exc`），面板上留
+    一行错误标记。spec §6⑥「失败必须响」：宁可让用户看到「渲染出错」，
+    也不要让面板静静地显示一个过期/错误的结论。
+    """
+    try:
+        return render_lines(d)
+    except Exception as e:          # noqa: BLE001 —— 这里就是要兜住一切
+        traceback.print_exc()
+        return [("⚠ 面板渲染出错：%s\n" % e, "err"),
+                ("   上面一行是原因（stderr 里有完整栈）；面板会继续刷新\n", "dim")]
+
+
 def run_panel(args, q):
     import tkinter as tk
 
@@ -276,7 +297,9 @@ def run_panel(args, q):
             pass
         txt.configure(state="normal")
         txt.delete("1.0", "end")
-        for text, tag in render_lines(state["last"]):
+        # 用 safe_render_lines：渲染抛错**不能**打断刷新链（after 一抛就永久停），
+        # 但错误要显示出来、不许吞掉 —— 见 safe_render_lines 的 docstring。
+        for text, tag in safe_render_lines(state["last"]):
             txt.insert("end", text, tag)
         txt.configure(state="disabled")
         root.after(max(150, int(args.interval * 1000)), tick)

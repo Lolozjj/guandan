@@ -171,11 +171,17 @@ def test_triple_pair_allows_joker_pair():
 
 
 def test_jokers_cannot_form_triples_or_cross_pairs():
-    """防止改过头的否定断言：王只按同类成对，且永远凑不出三张。"""
+    """王只按同类成对，且永远凑不出三张 —— 断言**精确的 (牌型, 张数) 集合**。
+
+    原来这里只有否定断言（`not any(kind == TRIPLE)`）。否定断言挡不住
+    「多出一条王炸」这类错误：多出来的那条不在被否定的集合里，测试照样绿 ——
+    而天王炸恰恰是数据里 465 手都没出现过、只能靠测试挡的东西。
+    所以把集合钉死：多一条少一条都红。
+    """
     two = C("小王", "小王(二副)")
-    moves = meld.melds_from(two, level=9)
-    assert not any(m.kind == meld.TRIPLE for m in moves)
-    assert not any(m.kind == meld.TRIPLE_PAIR for m in moves)
+    got = {(m.kind, m.size) for m in meld.melds_from(two, level=9)}
+    assert got == {(meld.SINGLE, 1), (meld.PAIR, 2)}
 
     both = C("小王", "大王")                    # 不同 idx，凑不成一对
-    assert not any(m.kind == meld.PAIR for m in meld.melds_from(both, level=9))
+    got2 = {(m.kind, m.size) for m in meld.melds_from(both, level=9)}
+    assert got2 == {(meld.SINGLE, 1)}

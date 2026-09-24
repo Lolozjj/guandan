@@ -16,6 +16,18 @@
   - `tools/decision_points.py` 的 `Snapshot` **没有 card_type 字段**（那是
     game_log 的 PlayRec 才有的）。诊断信息里的 card_type 由 `_card_type()` 从
     `g.plays[i]` 现取 —— `decision_points()` 每手一个快照、顺序与 plays 一一对应。
+
+终审修复（Task 8 之后）：
+  - `as_meld` / `_stronger` 已**上收进 `net/sim/meld.py`**（`meld.as_meld` /
+    `meld.strongest`）。理由不是「DRY 好看」：`as_meld` 是生产推理链
+    （spec §3/§8.1 `net/advise.py -> legal_moves(hand, table=…)`）**必须**用的
+    原语 —— 桌上的 `Play.cards` 是一串牌 ID，喂 `beats()` 前得先判成带 rank 的
+    Meld。留在离线验收目录里会让 Plan 3/4 走错方向地 import，或者再抄出第三份；
+    而 live/rules.py 里那份**逐字相同**的副本已经漂过一次（`9♣10♣J♣Q♣+♥2`
+    应当是同花顺而不是顺子）。
+  - `Result.ok` 现在要求 `total > 0`，②另记「炸弹 vs 炸弹」的条数，
+    ①② 另有语料地板 —— 见各自 docstring：这三处都是「什么都没跑也算全绿」
+    那个家族的防线（spec §6⑥）。
 """
 from __future__ import annotations
 
@@ -26,56 +38,57 @@ from net.sim import meld
 from tools.decision_points import decision_points
 from tools.game_log import load_games
 
+# 语料地板：结算局少于这个数，①/② 的「全过」不足以称为结论。
+# 与 tests/test_game_log.py 的 `len(settled) >= 20` 同口径 —— 那边早就定了这条线，
+# 验收脚本这边却一直没设，于是 8 局没结算的语料也能打印「验收全绿 ✓」。
+_MIN_SETTLED = 20
+
 
 @dataclass
 class Result:
     name: str
     total: int = 0
     bad: list = field(default_factory=list)
+    floor: str = ""            # 非空 = 语料地板没到（见 _corpus_floor）
+    note: str = ""             # 附加说明行（如 ② 的条数拆分），成功失败都打
 
     @property
     def ok(self) -> bool:
-        return not self.bad
+        # total == 0 是**失败**：一项都没检查到却报「0 项全过」，就是假绿。
+        return not self.bad and not self.floor and self.total > 0
 
     def report(self, limit: int = 5) -> str:
         if self.ok:
-            return f"[OK]   {self.name}  {self.total} 项全过"
-        lines = [f"[FAIL] {self.name}  {len(self.bad)}/{self.total} 项不过"]
-        lines += [f"       {b}" for b in self.bad[:limit]]
-        if len(self.bad) > limit:
-            lines.append(f"       …还有 {len(self.bad) - limit} 条")
+            lines = [f"[OK]   {self.name}  {self.total} 项全过"]
+        else:
+            lines = [f"[FAIL] {self.name}"]
+            if self.floor:
+                lines.append(f"       {self.floor}")
+            if self.total == 0:
+                lines.append("       **一项都没检查到**（total == 0）—— "
+                             "「全过」是假绿，不许当成通过")
+            if self.bad:
+                lines.append(f"       {len(self.bad)}/{self.total} 项不过")
+                lines += [f"       {b}" for b in self.bad[:limit]]
+                if len(self.bad) > limit:
+                    lines.append(f"       …还有 {len(self.bad) - limit} 条")
+        if self.note:
+            lines.append(self.note)
         return "\n".join(lines)
 
 
-def _stronger(a, b) -> bool:
-    """同一组牌符合多个牌型时，a 是否比 b 更「强」。"""
-    ca, cb = meld.bomb_class(a), meld.bomb_class(b)
-    if (ca is None) != (cb is None):
-        return ca is not None                 # 炸弹类优先
-    if ca is not None and cb is not None and ca != cb:
-        return ca > cb
-    return a.kind > b.kind
+def _corpus_floor(games) -> str:
+    """语料地板：结算局太少就返回一句红字（空串 = 达标）。
 
-
-def as_meld(ids, level):
-    """把一组**具体**的牌判成一个 Meld；判不出返回 None。
-
-    这里必须是精确集合 —— 参数就是那一手真实的牌，没有"代表牌"问题。
-
-    ⚠️ **同一组牌可能符合多个牌型，必须取最强的那个：**
-    5 张同花连续的牌**同时**是顺子(kind 4)与同花顺(kind 9)，
-    `melds_from` 两条都产出。取第一个的话：
-      - 真实打出的同花顺会被当成顺子
-      - 桌面上的同花顺会被低估成顺子 -> legal_moves 会放进本该压不过的顺子
-    游戏自己也把它叫同花顺（card_type 9）。
+    为什么要有：`check_real_moves` / `check_beats_from_records` 只遍历 `g.settle`
+    的局。语料里结算局一少（实测本机已有 8 局没结算，日志 2 天轮转还会更糟），
+    它们检查的条数就趋近 0，最后一行照样打「验收全绿 ✓」。
     """
-    best = None
-    for m in meld.melds_from(list(ids), level):
-        if sorted(m.cards) != sorted(ids):
-            continue
-        if best is None or _stronger(m, best):
-            best = m
-    return best
+    settled = sum(1 for g in games if g.settle)
+    if settled < _MIN_SETTLED:
+        return (f"结算对局只有 {settled} 局 < 地板 {_MIN_SETTLED} 局 —— "
+                f"语料太少，本项的结论不成立")
+    return ""
 
 
 def shape(m):
@@ -120,7 +133,7 @@ def check_real_moves(games=None) -> Result:
             r.total += 1
             table = None
             if s.table:
-                table = as_meld(s.table, s.level)
+                table = meld.as_meld(s.table, s.level)
                 if table is None:
                     r.bad.append(f"{g.t0:%m-%d %H:%M} 打{s.level} 第{i}手 "
                                  f"桌面牌本身判不出牌型 {sorted(s.table)}")
@@ -128,7 +141,7 @@ def check_real_moves(games=None) -> Result:
             # 两步：先看真实那一手**本身**能不能判出牌型（精确集合，能抓牌型缺口，
             # 例如「王当三带二的对子」那种）；再比**形状**是否在候选里
             # （形状比而非精确集合，因为枚举只给代表，见 shape() 的说明）。
-            real = as_meld(s.actual, s.level)
+            real = meld.as_meld(s.actual, s.level)
             if real is None:
                 r.bad.append(
                     f"{g.t0:%m-%d %H:%M} 打{s.level} 第{i}手 座位{s.seat} "
@@ -185,31 +198,57 @@ def _bomb_pairs(g):
 def check_beats_from_records(games=None) -> Result:
     """② 炸弹层级：真实对局里「炸弹 A 被炸弹 B 压掉」的证据必须逐条成立。
 
-    专门验用户口述的炸弹顺序（4炸<5炸<同花顺<6炸<7炸<8炸<天王炸）。
-    注意「同花顺夹在 5炸与 6炸之间」那半边**用户口述时数据没覆盖**（spec §2.1）
-    —— 跑出来的条数要报出来，是 0 条就说明这段仍未验到。
+    专门验用户口述的炸弹顺序（完整阶梯：
+        4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 9炸 < 10炸 < 天王炸，
+    9炸/10炸 是自然延伸、只有「存在」证据，见 net/sim/meld.py 的
+    `_BOMB_CLASS_BY_SIZE`）。注意「同花顺夹在 5炸与 6炸之间」那半边**用户口述时
+    数据没覆盖**（spec §2.1）—— 跑出来的条数要报出来，是 0 条就说明这段仍未验到。
 
-    ⚠️ 桌面那一手用 `as_meld` 取**最强**解释：一手 5 张同花连续的牌在这条里
+    ⚠️ **`total` 只说明「有这么多对出过炸弹」，不等于阶梯被验了这么多条。**
+    只要一对里有一边是炸弹就算一条，而其中大部分是「炸弹压普通牌型」——
+    那验的是「炸弹 > 普通」，跟 4炸 与 5炸 谁大毫无关系。
+    所以这里**分开计数**并把两个数都打出来，另外单列出真正涉及 9炸/10炸 的条数
+    （阶梯顶端最缺证据的那两格）。**不要**把 total 单独当成阶梯覆盖率读。
+
+    ⚠️ 桌面那一手用 `meld.as_meld` 取**最强**解释：一手 5 张同花连续的牌在这条里
     算同花顺（炸弹），不算顺子。这与游戏自己的判据一致（card_type 9）。
     """
     r = Result("② 炸弹层级（谁压谁）")
     games = load_games() if games is None else games
+    bomb_vs_bomb = 0            # 两边都是炸弹 —— 只有这些在验阶梯
+    normal_vs_bomb = 0          # 一边炸弹、一边普通 —— 只验「炸弹压普通」
+    with_9, with_10 = 0, 0      # 阶梯顶端（9炸 / 10炸）真正被覆盖到的条数
     for g in games:
         if not g.settle:
             continue
         for a_ids, b_ids in _bomb_pairs(g):
-            a = as_meld(a_ids, g.trump)
-            b = as_meld(b_ids, g.trump)
+            a = meld.as_meld(a_ids, g.trump)
+            b = meld.as_meld(b_ids, g.trump)
             if a is None or b is None:
                 continue
-            if meld.bomb_class(a) is None and meld.bomb_class(b) is None:
+            ca, cb = meld.bomb_class(a), meld.bomb_class(b)
+            if ca is None and cb is None:
                 continue                      # 不是炸弹对，本检查不管
             r.total += 1
+            if ca is not None and cb is not None:
+                bomb_vs_bomb += 1
+            else:
+                normal_vs_bomb += 1
+            # 9炸/10炸 都是 BOMB 承载的「张数」；只数真正的炸弹那一侧
+            for m, cls in ((a, ca), (b, cb)):
+                if m.kind == meld.BOMB and cls is not None:
+                    with_9 += 1 if m.size == 9 else 0
+                    with_10 += 1 if m.size == 10 else 0
             if not meld.beats(b, a):
                 r.bad.append(
                     f"{g.t0:%m-%d %H:%M} 打{g.trump} {sorted(a_ids)}"
                     f"（{shape(a)}）-> {sorted(b_ids)}（{shape(b)}）"
                     f" 但 beats() 说压不过")
+    r.note = (
+        f"     其中 炸弹 vs 炸弹 {bomb_vs_bomb} 条（**只有这些在验阶梯**）；"
+        f"炸弹 vs 普通 {normal_vs_bomb} 条（只验「炸弹能压普通」）\n"
+        f"     阶梯顶端覆盖：涉及 9炸 {with_9} 条、10炸 {with_10} 条"
+        f"（0 条 = 这两格仍未被真实证据验到）")
     return r
 
 
@@ -315,19 +354,31 @@ def _utf8_stdout() -> None:
             stream.reconfigure(encoding="utf-8")
 
 
-def main() -> int:
+def main(games=None) -> int:
+    """跑完四项。返回进程退出码（0 = 全绿）。
+
+    `games` 只为测试留的口子：不传就 load_games()。终审修复的回归测试要构造
+    「语料太少 / 一项都查不到」的假语料来证明这个门会红 —— 不注入的话没法构造。
+    """
     _utf8_stdout()
-    games = load_games()
-    print(f"载入对局 {len(games)} 局，其中有结算的 "
-          f"{sum(1 for g in games if g.settle)} 局\n")
+    games = load_games() if games is None else games
+    settled = sum(1 for g in games if g.settle)
+    print(f"载入对局 {len(games)} 局，其中有结算的 {settled} 局\n")
     dropped = sum(g.unparsed for g in games)
     # R7：日志解析失败的行必须**可见**，不能静默 ——
     # 这个数字不为 0 就说明语料有缺失，下面四项结论都要打折看。
     print(f"解析失败的行合计 unparsed = {dropped}"
           + ("  <- 非 0！语料有缺失，结论要打折看" if dropped else ""))
+    floor = _corpus_floor(games)
+    if floor:
+        # 语料地板没到：明着说，别靠下面四项各自的 total 去暗示。
+        print(f"[WARN] {floor}")
     failed = 0
     for fn in CHECKS:
         res = fn(games) if fn in _LOG_FED else fn()
+        if fn in _LOG_FED:
+            # ①② 吃语料，地板挂在它们身上：结算局太少时它们**不许**声称成功。
+            res.floor = floor
         print(res.report())
         failed += 0 if res.ok else 1
     print()

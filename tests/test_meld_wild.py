@@ -54,6 +54,28 @@ def test_results_are_not_duplicated():
     assert len(keys) == len(set(keys)), "同一组牌重复出现了"
 
 
+def test_natural_explanation_wins_over_wild_for_the_same_cards():
+    """同一组牌既有天然解释、又有用逢人配的解释时，只能剩**天然**那条。
+
+    打 5、手里 5♦5♣5♠♥5：♥5 确实是逢人配，但它本身也是一张 5 ——
+    「四个 5 的炸」可以天然凑成（`wild_used == 0`），也可以解释成
+    「三张 5 + 逢人配补一张」（`wild_used == 1`）。牌组完全相同，只能留一条，
+    而且**必须留天然的**。
+
+    这条规则不是小事：`wild_used` 决定面板上「（含逢人配）」后缀，
+    也是 Plan 2 里「有没有白烧一张逢人配」的信号 —— 反了就是在教模型
+    见到逢人配就烧。**修复前没有任何一条测试挡得住它**：把 `melds_from`
+    的两段顺序对调（`_melds_wild` 在前、`_melds_natural` 在后，
+    收口去重的「先到先得」就会留下 wild 那条），
+    test_meld_basic / test_meld_seq / test_meld_wild 三个文件**全部照绿**。
+    """
+    hand = C("5♦", "5♣", "5♠", "5♥")                # 打 5 -> ♥5 是逢人配
+    same = [m for m in meld.melds_from(hand, level=5)
+            if sorted(m.cards) == sorted(hand)]
+    assert len(same) == 1, f"同一组牌应当只剩一条解释，实得 {len(same)} 条"
+    assert same[0].wild_used == 0, "天然解释优先 —— 逢人配不该被白白烧掉"
+
+
 # --- 以下是 brief 之外补的：补牌必须报出**具体牌张** -------------------------
 # Task 7 验收① 的 as_meld() 是拿真实那一手的牌组做**精确集合**比对的：
 #     sorted(m.cards) == sorted(s.actual)

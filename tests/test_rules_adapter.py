@@ -6,8 +6,9 @@
    与 `live/level.py` 的 `'T'`）。**这是本文件最重要的一块**：适配层就是
    「唯一的名字边界」，边界两侧对不上，整套东西等于没验过。第一版适配层
    只认 `"S10"` / `"JOKER_SMALL"`（自己编的词表），实测 1740 手真实着法里
-   29% 抛错 —— 而 `live/main.py` 的 `render_lines` 不在 `tick` 的 try 里，
-   抛错会**永久打断面板刷新链**。
+   29% 抛错 —— 而 `live/main.py` 的 `render_lines` 那时不在 `tick` 的 try 里，
+   抛错会**永久打断面板刷新链**（该机制现已由 `live/main.py` 的
+   `safe_render_lines` 修掉，见本文件第 5 块）。
 2. **6 个已证实缺陷**（brief 的那 6 条，用长写法 `"S10"` 写；两种写法都要收）。
 3. **旧实现做对、不能被弄丢的行为**（同花顺不能降级成顺子）。
 4. **编码与报错契约**（逐张对表、认不出必须抛 ValueError）。
@@ -165,6 +166,34 @@ def test_unknown_level_raises():
         rules.classify(["S5"], "TEN")
 
 
+def test_level_idx_accepts_only_real_levels():
+    """正例：1~13 的数值形式与 'A'/'T'/'J'/'Q'/'K'/'10' 都能转。"""
+    for i in range(1, 14):
+        assert meld.level_idx(str(i)) == i          # 字符串形式（日志口径）
+        assert meld.level_idx(i) == i               # 整数形式
+    assert meld.level_idx("T") == meld.level_idx("10") == 10
+    assert meld.level_idx("A") == 1
+    assert meld.level_idx(None) is None             # None 只表示「没有级牌」
+
+
+@pytest.mark.parametrize("bad", ["0", "00", "99", "14", "15", 0, 14, 99, -1])
+def test_level_out_of_range_raises(bad):
+    """数值不是 1~13 的级别必须**抛** —— 不许 `isdigit()` 放过去。
+
+    旧实现 `if text.isdigit(): return int(text)` 会让 `'0'` / `'99'` 原样通过，
+    而它的 docstring 写着「认不出的级别抛 ValueError —— 不返回 None 蒙混过去」：
+    实现与自己的承诺相反。
+
+    这不是理论问题：**live/level.py 的字形表里有 '0'**（打十时面板上是「1」+「0」
+    两个字形，`_normalize` 只把 '1'/'10' 折成 'T'）—— 打十被切坏、只剩「0」
+    就会读出 `'0'`，然后 `0` 一路传进引擎，把**合法着法判成「不合法」**，
+    正是 spec §6⑥ 要防的那种「错结论端到用户脸上」。
+    实测可达路径：live/main.py:229 `classify_play(cards, d.get("level") or "2")`。
+    """
+    with pytest.raises(ValueError):
+        meld.level_idx(bad)
+
+
 def test_t_and_10_are_the_same_ten():
     assert meld.level_idx("T") == meld.level_idx("10") == 10
     assert meld.cid_from_name("ST") == meld.cid_from_name("S10")
@@ -217,9 +246,11 @@ def _panel_input(table, level="T"):
 def test_panel_render_path_handles_ten_jokers_and_level_T():
     """打十那一局、桌上出现 10 与王 —— 面板必须照常渲染出结论。
 
-    第一版适配层在这里抛 ValueError（词表用的是 `"S10"`），而这条路径一抛错
+    第一版适配层在这里抛 ValueError（词表用的是 `"S10"`），而这条路径当时一抛错
     面板就再也不刷新了（桌上那张牌还是用户自己打出去的）。这条测试就是那个
-    Critical 的回归网：它跑的是**真实渲染入口**，不是 `classify` 单点。
+    Critical 的**触发条件**回归网：它跑的是**真实渲染入口**，不是 `classify` 单点。
+    （**机制**那一半——抛错也不许断链——在下面
+    `test_panel_render_chain_survives_an_exception` 里。）
     """
     import live.main as panel        # 依赖 cv2/mss/win32，本机有
 
@@ -241,3 +272,27 @@ def test_panel_render_path_handles_ten_jokers_and_level_T():
     assert "不是合法牌型" in render({**empty, "机器人1": [("S5", .9), ("H7", .9), ("D9", .9)]})
     # 一张小王 + 一张大王不是对子（各有各的那张，配不成对）
     assert "不是合法牌型" in render({**empty, "机器人1": [("JOKER_S", .9), ("JOKER_B", .9)]})
+
+
+def test_panel_render_chain_survives_an_exception(monkeypatch, capsys):
+    """渲染抛错时，刷新链**不能死**，错误还必须**显示出来**（不许吞）。
+
+    `render_lines` 由 tkinter 的 `after` 回调调用，而它当时**不在** `tick` 的 try
+    里 —— 抛一次错，`root.after` 就再也不会被排上，面板**永久、静默地**定格。
+    上面那条测试修的是**触发条件**（词表对齐），这条守的是**机制**：
+    今后任何一次渲染异常都只是显示一行错误，链继续跑。
+
+    断言三件事：safe_render_lines 不把异常放出去、返回的文本里有错误标记、
+    stderr 上有完整栈（不吞）。
+    """
+    import live.main as panel
+
+    def boom(_d):
+        raise ValueError("模拟：认不出的牌名/级别")
+
+    monkeypatch.setattr(panel, "render_lines", boom)
+    lines = panel.safe_render_lines({"level": "2"})       # 不抛
+    text = "".join(t for t, _ in lines)
+    assert "面板渲染出错" in text
+    assert "模拟：认不出的牌名/级别" in text               # 错误本身要可见
+    assert capsys.readouterr().err.count("ValueError") >= 1   # 栈打到 stderr
