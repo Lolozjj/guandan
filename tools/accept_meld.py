@@ -16,14 +16,12 @@
   - `tools/decision_points.py` 的 `Snapshot` **没有 card_type 字段**（那是
     game_log 的 PlayRec 才有的）。诊断信息里的 card_type 由 `_card_type()` 从
     `g.plays[i]` 现取 —— `decision_points()` 每手一个快照、顺序与 plays 一一对应。
-  - `net.cards` 显式 import，不再借道 `meld.cards` 这个间接属性。
 """
 from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
 
-from net import cards
 from net.sim import meld
 from tools.decision_points import decision_points
 from tools.game_log import load_games
@@ -266,12 +264,28 @@ def check_wildcard() -> Result:
         elif not any(m.wild_used > 0 for m in bombs):
             r.bad.append(f"{n} 张逢人配时应当能补出炸弹")
 
+    # R21：原 brief 这里拿 [♥5, 大王, 大王(二副), 小王] 去找 **4 张炸**，可那手牌
+    # 只有 **3 张王**（天王炸要 4 张），`m.size == 4` 永远不成立 —— 那句断言一次都
+    # 没执行过，等于什么都没验。换成下面两条**能失败**的：
+    #   1) 3 张王 + 1 张逢人配：逢人配不能当王，不该凑出天王炸
+    #   2) 4 张王 + 1 张逢人配：应当**恰好**一个天王炸，且里面不能混逢人配
+    # 第 2 条的 `len(jb) != 1` 是结构性判据：引擎一旦产不出天王炸、或产出多个，
+    # 它立刻红，不依赖任何巧合。
+    wild5 = 32 + 5                               # ♥5，与上面 wilds[0] 同一张
+    three_jokers = [wild5, 14, 270, 15]          # 逢人配 + 小王×2 + 大王
     r.total += 1
-    hand = [32 + 5, 15, 271, 14]                 # ♥5 + 大王 + 大王(二副) + 小王
-    for m in meld.melds_from(hand, level=level):
-        if m.kind == meld.BOMB and m.size == 4:
-            if not all(cards.parts(c)[0] in (14, 15) for c in m.cards):
-                r.bad.append("王炸里混进了逢人配")
+    if any(meld.bomb_class(m) == meld.CLASS_JOKER_BOMB
+           for m in meld.melds_from(three_jokers, level=level)):
+        r.bad.append("3 张王 + 1 张逢人配 不该能出天王炸（逢人配不能当王）")
+
+    four_jokers = [wild5, 14, 270, 15, 271]      # 逢人配 + 四张王
+    r.total += 1
+    jb = [m for m in meld.melds_from(four_jokers, level=level)
+          if meld.bomb_class(m) == meld.CLASS_JOKER_BOMB]
+    if len(jb) != 1:
+        r.bad.append(f"4 张王 + 1 张逢人配 应当恰好有一个天王炸，实得 {len(jb)} 个")
+    elif any(meld.is_wild(c, level) for c in jb[0].cards):
+        r.bad.append("天王炸里混进了逢人配")
     return r
 
 
