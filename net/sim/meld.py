@@ -286,11 +286,155 @@ def _melds_plate(g: dict, level) -> list:
     return out
 
 
-def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
-    """枚举手牌能组成的所有牌型。
+# --- 逢人配（万能牌）替牌 ------------------------------------------------
+# 级牌红桃能当**任意普通牌**用，但不能当王。枚举分两段：
+#   _melds_natural  天然牌型（逢人配只当它自己那张级牌，wild_used 恒为 0）
+#   _melds_wild     只有天然凑不成时才补逢人配
+# 补出来的 Meld **必须把逢人配那张牌算进 cards** —— tools/accept_meld.py 的
+# as_meld() 是按精确牌组比对的（sorted(m.cards) == sorted(实际出的牌)），
+# 只放天然那几张的话，真实打出的每一手带逢人配的牌都会被报成「判不出牌型」。
+
+
+def _split_wild(hand: Sequence[int], level: Optional[int]) -> tuple:
+    """把逢人配拆出来。返回 (其余牌, 逢人配列表)。"""
+    wilds = [c for c in hand if is_wild(c, level)]
+    rest = [c for c in hand if not is_wild(c, level)]
+    return rest, wilds
+
+
+def _missing(nat: dict, nats, per: int) -> int:
+    """要凑出 nats 这些自然值、每个 per 张，还缺几张。
+
+    `nat` 是 `_seq_lookup(g)` 的结果（自然值 -> 牌），A 同时落在 1 与 14 两格。
+    不要用 idx 直接查 `g` —— A 的两面性只在 `_seq_lookup` 里处理一次。
+    """
+    d = 0
+    for n in nats:
+        have = len(nat.get(n, []))
+        if have < per:
+            d += per - have
+    return d
+
+
+def _take(nat: dict, nats, per: int) -> tuple:
+    """窗口里每格取 per 张牌（不够就少取，缺口由调用方补逢人配）。"""
+    out = []
+    for n in nats:
+        out.extend(nat.get(n, [])[:per])
+    return tuple(out)
+
+
+def _with_wild(cards, wilds, d: int) -> tuple:
+    """天然那几张 + 补上的 d 张逢人配（`cards` 是具体牌 ID）。"""
+    return tuple(cards) + tuple(wilds[:d])
+
+
+def _melds_wild(g: dict, level, wilds: Sequence[int]) -> list:
+    """用逢人配补出来的牌型。g 是**不含逢人配**的牌分组，wilds 是逢人配本身。
+
+    只产出「需要补」的牌型（`0 < 缺口 <= 拿得出的逢人配张数`）—— 天然的那些由
+    `_melds_natural` 负责，重复由 `melds_from` 统一收口。
+
+    王一律不参与：`ranks` 掐掉王，序列的自然值表（`_seq_lookup`/`nat_values`）
+    本来就不收王，所以逢人配当不成王。
+    """
+    n_wild = len(wilds)
+    if n_wild <= 0:
+        return []
+    nat = _seq_lookup(g)          # 自然值 -> 牌（A 同时落 1 与 14）
+    out = []
+    # **按点数降序**，不用手牌顺序：三带二里 t/p 是对称的（手里 10♣10♥ + 2♠2♦ +
+    # 逢人配，既可以说成「三个 10 带一对 2」也可以说成「三个 2 带一对 10」），
+    # 两种说法牌组相同、只能留一个。手牌顺序会让「留哪个」随发牌顺序漂 ——
+    # 于是同一组牌在「真实那一手」与「整手牌」里解释成不同的 rank，验收①会假红。
+    # 取点数大的当三张：这是**真值**，不是随手定的 —— 真实数据
+    # （net/events.jsonl 2026-09-23 14:14，打 J）那一手 10♥(二副)10♣(二副)+
+    # ♥J(二副) + 2♠(二副)2♦(二副) 压在「三个 9 带一对 4」上，只有三张是 10
+    # （rank 9）才压得过，三张是 2（rank 1）压不过 —— 游戏自己读的是前者。
+    ranks = sorted((i for i in g if i < JOKER_SMALL), reverse=True)
+
+    # 对子 / 三张 / 炸弹：同一个点数的牌不够，就拿逢人配顶上
+    for i in ranks:
+        have = len(g[i])
+        pv = point_value(i, level)
+        for need, kind in ((2, PAIR), (3, TRIPLE)):
+            d = need - have
+            if 0 < d <= n_wild:
+                out.append(Meld(kind, need, pv, _with_wild(g[i], wilds, d),
+                                wild_used=d))
+        for n in range(_MIN_BOMB, _MAX_BOMB + 1):
+            d = n - have
+            if 0 < d <= n_wild:
+                out.append(Meld(BOMB, n, pv, _with_wild(g[i], wilds, d),
+                                wild_used=d))
+
+    # 三带二：三张与对子各自可能都不齐（真实数据两种都有）——
+    # 「三张齐、只缺对子」（3+1）与「两边都只有两张」（2+2）都必须出。
+    # 缺口按**取代表之后**各点数还剩几张算（`[:3]` / `[:2]`，与 `_melds_triple_pair`
+    # 同口径）：手里同一张数有 5 张时，仍然可以挑 3 张当三张，不能因为「这个点数
+    # 有 4 张以上」就整条不算 —— 那会把真实打出的三带二报成枚举不出。
+    for t in ranks:
+        for p in ranks:
+            if p == t:
+                continue
+            d = max(0, 3 - len(g[t])) + max(0, 2 - len(g[p]))
+            if 0 < d <= n_wild:
+                out.append(Meld(TRIPLE_PAIR, 5, point_value(t, level),
+                                _with_wild(tuple(g[t][:3]) + tuple(g[p][:2]),
+                                           wilds, d),
+                                wild_used=d))
+
+    for top in range(_SEQ_LEN, _NAT_MAX + 1):
+        nats = list(range(top - _SEQ_LEN + 1, top + 1))
+        d = _missing(nat, nats, 1)
+        if 0 < d <= n_wild:
+            out.append(Meld(STRAIGHT, _SEQ_LEN, top,
+                            _with_wild(_take(nat, nats, 1), wilds, d),
+                            wild_used=d))
+        # 同花顺单独试，且**要在 `if 0 < d` 之外** —— 每个自然值都有牌、
+        # 但都不是同一花色时，d == 0 而缺的全靠逢人配补。
+        # 同样必须逐花色试（见 `_melds_straights` 的说明），也不能 break：
+        # 手里同时有 ♠/♥ 两套同顶端的同花顺时，只留一个代表会让真实打出
+        # 另一套的玩家被报「枚举不出」。
+        for suit in _SUITS:
+            pick, miss = [], 0
+            for n in nats:
+                c = next((x for x in nat.get(n, [])
+                          if cards.parts(x)[1] == suit), None)
+                if c is None:
+                    miss += 1
+                else:
+                    pick.append(c)
+            if 0 < miss <= n_wild:      # miss == 0 是天然的，由 _melds_straights 负责
+                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top,
+                                _with_wild(pick, wilds, miss),
+                                wild_used=miss))
+
+    for start in range(1, _NAT_MAX - _PAIR_RUN_LEN + 2):
+        nats = list(range(start, start + _PAIR_RUN_LEN))
+        d = _missing(nat, nats, 2)
+        if 0 < d <= n_wild:
+            out.append(Meld(PAIR_RUN, _PAIR_RUN_LEN * 2, nats[-1],
+                            _with_wild(_take(nat, nats, 2), wilds, d),
+                            wild_used=d))
+
+    for start in range(1, _NAT_MAX - _PLATE_LEN + 2):
+        nats = list(range(start, start + _PLATE_LEN))
+        d = _missing(nat, nats, 3)
+        if 0 < d <= n_wild:
+            out.append(Meld(PLATE, _PLATE_LEN * 3, nats[-1],
+                            _with_wild(_take(nat, nats, 3), wilds, d),
+                            wild_used=d))
+    return out
+
+
+def _melds_natural(hand: Sequence[int], level: Optional[int]) -> list:
+    """枚举手牌能组成的**天然**牌型（逢人配只当作它自己那张级牌）。
 
     单/对/三/三带二/炸弹/天王炸 + 顺子/同花顺/连对/钢板。
-    逢人配在这里**当作它自己那张级牌**参与枚举（Task 6 再加替代能力）。
+    这里是 Task 4/5 原有的那份 melds_from，**整体改名、函数体一行没动** ——
+    三带二不排除王（真实数据有一手 2♦2♦2♣+小王小王）、天王炸单独补一条，
+    都还在下面。Task 6 的逢人配替牌在 `_melds_wild` 里另写，本函数不掺和。
     """
     level = norm_level(level)
     g = _by_idx(hand)
@@ -308,6 +452,29 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
     out += _melds_pair_run(g, level)
     out += _melds_plate(g, level)
     return out
+
+
+def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
+    """枚举手牌能组成的所有牌型。逢人配当万能牌，但**先试天然的**。
+
+    两段拼起来：天然牌型（`_melds_natural`，`wild_used == 0`）+ 补牌牌型
+    （`_melds_wild`，只在天然凑不成时才出）。逢人配一张都没有、只有一张、
+    两张齐全都能正常工作（`_split_wild` 不假设张数）。
+    """
+    rest, wilds = _split_wild(hand, level)
+    out = _melds_natural(hand, level)
+    if wilds:
+        out += _melds_wild(_by_idx(rest), level, wilds)
+    # 收口去重。键带 kind：同一组牌可以同时是顺子与同花顺（含天然那两条），
+    # 那是两种解释，都要留下 —— tools/accept_meld.py 的 as_meld() 靠它取最强解释。
+    seen, uniq = set(), []
+    for m in out:
+        key = (m.kind, tuple(sorted(m.cards)))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(m)
+    return uniq
 
 
 def legal_moves(hand: Sequence[int], table: Optional[Meld],
