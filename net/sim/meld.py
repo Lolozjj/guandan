@@ -43,6 +43,9 @@ _PAIR_RUN_LEN = 3
 _PLATE_LEN = 2
 _NAT_MAX = 14          # A 当大牌时的自然值；也是序列能给到的最大值
 
+# 同花判断用的花色字符。顺序固定 —— 枚举结果要可复现（不要用 set 迭代序）。
+_SUITS = "♠♥♣♦"
+
 
 def norm_level(level: Optional[int]) -> Optional[int]:
     """级别归一。**日志里偶尔用 14 表示 A**（net/cards.py 的 sort_key 也处理过这条），
@@ -221,18 +224,35 @@ def _window(nat: dict, top: int, span: int):
 
 
 def _melds_straights(g: dict, level) -> list:
-    """顺子（恰好 5 张连续）与同花顺。比较主键 = 顶端自然值。"""
+    """顺子（恰好 5 张连续）与同花顺。比较主键 = 顶端自然值。
+
+    ⚠️ **同花顺必须逐花色试，不能只看每格第一张牌。** 两副牌下每个点数通常
+    有两张不同花色，所以「代表牌是杂色」是常态而非边角：
+
+        5♥ 5♠ 6♠ 7♠ 8♠ 9♠  -> 只看代表牌（5♥）会漏，5♠6♠7♠8♠9♠ 明明在手上
+        5♠ 5♥ 6♠ 7♠ 8♠ 9♠  -> 代表牌正好取到 5♠ 才命中
+
+    漏掉的后果不只是少一条建议：tools/accept_meld.py 的验收① 是按**牌张集合**
+    比对的（`sorted(m.cards) == sorted(s.actual)`），会把真实打出的同花顺
+    报成「枚举不出」。
+
+    同顶端的花色**全都要出，不 break** —— 同理，只留一个代表的话，玩家实际
+    打的是另一种花色时验收① 依然会红。
+    """
     nat = _seq_lookup(g)
     out = []
     for top in range(_SEQ_LEN, _NAT_MAX + 1):
         nats = _window(nat, top, _SEQ_LEN)
         if nats is None:
             continue
-        ids = [nat[n][0] for n in nats]
-        out.append(Meld(STRAIGHT, _SEQ_LEN, top, tuple(ids)))
-        # 同花顺 = 顺子且五张同花色；王的花色是空串，进不了这里（也进不了顺子）
-        if len({cards.parts(c)[1] for c in ids}) == 1:
-            out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(ids)))
+        # 顺子每格取一个代表即可（大小只跟顶端有关）；王的 nat 为空，进不来
+        out.append(Meld(STRAIGHT, _SEQ_LEN, top,
+                        tuple(nat[n][0] for n in nats)))
+        for suit in _SUITS:
+            pick = [next((c for c in nat[n] if cards.parts(c)[1] == suit), None)
+                    for n in nats]
+            if all(c is not None for c in pick):
+                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(pick)))
     return out
 
 

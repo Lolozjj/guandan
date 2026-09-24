@@ -38,6 +38,47 @@ def test_straight_flush_requires_same_suit():
     assert meld.STRAIGHT in km
 
 
+def test_straight_flush_survives_card_order():
+    """同花顺不能因为「同点数的杂色牌排在前面」而漏掉。
+
+    两副牌下每个点数必有两张不同花色，所以这是常态而非边角。
+    漏掉不只是少一个建议 —— Task 7 的验收①会把真实打出的同花顺报成枚举不出。
+    """
+    has_flush = C("5♥", "5♠", "6♠", "7♠", "8♠", "9♠")     # 5♠ 排在后面
+    ordered = C("5♠", "5♥", "6♠", "7♠", "8♠", "9♠")
+    for hand, name in ((has_flush, "杂色在前"), (ordered, "同花在前")):
+        sf = [m for m in meld.melds_from(hand, level=2)
+              if m.kind == meld.STRAIGHT_FLUSH]
+        assert len(sf) == 1, f"{name} 的手牌漏了同花顺"
+        assert sf[0].rank == 9
+        assert {meld.cards.parts(c)[1] for c in sf[0].cards} == {"♠"}
+
+
+def test_ace_low_straight_flush_survives_card_order():
+    """A 低窗同样：A♦ 排在 A♥ 前面时不能漏掉 A♥2♥3♥4♥5♥。"""
+    hand = C("A♦", "A♥", "2♥", "3♥", "4♥", "5♥")
+    sf = [m for m in meld.melds_from(hand, level=9)
+          if m.kind == meld.STRAIGHT_FLUSH]
+    assert len(sf) == 1 and sf[0].rank == 5
+
+
+def test_every_straight_flush_card_set_is_enumerable():
+    """同顶端的两条同花顺（不同花色）必须**都**枚举出来，不能只留一个代表。
+
+    Task 7 验收① 是按**牌张集合**比对的，不是按 (kind, size, rank)：
+
+        tools/accept_meld.py:  sorted(m.cards) == sorted(s.actual)
+
+    所以「同顶端只留一个代表」会把真实打出的另一种花色报成「枚举不出」。
+    这里手上同时有 ♠ 和 ♥ 两条顶端 9 的同花顺，两条都得能查到。
+    """
+    hand = C("5♠", "5♥", "6♠", "6♥", "7♠", "7♥", "8♠", "8♥", "9♠", "9♥")
+    found = {frozenset(m.cards) for m in meld.melds_from(hand, level=2)
+             if m.kind == meld.STRAIGHT_FLUSH}
+    assert frozenset(C("5♠", "6♠", "7♠", "8♠", "9♠")) in found
+    assert frozenset(C("5♥", "6♥", "7♥", "8♥", "9♥")) in found
+
+
 def test_pair_run_is_exactly_three_pairs():
     three = C("4♦", "4♣", "5♦", "5♠", "6♣", "6♠")
     two = C("4♦", "4♣", "5♦", "5♠")
