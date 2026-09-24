@@ -53,7 +53,7 @@ def _stronger(a: meld.Meld, b: meld.Meld) -> bool:
     return a.kind > b.kind
 
 
-def classify(cards: list, level: str = "2") -> str | None:
+def classify(cards: list[str], level: str = "2") -> str | None:
     """判牌型。合法返回牌型名，不合法返回 None。
 
     level 是当前级牌（'2'..'10' / 'J' / 'Q' / 'K' / 'A'）。
@@ -74,6 +74,6 @@ def classify(cards: list, level: str = "2") -> str | None:
     return meld.describe_meld(best) + ("（含逢人配）" if best.wild_used else "")
 
 
-def describe(cards: list, level: str = "2") -> str:
+def describe(cards: list[str], level: str = "2") -> str:
     """给面板显示用：合法就写牌型，不合法就明确说不合法。"""
     return classify(cards, level) or "不合法"

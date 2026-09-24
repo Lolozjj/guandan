@@ -35,6 +35,15 @@ def test_two_small_jokers_are_a_pair():
     assert got is not None and "对" in got
 
 
+def test_three_twos_with_two_jokers_is_triple_pair():
+    """bug #3 的真实着法那一半：三个 2 + 两张小王是**三带二**（旧实现判 None）。
+
+    王不能凑三张，但**能当三带二里的对子**（net/sim/meld.py 的 `pairs` 不排除王）。
+    """
+    assert rules.classify(
+        ["S2", "D2", "C2", "JOKER_SMALL", "JOKER_SMALL"], "9") == "三带二"
+
+
 def test_two_pair_run_is_illegal():
     """旧实现把 4 张二连对判合法（bug #4），游戏里 4 张只有炸弹。"""
     assert rules.classify(["S4", "H4", "S5", "H5"], "2") is None
