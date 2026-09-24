@@ -5,10 +5,12 @@ import pytest
 
 from tools.game_log import LOG_DIR, load_games, conserved
 
-pytestmark = pytest.mark.skipif(not os.path.isdir(LOG_DIR),
-                                reason="本机没有游戏日志")
+# skipif 只挂在真正需要本机日志的测试上。
+# 千万别提升成模块级 pytestmark：那会波及用 tmp_path 的那几个，日志 2 天轮转删掉后
+# 整个文件变成全员 skip —— pytest 退出码 0、看着全绿，解析器的回归防线就此停摆。
 
 
+@pytest.mark.skipif(not os.path.isdir(LOG_DIR), reason="本机没有游戏日志")
 def test_loads_games():
     games = load_games()
     assert len(games) > 0, "日志目录在，却一局都没解出来 —— 不要静默通过"
@@ -18,6 +20,7 @@ def test_loads_games():
         assert 1 <= g.trump <= 14
 
 
+@pytest.mark.skipif(not os.path.isdir(LOG_DIR), reason="本机没有游戏日志")
 def test_settled_games_are_conserved():
     """出过的牌 + 结算剩的牌 == 108。这是「对局记录完整」的硬证据。"""
     settled = [g for g in load_games() if g.settle]
