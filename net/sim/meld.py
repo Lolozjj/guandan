@@ -180,10 +180,13 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
     level = norm_level(level)
     g = _by_idx(hand)
     out = _melds_basic(hand, level)
+    # 三张必须排除王：每种王只有两张，凑不出三张。
     triples = [(i, v[:3]) for i, v in g.items()
                if i < JOKER_SMALL and len(v) >= 3]
-    pairs = [(i, v[:2]) for i, v in g.items()
-             if i < JOKER_SMALL and len(v) >= 2]
+    # 对子**不排除王**：游戏允许王当三带二里的对子
+    # （真实数据：三个 2 带两张小王）。_by_idx 按 idx 分组，
+    # 所以小王只跟小王成对、大王只跟大王成对，不会跨 idx 凑一对。
+    pairs = [(i, v[:2]) for i, v in g.items() if len(v) >= 2]
     out += _melds_triple_pair(level, triples, pairs)
     out += _melds_joker_bomb(hand)
     return out

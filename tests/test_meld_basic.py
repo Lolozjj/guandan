@@ -147,3 +147,31 @@ def test_legal_moves_against_table():
     for m in moves:
         assert meld.beats(m, table)
     assert not any(m.kind == meld.SINGLE for m in moves)
+
+
+def test_triple_pair_allows_joker_pair():
+    """王可以当三带二里的对子。
+
+    真实抓包数据里出现过这一手（card_type=5）：
+        2♦ 2♦(二副) 2♣ 小王 小王(二副)
+    pairs 若把王排除掉，这手的三带二候选是空的，Task 7 验收①会直接报红。
+    """
+    hand = C("2♦", "2♦(二副)", "2♣", "小王", "小王(二副)")
+    tp = [m for m in meld.melds_from(hand, level=9)
+          if m.kind == meld.TRIPLE_PAIR]
+    assert len(tp) == 1
+    m = tp[0]
+    assert set(m.cards) == set(hand)            # 正好是这 5 张
+    assert m.size == 5
+    assert m.rank == meld.point_value(2, 9)     # rank 取三张的点数，不是王的
+
+
+def test_jokers_cannot_form_triples_or_cross_pairs():
+    """防止改过头的否定断言：王只按同类成对，且永远凑不出三张。"""
+    two = C("小王", "小王(二副)")
+    moves = meld.melds_from(two, level=9)
+    assert not any(m.kind == meld.TRIPLE for m in moves)
+    assert not any(m.kind == meld.TRIPLE_PAIR for m in moves)
+
+    both = C("小王", "大王")                    # 不同 idx，凑不成一对
+    assert not any(m.kind == meld.PAIR for m in meld.melds_from(both, level=9))
