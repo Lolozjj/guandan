@@ -1,0 +1,67 @@
+import json
+import os
+
+import pytest
+
+from tools.game_log import LOG_DIR, load_games, conserved
+
+pytestmark = pytest.mark.skipif(not os.path.isdir(LOG_DIR),
+                                reason="本机没有游戏日志")
+
+
+def test_loads_games():
+    games = load_games()
+    assert len(games) > 0, "日志目录在，却一局都没解出来 —— 不要静默通过"
+    for g in games[:5]:
+        assert len(g.my_cards) == 27
+        # 日志偶尔用 14 表示 A（net/cards.py 里也踩过这条），所以上限放到 14
+        assert 1 <= g.trump <= 14
+
+
+def test_settled_games_are_conserved():
+    """出过的牌 + 结算剩的牌 == 108。这是「对局记录完整」的硬证据。"""
+    settled = [g for g in load_games() if g.settle]
+    assert len(settled) >= 20, f"完整局太少（{len(settled)}），样本不足以下结论"
+    bad = [g for g in settled if not conserved(g)]
+    assert not bad, f"{len(bad)} 局不守恒：{[g.t0 for g in bad[:3]]}"
+
+
+def test_missing_dir_raises(tmp_path):
+    """日志被轮转删掉时必须明着报错，不能返回空列表当成功。"""
+    with pytest.raises((FileNotFoundError, RuntimeError)):
+        load_games(log_dir=str(tmp_path / "nope"))
+
+
+# --- 以下为实施期补充（brief 三例之外）：锁住实测踩到的两个边界 ---
+
+_HDR = "2026-09-24|17:04:13:746|INFO|G|GameLogger|520|520|3222027089|"
+
+
+def _log_dir(tmp_path, lines):
+    d = tmp_path / "logs"
+    d.mkdir(exist_ok=True)
+    (d / "2026-09-24-17.log").write_text("".join(lines), encoding="utf-8")
+    return str(d)
+
+
+def test_companion_roundid_line_is_not_a_new_deal(tmp_path):
+    """实测：发牌行同一毫秒还有一行 `SendCardsService set roundID:S…`。
+
+    它与发牌行共享前缀，但只是伴随行、不是新的一局。必须显式跳过：
+    漏掉它要么凭空多出一局（实测 63 局会被数成 126 局），要么直接抛错。
+    """
+    cards = list(range(1, 28))
+    deal = _HDR + "SendCardsService set roundID:5,5,5,5 k : " + json.dumps(
+        {"CardLen": 27, "Cards": cards, "Trump": 5}) + "\n"
+    companion = _HDR + "SendCardsService set roundID:S7380R1T1669t6AB4E78ES0A\n"
+    games = load_games(log_dir=_log_dir(tmp_path, [deal, companion]))
+    assert len(games) == 1, f"伴随行被当成新的一局了（解出 {len(games)} 局）"
+    assert games[0].my_cards == cards
+    assert games[0].trump == 5
+
+
+def test_unknown_deal_shaped_line_raises(tmp_path):
+    """认不出的发牌行必须明着炸，不许静默跳过 —— 静默跳过等于凭空少一局。"""
+    bad = _HDR + "SendCardsService set roundID:5,5,5,5 k : {\"Cards\": 坏掉的\n"
+    with pytest.raises(RuntimeError):
+        load_games(log_dir=_log_dir(tmp_path, [bad]))
