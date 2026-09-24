@@ -65,3 +65,29 @@ def test_unknown_deal_shaped_line_raises(tmp_path):
     bad = _HDR + "SendCardsService set roundID:5,5,5,5 k : {\"Cards\": 坏掉的\n"
     with pytest.raises(RuntimeError):
         load_games(log_dir=_log_dir(tmp_path, [bad]))
+
+
+def test_truncated_play_line_is_counted_not_dropped_silently(tmp_path):
+    """出牌行被日志轮转截断（JSON 解不出）时不能凭空消失。
+
+    硬要求是「不许静默」：丢了就记进 `unparsed` 让下游看得见，
+    同时**这一局仍要正常返回**（不是整局丢弃）。
+    反过来，「JSON 能解析但没有 CardList」（如「要不起」）不算丢失，不能计数 ——
+    计进去会产生大量假计数。
+    """
+    cards = list(range(1, 28))
+    deal = _HDR + "SendCardsService set roundID:5,5,5,5 k : " + json.dumps(
+        {"CardLen": 27, "Cards": cards, "Trump": 5}) + "\n"
+    # 被截断的出牌行：JSON 一定解不出
+    truncated = _HDR + ('NotifyGiveCards 后台通知客户端出牌结果 info = '
+                        '{"SeatID":2,"CardList":[55,29\n')
+    # 能解析、但没有 CardList 的非出牌消息（不得计入）
+    not_a_play = _HDR + ('NotifyGiveCards 后台通知客户端出牌结果 info = '
+                         '{"SeatID":2,"Result":1}\n')
+
+    games = load_games(log_dir=_log_dir(tmp_path, [deal, truncated, not_a_play]))
+    assert len(games) == 1, "这一局不该被整局丢掉"
+    assert games[0].my_cards == cards
+    assert games[0].unparsed == 1, (
+        f"截断行应计数 1（无 CardList 的消息不计），实际 {games[0].unparsed}")
+    assert games[0].plays == [], "截断的行不该变成一手牌"

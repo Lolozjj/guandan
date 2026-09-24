@@ -50,6 +50,7 @@ class GameLog:
     my_cards: list[int]        # 发牌给我自己的 27 张
     plays: list[PlayRec] = field(default_factory=list)
     settle: Optional[dict] = None
+    unparsed: int = 0          # 前缀命中却解不出 JSON 的出牌/结算行条数（丢数据要看得见）
 
 
 def _ts(line):
@@ -102,7 +103,12 @@ def load_games(log_dir: str = LOG_DIR) -> list[GameLog]:
                     continue
                 if _PLAY.search(line):
                     d = _json(_PLAY, line)
-                    if d and d.get("CardList"):
+                    if d is None:
+                        # 前缀命中却解不出 JSON：真丢了一条，必须计数暴露出来，
+                        # 不许静默。注意「JSON 能解析但没有 CardList」（如「要不起」）
+                        # 是正常消息、不是丢数据，不能计进来。
+                        cur.unparsed += 1
+                    elif d.get("CardList"):
                         cur.plays.append(PlayRec(
                             seat=int(d["SeatID"]),
                             cards=list(d["CardList"]),
@@ -112,7 +118,9 @@ def load_games(log_dir: str = LOG_DIR) -> list[GameLog]:
                     continue
                 if _SETTLE.search(line):
                     d = _json(_SETTLE, line)
-                    if d:
+                    if d is None:
+                        cur.unparsed += 1      # 同上：丢了一条结算行要看得见
+                    else:
                         cur.settle = d
                         games.append(cur)
                         cur = None
