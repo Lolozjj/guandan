@@ -1163,7 +1163,7 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
 - [ ] **Step 4: 跑测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_meld_seq.py tests/test_meld_basic.py -q`
-Expected: `22 passed`
+Expected: `26 passed`（test_meld_basic 17 + test_meld_seq 9）
 
 - [ ] **Step 5: 提交**
 
@@ -1274,20 +1274,24 @@ def _split_wild(hand, level):
 # **整体改名，函数体一行都不动**。不要写成 `return melds_from(...)`那样会无限递归。
 # 改完之后本文件里应该只剩下一个 melds_from —— 就是下面 Task 6 新写的那个。
 
-def _missing(g: dict, nats, per: int) -> int:
-    """要凑出 nats 这些点数、每个 per 张，还缺几张。"""
+def _missing(nat: dict, nats, per: int) -> int:
+    """要凑出 nats 这些自然值、每个 per 张，还缺几张。
+
+    `nat` 是 `_seq_lookup(g)` 的结果（自然值 -> 牌），A 同时落在 1 与 14 两格。
+    不要用 idx 直接查 `g` —— A 的两面性只在 `_seq_lookup` 里处理一次。
+    """
     d = 0
     for n in nats:
-        have = len(g.get(_idx_for_nat(n), []))
+        have = len(nat.get(n, []))
         if have < per:
             d += per - have
     return d
 
 
-def _take(g: dict, nats, per: int) -> tuple:
+def _take(nat: dict, nats, per: int) -> tuple:
     out = []
     for n in nats:
-        out.extend(g.get(_idx_for_nat(n), [])[:per])
+        out.extend(nat.get(n, [])[:per])
     return tuple(out)
 
 
@@ -1298,6 +1302,7 @@ def _melds_wild(g: dict, level, n_wild: int) -> list:
     """
     if n_wild <= 0:
         return []
+    nat = _seq_lookup(g)          # 自然值 -> 牌（A 同时落 1 与 14）
     out = []
     ranks = [i for i in g if i < JOKER_SMALL]
 
@@ -1324,9 +1329,9 @@ def _melds_wild(g: dict, level, n_wild: int) -> list:
 
     for start in range(1, _NAT_MAX - _SEQ_LEN + 2):
         nats = list(range(start, start + _SEQ_LEN))
-        d = _missing(g, nats, 1)
+        d = _missing(nat, nats, 1)
         if 0 < d <= n_wild:
-            ids = _take(g, nats, 1)
+            ids = _take(nat, nats, 1)
             out.append(Meld(STRAIGHT, _SEQ_LEN, nats[-1], ids, wild_used=d))
             present = [cards.parts(c)[1] for c in ids]
             if present and len(set(present)) == 1:
@@ -1335,17 +1340,17 @@ def _melds_wild(g: dict, level, n_wild: int) -> list:
 
     for start in range(1, _NAT_MAX - _PAIR_RUN_LEN + 2):
         nats = list(range(start, start + _PAIR_RUN_LEN))
-        d = _missing(g, nats, 2)
+        d = _missing(nat, nats, 2)
         if 0 < d <= n_wild:
             out.append(Meld(PAIR_RUN, _PAIR_RUN_LEN * 2, nats[-1],
-                            _take(g, nats, 2), wild_used=d))
+                            _take(nat, nats, 2), wild_used=d))
 
     for start in range(1, _NAT_MAX - _PLATE_LEN + 2):
         nats = list(range(start, start + _PLATE_LEN))
-        d = _missing(g, nats, 3)
+        d = _missing(nat, nats, 3)
         if 0 < d <= n_wild:
             out.append(Meld(PLATE, _PLATE_LEN * 3, nats[-1],
-                            _take(g, nats, 3), wild_used=d))
+                            _take(nat, nats, 3), wild_used=d))
     return out
 ```
 
