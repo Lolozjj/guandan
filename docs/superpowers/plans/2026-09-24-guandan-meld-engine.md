@@ -1343,6 +1343,13 @@ def _take(nat: dict, nats, per: int) -> tuple:
     return tuple(out)
 
 
+# ⚠️⚠️ 本块**已被交付实现取代，不要照抄** ⚠️⚠️
+# 交付版在 `net/sim/meld.py` 的 `_melds_wild`，与下面两处不同：
+#   1) 收的是**逢人配的牌列表 `wilds`** 而不是张数 `n_wild` —— 补进去的牌必须真的进
+#      `Meld.cards`，否则 Task 7 的验收①（按真实牌组的精确集合判型）会把 **90/98 手**
+#      带逢人配的真实着法报成「判不出牌型」。
+#   2) 取牌走 `_with_wild`，不是 `tuple(g[i])`。
+# 保留旧文本只为记录当时的思路；**以交付代码为准**。
 def _melds_wild(g: dict, level, n_wild: int) -> list:
     """用逢人配补出来的牌型。g 是**不含逢人配**的牌分组。
 
