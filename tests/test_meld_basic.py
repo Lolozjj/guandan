@@ -92,10 +92,14 @@ def test_four_jokers_is_the_top_bomb():
 
     漏了这条，用户永远拿不到「出天王炸」的建议 —— 数据里 465 手没出现过，
     所以只有这条测试能挡住它。
+
+    这里原本写的是字面量 `== 7`。R19 把 9炸/10炸 加进阶梯后，天王炸的层级号
+    从 7 挪到 9（`CLASS_JOKER_BOMB`，仍居顶），所以改成引用常量 ——
+    断言的是同一个东西（是不是天王炸那一层），没有放宽。
     """
     hand = C("小王", "小王(二副)", "大王", "大王(二副)")
     top = [m for m in meld.melds_from(hand, level=9)
-           if meld.bomb_class(m) == 7]
+           if meld.bomb_class(m) == meld.CLASS_JOKER_BOMB]
     assert len(top) == 1
     assert len(top[0].cards) == 4
     assert meld.beats(top[0], _mk(meld.BOMB, 8, 5, tuple(range(1, 9))))

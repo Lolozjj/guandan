@@ -104,3 +104,46 @@ def test_wild_fills_triple_pair_when_both_halves_short():
     assert tp, "两边都差一张的三带二没枚举出来"
     assert set(tp[0].cards) == set(hand)
     assert tp[0].wild_used == 1
+
+
+# --- 炸弹张数上限：8 张天然 + 最多 2 张逢人配 = 10（R19）-------------------
+# ⚠️ **9炸/10炸 在炸弹阶梯上的位置是自然延伸，数据未验**：
+#    4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 有用户口述 + 24 对真实「对压」证据，
+#    9炸/10炸 只有「存在」证据（下面这一手），**没有**对压证据。
+
+
+def test_nine_card_bomb_from_real_play():
+    """真数据里的一手 9 张炸：8 张 J 加一张逢人配 ♥3（打 3，card_type=10）。
+
+    `_MAX_BOMB` 原来是 8（两副牌一个点数最多 8 张），这一手枚举不出来 ——
+    tools/accept_meld.py 验收① 会把它报成「真实出的牌本身判不出牌型」。
+    """
+    hand = C("J♠", "J♠(二副)", "J♥", "J♥(二副)",
+             "J♣", "J♣(二副)", "J♦", "J♦(二副)", "3♥")
+    bombs = [m for m in meld.melds_from(hand, level=3) if m.kind == meld.BOMB]
+    nine = [m for m in bombs if m.size == 9]
+    assert nine, "8 张 J + 逢人配的 9 张炸没枚举出来"
+    assert nine[0].wild_used == 1
+    assert set(nine[0].cards) == set(hand)
+    assert nine[0].rank == meld.point_value(11, 3)
+
+    eight = meld.Meld(meld.BOMB, 8, meld.point_value(11, 3),
+                      tuple(C("J♠", "J♠(二副)", "J♥", "J♥(二副)",
+                              "J♣", "J♣(二副)", "J♦", "J♦(二副)")))
+    joker = meld.Meld(meld.BOMB, 4, 0,
+                      tuple(C("小王", "小王(二副)", "大王", "大王(二副)")))
+    assert meld.beats(nine[0], eight), "9 炸应当压得过 8 炸"
+    assert meld.beats(joker, nine[0]), "天王炸仍应压得过 9 炸"
+    assert not meld.beats(nine[0], joker), "9 炸不该压得过天王炸"
+
+
+def test_ten_card_bomb_is_the_ceiling():
+    """上界 = 8 张天然 + 2 张逢人配 = 10；再多一张逢人配也不存在。"""
+    hand = C("J♠", "J♠(二副)", "J♥", "J♥(二副)", "J♣", "J♣(二副)",
+             "J♦", "J♦(二副)", "3♥", "3♥(二副)")
+    bombs = [m for m in meld.melds_from(hand, level=3) if m.kind == meld.BOMB]
+    ten = [m for m in bombs if m.size == 10]
+    assert ten, "8 张 J + 2 张逢人配的 10 张炸没枚举出来"
+    assert ten[0].wild_used == 2
+    assert set(ten[0].cards) == set(hand)
+    assert max(m.size for m in bombs) == 10

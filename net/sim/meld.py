@@ -9,7 +9,9 @@
 
 牌型表从游戏协议的 card_type 字段统计得到（465 手真牌，spec §2.2）。
 炸弹顺序由用户口述 + 24 对真实证据交叉验证（0 条矛盾）：
-    4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 天王炸
+    4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 9炸 < 10炸 < 天王炸
+其中 4炸~8炸 有实证；**9炸/10炸（8 张同点数 + 逢人配）是自然延伸**，
+只有一手真实「存在」证据、没有「对压」证据（见 `_BOMB_CLASS_BY_SIZE` 旁注）。
 """
 from __future__ import annotations
 
@@ -30,11 +32,15 @@ _POINT = {**{i: i - 1 for i in range(2, 11)}, 11: 10, 12: 11, 13: 12, 1: 13}
 POINT_LEVEL, POINT_SMALL, POINT_BIG = 14, 15, 16
 
 _MIN_BOMB = 4
-_MAX_BOMB = 8          # 两副牌，一个点数最多 8 张
+_MAX_BOMB = 10         # 两副牌一个点数最多 8 张，**再加最多 2 张逢人配 = 10**
 
-_BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6}
+# 4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 有用户口述 + 24 对真实证据；
+# 9炸 / 10炸（8 张同点数 + 逢人配）是**自然延伸** —— 真数据里有一手 9 张炸
+# （J♠J♠(二副)J♥J♥(二副)J♣J♣(二副)J♦J♦(二副) + ♥3，打 3，card_type=10），
+# 但只有「存在」证据、没有「对压」证据，位置需用户确认。
+_BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8}
 CLASS_FLUSH = 3
-CLASS_JOKER_BOMB = 7
+CLASS_JOKER_BOMB = 9   # 天王炸仍居顶（比 10 张炸还高一层）
 
 # --- 序列类牌型（顺子 / 连对 / 钢板）--------------------------------------
 # 规模是定死的：数据里 4 张只有炸弹（没有二连对），顺子也只出现 5 张的。
@@ -130,7 +136,9 @@ def bomb_class(m: Meld) -> Optional[int]:
     if m.kind in (BOMB, BOMB6):
         cls = _BOMB_CLASS_BY_SIZE.get(m.size)
         if cls is None:
-            raise ValueError(f"不认识的炸弹张数 {m.size}（牌 {m.cards}）")
+            raise ValueError(
+                f"不认识的炸弹张数 {m.size}（合法 {_MIN_BOMB}~{_MAX_BOMB}；"
+                f"牌 {m.cards}）")
         return cls
     return None
 
