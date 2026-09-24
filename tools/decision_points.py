@@ -4,7 +4,14 @@
 所以重建出来的就是「第一手之前」的手牌，之后只减不增。
 
 桌面判定刻意**不看牌型**（那是 net/sim/meld.py 的事，这里用了就循环依赖）。
-只看服务器给的 NextTurnSeatID：转回桌面主人（或他的队友接风）= 这一轮结束。
+只认两种「领出」：同一座位又出牌（其余三家都要不起，他重新领出）；或队友接风
+（上一手的主人已经出完，队友接着领出）。
+
+**不能拿服务器的 `NextTurnSeatID` 判领出** —— 服务器算下一手时会跳过已经出完的
+座位，所以 nxt 指到队友既可能是接风，也可能只是跳过了一个出完的座位（那时队友
+其实是在压牌）。实测（55 局 / 1706 手）：`nxt == 桌面主人` 从不命中（0 次，
+因为 nxt 不会绕回自己）；按 nxt 判会误清 34 手、漏清 27 手，其中 27 手会被重建
+成「用对子去压三带二」这种非法响应。改成只看座位与「主人是否出完」后，两类都归零。
 
 等级（`GameLog.trump`）原样透传，本模块不做归一 —— 遇到 1 就是 1、遇到 14 就是 14，
 怎么解释交给下游 net/sim/meld.py（本模块一改，下游就没法自己定了）。
@@ -49,15 +56,16 @@ def decision_points(g: GameLog) -> list[Snapshot]:
     snaps = []
     table = None
     table_seat = None
-    prev_nxt = None
+    prev_left = None           # 上一手之后主人还剩几张；0 = 他刚出完
 
     for p in g.plays:
         if table is not None:
             partner = (table_seat + 2) % 4
-            # 两种情况都是「新领出」：
+            # 清桌只有两种情况：
             #   1) 同一座位又出牌了 —— 其余三家都要不起，他重新领出
-            #   2) 服务器说下一手轮到桌面主人（或队友接风）—— 这一轮走完了
-            if p.seat == table_seat or prev_nxt in (table_seat, partner):
+            #   2) 队友接风 —— 上一手的主人已经出完，队友接着领出
+            # 注意 2) 的判据是「主人出完了」（prev_left == 0），不是「nxt 指到队友」。
+            if p.seat == table_seat or (p.seat == partner and prev_left == 0):
                 table = None
 
         snaps.append(Snapshot(seat=p.seat,
@@ -79,5 +87,5 @@ def decision_points(g: GameLog) -> list[Snapshot]:
 
         table = list(p.cards)
         table_seat = p.seat
-        prev_nxt = p.nxt
+        prev_left = p.left
     return snaps
