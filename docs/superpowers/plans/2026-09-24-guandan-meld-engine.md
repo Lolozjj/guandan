@@ -794,11 +794,17 @@ _POINT = {**{i: i - 1 for i in range(2, 11)}, 11: 10, 12: 11, 13: 12, 1: 13}
 POINT_LEVEL, POINT_SMALL, POINT_BIG = 14, 15, 16
 
 _MIN_BOMB = 4
-_MAX_BOMB = 8          # 两副牌，一个点数最多 8 张
+# 两副牌一个点数最多 8 张，**再加最多 2 张逢人配 = 10**。
+# 真实数据里就有一手 9 张炸：J♠J♠(二副) J♥J♥(二副) J♣J♣(二副) J♦J♦(二副) + 3♥
+# （打 3 时 ♥3 是逢人配，card_type=10）。定成 8 会让它枚举不出来。
+_MAX_BOMB = 10
 
-_BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6}
+# 炸弹阶层。4炸<5炸<同花顺<6炸<7炸<8炸 是**用户口述 + 24 对真实证据**（0 矛盾）；
+# **9炸 / 10炸 的位置是自然延伸，数据未验** —— 数据里有 9 张炸的实例，但没有
+# 「9炸与别的炸对压」的证据。遇到反例从这里查。
+_BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8}
 CLASS_FLUSH = 3
-CLASS_JOKER_BOMB = 7
+CLASS_JOKER_BOMB = 9
 
 
 def norm_level(level: Optional[int]) -> Optional[int]:
@@ -867,7 +873,8 @@ def bomb_class(m: Meld) -> Optional[int]:
     if m.kind in (BOMB, BOMB6):
         cls = _BOMB_CLASS_BY_SIZE.get(m.size)
         if cls is None:
-            raise ValueError(f"不认识的炸弹张数 {m.size}（牌 {m.cards}）")
+            raise ValueError(
+                f"不认识的炸弹张数 {m.size}（合法 {_MIN_BOMB}~{_MAX_BOMB}，牌 {m.cards}）")
         return cls
     return None
 
@@ -1716,8 +1723,11 @@ def check_wildcard() -> Result:
     """④ 逢人配专项。"""
     r = Result("④ 逢人配")
     level = 5
-    wilds = [32 + 5, 32 + 5 + 256]               # ♥5 与 ♥5(二副)
-    naturals = [64 + 5, 48 + 5]                  # ♦5 ♣5
+    wilds = [32 + 5, 32 + 5 + 256]               # ♥5 / ♥5(二副)
+    # ⚠️ 必须用**非级牌**的点数（6，不是 5）。用 5 的话两张 ♥5 本身就是两张 5，
+    # n=2 时天然就是四炸、wild_used == 0，而「天然优先」要求它必须是 0 ——
+    # 断言 wild_used > 0 会与本任务的硬规格直接冲突。
+    naturals = [64 + 6, 48 + 6, 16 + 6]          # ♦6 ♣6 ♠6
 
     for n in (0, 1, 2):
         r.total += 1
@@ -1726,7 +1736,7 @@ def check_wildcard() -> Result:
                  if m.kind == meld.BOMB]
         if n == 0:
             if bombs:
-                r.bad.append("没有逢人配时，两张 5 不该有炸弹")
+                r.bad.append("没有逢人配时，三张 6 不该有炸弹")
         elif not any(m.wild_used > 0 for m in bombs):
             r.bad.append(f"{n} 张逢人配时应当能补出炸弹")
 
