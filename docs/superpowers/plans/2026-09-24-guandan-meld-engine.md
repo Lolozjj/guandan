@@ -819,7 +819,17 @@ class Meld:
 
 
 def _all_jokers(ids) -> bool:
-    return (len(ids) == 4
+    """四张牌全是王（大小王各两张，即天王炸）。
+
+    先过 `cards.is_card` 再取 `parts`：单测里允许用占位整数当 cards（比较关系
+    只取决于 kind/size/rank），不该为此炸 KeyError。真实牌局里 cards 全是合法牌 ID，
+    这一层零影响。
+
+    注意 `len(ids) == 4` 会**短路**，所以只有恰为 4 张的占位 Meld 会触发这条 ——
+    brief 最初没加这层保护时，恰好是 2 个测试失败（test_bomb_order_matches_user_spec
+    与 test_bomb_beats_normal_and_not_reverse）。
+    """
+    return (len(ids) == 4 and all(cards.is_card(c) for c in ids)
             and all(cards.parts(c)[0] in (JOKER_SMALL, JOKER_BIG) for c in ids))
 
 
@@ -929,7 +939,11 @@ def legal_moves(hand: Sequence[int], table: Optional[Meld],
 - [ ] **Step 4: 跑测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_meld_basic.py -q`
-Expected: `13 passed`
+Expected: `15 passed`
+
+⚠️ **如果照着上面 `_all_jokers` 的最初写法（不带 `is_card` 保护）跑，会看到
+`13 passed, 2 failed`（`KeyError: 0`）—— 那不是你写错了，是 brief 原代码的真缺陷。**
+测试用占位整数构造 Meld 来隔离比较逻辑，`cards.parts` 对非牌 ID 会崩。
 
 - [ ] **Step 5: 提交**
 
@@ -1834,7 +1848,8 @@ git commit -m "refactor: live/rules.py 改为 net/sim/meld.py 的适配层"
 
 - [ ] `.venv/Scripts/python.exe -m pytest tests/ -q` 全绿
 - [ ] `.venv/Scripts/python.exe -m tools.accept_meld` 四项 `[OK]`，退出码 0
-- [ ] `net/sim/meld.py` 里除适配层那几行外，没有牌名字符串字面量
+- [ ] `net/sim/meld.py` 的**代码路径**里没有牌名字符串字面量
+      （docstring 里为说明 `live/rules.py` 历史 bug 而提到的 `"10"` / `"T"` 属散文，不算）
 - [ ] `git log --oneline` 有 8 个任务提交
 
 ## 下一步（不在本计划内）
