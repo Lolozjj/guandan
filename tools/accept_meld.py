@@ -286,7 +286,23 @@ CHECKS = [check_real_moves, check_beats_from_records, check_invariants,
 _LOG_FED = (check_real_moves, check_beats_from_records)
 
 
+def _utf8_stdout() -> None:
+    """把输出流切到 UTF-8。
+
+    **不改这里，全绿也会返回 1。** 最后那行「验收全绿 ✓」的 U+2713 不在 GBK 里：
+    stdout 直连控制台时 Python 走 Windows 控制台 API（PEP 528，本身 UTF-8）不受
+    影响，但**一旦被重定向或接管道**（CI、`> out.txt`、`| tee`）就退回本地编码
+    cp936，`print` 直接 `UnicodeEncodeError: 'gbk' codec can't encode character
+    '\\u2713'` —— 四项全绿却 exit 1。验收脚本报假红比报假绿好不到哪去，
+    而且恰恰在最需要留证据（存日志）的时候犯。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 def main() -> int:
+    _utf8_stdout()
     games = load_games()
     print(f"载入对局 {len(games)} 局，其中有结算的 "
           f"{sum(1 for g in games if g.settle)} 局\n")
