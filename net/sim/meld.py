@@ -492,3 +492,92 @@ def legal_moves(hand: Sequence[int], table: Optional[Meld],
     if table is None:
         return moves
     return [m for m in moves if beats(m, table)]
+
+
+# ------------------------------------------------- 适配层用的名字转换
+# 只在 live/rules.py 这个适配层里用；本模块内部一律用 ID。
+# 这是**全项目唯一允许出现牌名字符串**的地方（spec §2.3：旧 live/rules.py 的
+# "10" vs "T" 就是字符串处理惹的祸，所以边界只留一处，别处一律走 ID）。
+#
+# 一条铁律：**认不出的名字一律抛 ValueError**。悄悄当成某张牌 = 把识别错误
+# 洗成合法结果，比崩掉危险得多（live/ 那条线的输入是模型识别出来的）。
+
+_SUIT_LETTER = {"S": "♠", "H": "♥", "C": "♣", "D": "♦"}
+_SUIT_BASE = {"♠": 16, "♥": 32, "♣": 48, "♦": 64}
+_RANK_LETTER = {"A": 1, "J": 11, "Q": 12, "K": 13}
+_JOKER_BASE = {"JOKER_SMALL": JOKER_SMALL, "JOKER_BIG": JOKER_BIG}
+_DECKS = (1, 2)
+_DECK_SHIFT = 256          # 第二副 = 第一副 + 256（net/cards.py 的编码，王也是）
+
+
+def cid_from_name(name: str, deck: int = 1) -> int:
+    """牌面名 -> 牌 ID。'S3' / 'H10' / 'SA' / 'JOKER_BIG' / 'JOKER_SMALL'。
+
+    花色字母打头、点数在后（与 live/rules.py 的调用方一致），**不是** net/cards.py
+    `decode()` 那种「10♠」的显示格式 —— 两者不是互逆的，别混用（见 `name_from_cid`）。
+    """
+    if deck not in _DECKS:
+        raise ValueError(f"认不出的副数：{deck!r}（只有 1 / 2）")
+    shift = _DECK_SHIFT if deck == 2 else 0
+    if name.startswith("JOKER"):
+        base = _JOKER_BASE.get(name)
+        if base is None:
+            raise ValueError(f"认不出的王：{name!r}（只有 JOKER_SMALL / JOKER_BIG）")
+        return base + shift
+    if len(name) < 2:
+        raise ValueError(f"认不出的牌名：{name!r}（形如 'S3' / 'H10'）")
+    letter, rank = name[0], name[1:]
+    suit = _SUIT_LETTER.get(letter)
+    if suit is None:
+        raise ValueError(f"认不出的花色：{name!r}（只有 S/H/C/D 打头）")
+    idx = _RANK_LETTER.get(rank)
+    if idx is None:
+        if not rank.isdigit() or not 2 <= int(rank) <= 10:
+            raise ValueError(f"认不出的点数：{name!r}（2~10 / J / Q / K / A）")
+        idx = int(rank)
+    return _SUIT_BASE[suit] + idx + shift
+
+
+def name_from_cid(cid: int) -> str:
+    """牌 ID -> **人读显示**牌面（同 net/cards.py：77 -> 'K♦'，332 -> 'Q♦(二副)'）。
+
+    ⚠️ 显示格式（点数在前），与 `cid_from_name` 的入参格式（花色字母在前）**不同**，
+    所以 `cid_from_name(name_from_cid(c))` 会抛错。要往返请直接用 ID。
+    """
+    return cards.decode(cid)
+
+
+_KIND_NAMES = {
+    SINGLE: "单张", PAIR: "对子", TRIPLE: "三张", STRAIGHT: "顺子",
+    TRIPLE_PAIR: "三带二", PAIR_RUN: "连对", PLATE: "钢板",
+    STRAIGHT_FLUSH: "同花顺",
+}
+
+
+def describe_meld(m: Meld) -> str:
+    """牌型 -> 中文名（旧 live/rules.py 的返回口径：炸弹带张数、天王炸单列）。"""
+    if _all_jokers(m.cards):
+        return "四大天王"
+    if m.kind in (BOMB, BOMB6):
+        return f"{m.size} 张炸"
+    return _KIND_NAMES[m.kind]
+
+
+def level_idx(level) -> Optional[int]:
+    """级别 -> 点数索引。接受 1~13 或 'A'/'J'/'Q'/'K'/'2'..'10'。
+
+    旧接口给的 level 是**字符串**（'2'..'10' / 'J' / 'Q' / 'K' / 'A'），
+    引擎要的是**整数 idx**，转换只在这里做（A=1，与日志的 Trump 字段同口径；
+    `norm_level` 会再把 14 折回 1）。认不出的级别抛 ValueError —— 不返回 None
+    蒙混过去，`None` 只表示「没有级牌」这一个合法含义。
+    """
+    if level is None:
+        return None
+    if isinstance(level, int):
+        return level
+    text = str(level).strip().upper()
+    if text in _RANK_LETTER:
+        return _RANK_LETTER[text]
+    if text.isdigit():
+        return int(text)
+    raise ValueError(f"认不出的级别：{level!r}（'2'~'10' / 'J' / 'Q' / 'K' / 'A'）")
