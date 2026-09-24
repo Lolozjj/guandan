@@ -1,0 +1,27 @@
+# ---- 环境 ----
+.venv/
+__pycache__/
+*.pyc
+
+# ---- 大体量数据（可重新生成，合计约 2.3 GB）----
+dataset/
+dataset_v2/
+runs/
+snapshots/
+audit/
+assets/
+shots/
+results/
+live/frames/
+
+# ---- 权重与图像、日志 ----
+*.pt
+*.onnx
+*.png
+*.jpg
+*.log
+
+# ---- 运行时产物（追加写、会一直长大）----
+net/events.jsonl
+net/mitm.log
+live/panel.log
