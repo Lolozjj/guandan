@@ -160,7 +160,8 @@ def test_loads_games():
     assert len(games) > 0, "日志目录在，却一局都没解出来 —— 不要静默通过"
     for g in games[:5]:
         assert len(g.my_cards) == 27
-        assert 1 <= g.trump <= 13
+        # 日志偶尔用 14 表示 A（net/cards.py 里也踩过这条），所以上限放到 14
+        assert 1 <= g.trump <= 14
 
 
 def test_settled_games_are_conserved():
@@ -392,6 +393,20 @@ def test_hand_never_grows():
             prev[s.seat] = len(s.hand)
 
 
+def test_same_seat_playing_again_is_a_new_lead():
+    """同一座位连续出两手 = 其余三家都要不起 = 他重新领出，桌面必须清空。
+
+    漏了这条，会把「他重新领出」误当成「他压自己」，验收①就会报假红。
+    """
+    for g in _settled()[:20]:
+        snaps = decision_points(g)
+        prev = None
+        for s in snaps:
+            if prev is not None and s.seat == prev.seat:
+                assert s.table is None,                     f"{g.t0} 座位{s.seat} 连续出牌，桌面却没清空"
+            prev = s
+
+
 def test_first_snapshot_is_a_lead():
     """本局第一手的桌面必须是空的。"""
     for g in _settled()[:10]:
@@ -465,10 +480,12 @@ def decision_points(g: GameLog) -> list:
     prev_nxt = None
 
     for p in g.plays:
-        if table is not None and p.seat != table_seat:
-            # 上一手之后服务器说轮到桌面主人（或队友接风）-> 一轮走完 -> 重新领出
+        if table is not None:
             partner = (table_seat + 2) % 4
-            if prev_nxt in (table_seat, partner):
+            # 两种情况都是「新领出」：
+            #   1) 同一座位又出牌了 —— 其余三家都要不起，他重新领出
+            #   2) 服务器说下一手轮到桌面主人（或队友接风）—— 这一轮走完了
+            if p.seat == table_seat or prev_nxt in (table_seat, partner):
                 table = None
 
         snaps.append(Snapshot(seat=p.seat,
@@ -553,6 +570,14 @@ def C(*names):
 def test_point_value_level_card_beats_ace():
     assert meld.point_value(5, 5) > meld.point_value(1, 5)     # 打5，5 比 A 大
     assert meld.point_value(1, 5) > meld.point_value(13, 5)    # A 比 K 大
+
+
+def test_norm_level_ace_written_as_14():
+    """日志里 A 可能写成 14，必须归一成 1，否则会被当成小王。"""
+    assert meld.norm_level(14) == 1
+    assert meld.norm_level(5) == 5
+    assert meld.point_value(1, 14) == meld.point_value(1, 1)
+    assert meld.point_value(14, 14) == meld.point_value(14, 1)   # 小王不变
 
 
 def test_point_value_level_two_and_ace():
@@ -727,7 +752,17 @@ CLASS_FLUSH = 3
 CLASS_JOKER_BOMB = 7
 
 
+def norm_level(level: Optional[int]) -> Optional[int]:
+    """级别归一。**日志里偶尔用 14 表示 A**（net/cards.py 的 sort_key 也处理过这条），
+    不归一的话 14 会被当成小王，级牌判定与顺子权重全错。
+    """
+    if level == 14:
+        return 1
+    return level
+
+
 def point_value(idx: int, level: Optional[int]) -> int:
+    level = norm_level(level)
     if idx == JOKER_BIG:
         return POINT_BIG
     if idx == JOKER_SMALL:
@@ -739,6 +774,7 @@ def point_value(idx: int, level: Optional[int]) -> int:
 
 def is_wild(cid: int, level: Optional[int]) -> bool:
     """级牌红桃 = 逢人配（万能牌）。"""
+    level = norm_level(level)
     if level is None:
         return False
     idx, suit, _ = cards.parts(cid)
@@ -845,6 +881,7 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
 
     逢人配在这里**当作它自己那张级牌**参与枚举（Task 6 再加替代能力）。
     """
+    level = norm_level(level)
     g = _by_idx(hand)
     out = _melds_basic(hand, level)
     triples = [(i, v[:3]) for i, v in g.items()
@@ -1051,6 +1088,7 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
     pairs = [(i, v[:2]) for i, v in g.items()
              if i < JOKER_SMALL and len(v) >= 2]
     out += _melds_triple_pair(level, triples, pairs)
+    out += _melds_joker_bomb(hand)          # <-- 别漏！Task 4 加的，漏了天王炸就没了
     out += _melds_straights(g, level)
     out += _melds_pair_run(g, level)
     out += _melds_plate(g, level)
@@ -1419,30 +1457,80 @@ def check_real_moves(games=None) -> Result:
     return r
 
 
-def check_beats_from_records(games=None) -> Result:
-    """② 从真实对局反推的「谁压谁」，beats() 必须逐条一致。
+def _bomb_pairs(g):
+    """同一轮内「炸弹 A 之后又出了炸弹 B」的证据对。
 
-    同一轮内后一手压掉前一手 —— 桌面换了就说明新的一手压过了旧的。
+    轮次边界判据与 tools/decision_points.py 一致：同一座位又出牌、或服务器说
+    下一手轮到桌面主人/队友 —— 都是新领出。
+
+    这条**独立于 legal_moves**：它只从出牌序列推「谁大」，所以 ① 全绿它仍可能红。
     """
-    r = Result("② 谁压谁逐条对齐")
+    pairs = []
+    table = None
+    table_seat = None
+    prev_nxt = None
+    for p in g.plays:
+        if table is not None:
+            partner = (table_seat + 2) % 4
+            is_new_lead = (p.seat == table_seat
+                           or prev_nxt in (table_seat, partner))
+            if not is_new_lead:
+                pairs.append((table, p))
+        table = p
+        table_seat = p.seat
+        prev_nxt = p.nxt
+    return pairs
+
+
+def _bomb_pairs(g):
+    """同一轮内「炸弹 A 之后又出了炸弹 B」的证据对。
+
+    轮次边界判据与 tools/decision_points.py 一致：同一座位又出牌、或服务器说
+    下一手轮到桌面主人/队友 —— 都是新领出。
+
+    这条**独立于 legal_moves**：它只从出牌序列推「谁大」，所以 ① 全绿它仍可能红。
+    """
+    pairs = []
+    table = None
+    table_seat = None
+    prev_nxt = None
+    for p in g.plays:
+        if table is not None:
+            partner = (table_seat + 2) % 4
+            is_new_lead = (p.seat == table_seat
+                           or prev_nxt in (table_seat, partner))
+            if not is_new_lead:
+                pairs.append((table, p))
+        table = p
+        table_seat = p.seat
+        prev_nxt = p.nxt
+    return pairs
+
+
+def check_beats_from_records(games=None) -> Result:
+    """② 炸弹层级：真实对局里「炸弹 A 被炸弹 B 压掉」的证据必须逐条成立。
+
+    专门验用户口述的炸弹顺序（4炸<5炸<同花顺<6炸<7炸<8炸<天王炸）。
+    注意「同花顺夹在 5炸与 6炸之间」那半边**用户口述时数据没覆盖**（spec §2.1）
+    —— 跑出来的条数要报出来，是 0 条就说明这段仍未验到。
+    """
+    r = Result("② 炸弹层级（谁压谁）")
     games = load_games() if games is None else games
     for g in games:
         if not g.settle:
             continue
-        prev = None
-        for s in decision_points(g):
-            if prev is not None and prev.table and s.table \
-                    and sorted(prev.table) != sorted(s.table):
-                a = as_meld(prev.table, s.level)
-                b = as_meld(s.table, s.level)
-                if a is None or b is None:
-                    continue
-                r.total += 1
-                if not meld.beats(b, a):
-                    r.bad.append(
-                        f"{g.t0:%m-%d %H:%M} {sorted(prev.table)} -> "
-                        f"{sorted(s.table)} 但 beats() 说压不过")
-            prev = s
+        for a_ids, b_ids in _bomb_pairs(g):
+            a = as_meld(a_ids, g.trump)
+            b = as_meld(b_ids, g.trump)
+            if a is None or b is None:
+                continue
+            if meld.bomb_class(a) is None and meld.bomb_class(b) is None:
+                continue                      # 不是炸弹对，本检查不管
+            r.total += 1
+            if not meld.beats(b, a):
+                r.bad.append(
+                    f"{g.t0:%m-%d %H:%M} {sorted(a_ids)} -> {sorted(b_ids)} "
+                    f"但 beats() 说压不过")
     return r
 
 
