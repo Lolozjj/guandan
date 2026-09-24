@@ -1146,13 +1146,15 @@ def _melds_straights(nat: dict, level) -> list:
             continue
         out.append(Meld(STRAIGHT, _SEQ_LEN, top,
                         tuple(nat[n][0] for n in nats)))
+        # **每个花色都产出，不要 break。** 虽然同花顺比大小只看顶端，
+        # 但手里的同花顺是**具体哪几张**会影响玩家实际能打出的牌：
+        # 同时握着 ♠ 与 ♥ 两套同顶端同花顺时，只留一个代表会让真实打出另一套的
+        # 局面「枚举不出」。上限 4 个/顶端，可忽略。
         for suit in "♠♥♣♦":
             pick = [next((x for x in nat.get(n, [])
                           if cards.parts(x)[1] == suit), None) for n in nats]
             if all(c is not None for c in pick):
-                # 同顶端只需一个代表 —— 同花顺之间比大小只看顶端，花色不影响
                 out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(pick)))
-                break
     return out
 
 
@@ -1382,10 +1384,9 @@ def _melds_wild(g: dict, level, n_wild: int) -> list:
                     miss += 1
                 else:
                     pick.append(c)
-            if 0 < miss <= n_wild:          # miss == 0 是天然的，由 _melds_straights 负责
+            if 0 < miss <= n_wild:      # miss == 0 是天然的，由 _melds_straights 负责
                 out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(pick),
-                                wild_used=miss))
-                break
+                                wild_used=miss))    # 同样不 break，见 Task 5 的说明
 
     for start in range(1, _NAT_MAX - _PAIR_RUN_LEN + 2):
         nats = list(range(start, start + _PAIR_RUN_LEN))
@@ -1537,15 +1538,35 @@ class Result:
         return "\n".join(lines)
 
 
+def _stronger(a, b) -> bool:
+    """同一组牌符合多个牌型时，a 是否比 b 更「强」。"""
+    ca, cb = meld.bomb_class(a), meld.bomb_class(b)
+    if (ca is None) != (cb is None):
+        return ca is not None                 # 炸弹类优先
+    if ca is not None and cb is not None and ca != cb:
+        return ca > cb
+    return a.kind > b.kind
+
+
 def as_meld(ids, level):
     """把一组**具体**的牌判成一个 Meld；判不出返回 None。
 
     这里必须是精确集合 —— 参数就是那一手真实的牌，没有"代表牌"问题。
+
+    ⚠️ **同一组牌可能符合多个牌型，必须取最强的那个：**
+    5 张同花连续的牌**同时**是顺子(kind 4)与同花顺(kind 9)，
+    `melds_from` 先产出顺子。取第一个的话：
+      - 真实打出的同花顺会被当成顺子 -> 验收①对「漏枚举同花顺」完全视而不见
+      - 桌面上的同花顺会被低估成顺子 -> legal_moves 会放进本该压不过的顺子
+    游戏自己也把它叫同花顺（card_type 9）。
     """
+    best = None
     for m in meld.melds_from(list(ids), level):
-        if sorted(m.cards) == sorted(ids):
-            return m
-    return None
+        if sorted(m.cards) != sorted(ids):
+            continue
+        if best is None or _stronger(m, best):
+            best = m
+    return best
 
 
 def shape(m):
