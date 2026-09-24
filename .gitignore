@@ -25,3 +25,4 @@ live/frames/
 net/events.jsonl
 net/mitm.log
 live/panel.log
+.superpowers/
