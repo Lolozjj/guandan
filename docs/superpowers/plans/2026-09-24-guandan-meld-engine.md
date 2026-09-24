@@ -140,7 +140,11 @@ git commit -m "chore: 建 pytest 骨架与 net/sim 包"
 - 出牌行：`NotifyGiveCards 后台通知客户端出牌结果 info = {json}`，字段 `SeatID` `NextTurnSeatID` `CardType` `LeftCardLen` `CardLen` `CardList`。
 - 结算行：`EVA1B001结算协议 = {json}`，字段 `Rank`（**`Rank[i]` = 座位 i 的名次**，i 为 0-based）、`UpgradeInfo`、`LeftCards`（每家剩的牌）。
 - 时间戳格式：`2026-09-22|16:33:00:239|INFO|...`（毫秒用**冒号**分隔，不是点）。
-- 实测：126 个发牌段，其中 55 局有结算，且 **55/55 局「出过的牌 + 结算剩的牌 = 108」分毫不差**。
+- 实测：**63 个真发牌段**，其中 **55 局有结算**，且 **55/55 局「出过的牌 + 结算剩的牌 = 108」分毫不差**。
+- ⚠️ **`SendCardsService set roundID` 前缀共命中 126 行，其中一半是不带 JSON 载荷的伴随行**
+  （同一毫秒、恒定相隔 8 行，形如 `roundID:S7380R1T1669t6AB4E78ES0A`）。
+  **必须显式跳过伴随行**，否则会对它抛 `RuntimeError`；跳过判定要放在「收上一局」之前，
+  否则会把当前局截断成两局。
 
 - [ ] **Step 1: 写失败的测试**
 
