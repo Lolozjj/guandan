@@ -1045,6 +1045,30 @@ def test_straight_flush_requires_same_suit():
     assert meld.STRAIGHT in km
 
 
+def test_straight_flush_survives_card_order():
+    """同花顺不能因为「同点数的杂色牌排在前面」而漏掉。
+
+    两副牌下每个点数必有两张不同花色，所以这是常态而非边角。
+    漏掉不只是少一个建议 —— Task 7 的验收①会把真实打出的同花顺报成枚举不出。
+    """
+    has_flush = C("5♥", "5♠", "6♠", "7♠", "8♠", "9♠")     # 5♠ 排在后面
+    ordered = C("5♠", "5♥", "6♠", "7♠", "8♠", "9♠")
+    for hand, name in ((has_flush, "杂色在前"), (ordered, "同花在前")):
+        sf = [m for m in meld.melds_from(hand, level=2)
+              if m.kind == meld.STRAIGHT_FLUSH]
+        assert len(sf) == 1, f"{name} 的手牌漏了同花顺"
+        assert sf[0].rank == 9
+        assert {meld.cards.parts(c)[1] for c in sf[0].cards} == {"♠"}
+
+
+def test_ace_low_straight_flush_survives_card_order():
+    """A 低窗同样：A♦ 排在 A♥ 前面时不能漏掉 A♥2♥3♥4♥5♥。"""
+    hand = C("A♦", "A♥", "2♥", "3♥", "4♥", "5♥")
+    sf = [m for m in meld.melds_from(hand, level=9)
+          if m.kind == meld.STRAIGHT_FLUSH]
+    assert len(sf) == 1 and sf[0].rank == 5
+
+
 def test_pair_run_is_exactly_three_pairs():
     three = C("4♦", "4♣", "5♦", "5♠", "6♣", "6♠")
     two = C("4♦", "4♣", "5♦", "5♠")
@@ -1105,17 +1129,30 @@ def _idx_for_nat(nat: int) -> int:
     return 1 if nat == _NAT_MAX else nat
 
 
-def _melds_straights(g: dict, level) -> list:
+def _melds_straights(nat: dict, level) -> list:
+    """`nat` = `_seq_lookup(g)`（自然值 -> 牌）。
+
+    ⚠️ **同花顺必须逐花色试，不能只看每格第一张牌。**
+    两副牌下每个点数必有两张不同花色，所以「第一张是杂色」是常态；
+    只看第一张会漏掉真实存在的同花顺（同一手牌换个手序结果就不同）：
+        5♥ 5♠ 6♠ 7♠ 8♠ 9♠  -> 漏（5♠6♠7♠8♠9♠ 明明在手上）
+        5♠ 5♥ 6♠ 7♠ 8♠ 9♠  -> 命中
+    漏掉的后果不只是少一个建议：Task 7 的验收①会把真实打出的同花顺报成「枚举不出」。
+    """
     out = []
-    for start in range(1, _NAT_MAX - _SEQ_LEN + 2):
-        nats = list(range(start, start + _SEQ_LEN))
-        picked = [g.get(_idx_for_nat(n), [None])[0] for n in nats]
-        if any(c is None for c in picked):
+    for top in range(_SEQ_LEN, _NAT_MAX + 1):
+        nats = list(range(top - _SEQ_LEN + 1, top + 1))
+        if any(not nat.get(n) for n in nats):
             continue
-        ids = list(picked)
-        out.append(Meld(STRAIGHT, _SEQ_LEN, nats[-1], tuple(ids)))
-        if len({cards.parts(c)[1] for c in ids}) == 1:
-            out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, nats[-1], tuple(ids)))
+        out.append(Meld(STRAIGHT, _SEQ_LEN, top,
+                        tuple(nat[n][0] for n in nats)))
+        for suit in "♠♥♣♦":
+            pick = [next((x for x in nat.get(n, [])
+                          if cards.parts(x)[1] == suit), None) for n in nats]
+            if all(c is not None for c in pick):
+                # 同顶端只需一个代表 —— 同花顺之间比大小只看顶端，花色不影响
+                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(pick)))
+                break
     return out
 
 
@@ -1327,16 +1364,28 @@ def _melds_wild(g: dict, level, n_wild: int) -> list:
                 out.append(Meld(TRIPLE_PAIR, 5, point_value(t, level),
                                 tuple(g[t]) + tuple(g[p]), wild_used=d))
 
-    for start in range(1, _NAT_MAX - _SEQ_LEN + 2):
-        nats = list(range(start, start + _SEQ_LEN))
+    for top in range(_SEQ_LEN, _NAT_MAX + 1):
+        nats = list(range(top - _SEQ_LEN + 1, top + 1))
         d = _missing(nat, nats, 1)
         if 0 < d <= n_wild:
-            ids = _take(nat, nats, 1)
-            out.append(Meld(STRAIGHT, _SEQ_LEN, nats[-1], ids, wild_used=d))
-            present = [cards.parts(c)[1] for c in ids]
-            if present and len(set(present)) == 1:
-                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, nats[-1], ids,
-                                wild_used=d))
+            out.append(Meld(STRAIGHT, _SEQ_LEN, top, _take(nat, nats, 1),
+                            wild_used=d))
+        # 同花顺单独试，且**要在 `if 0 < d` 之外** —— 每个自然值都有牌、
+        # 但都不是同一花色时，d == 0 而缺的全靠逢人配补。
+        # 同样必须逐花色试（见 _melds_straights 的说明），不能只看 _take 那几张的花色。
+        for suit in "♠♥♣♦":
+            pick, miss = [], 0
+            for n in nats:
+                c = next((x for x in nat.get(n, [])
+                          if cards.parts(x)[1] == suit), None)
+                if c is None:
+                    miss += 1
+                else:
+                    pick.append(c)
+            if 0 < miss <= n_wild:          # miss == 0 是天然的，由 _melds_straights 负责
+                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(pick),
+                                wild_used=miss))
+                break
 
     for start in range(1, _NAT_MAX - _PAIR_RUN_LEN + 2):
         nats = list(range(start, start + _PAIR_RUN_LEN))
