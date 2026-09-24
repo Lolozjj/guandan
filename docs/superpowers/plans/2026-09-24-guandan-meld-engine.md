@@ -1657,7 +1657,8 @@ def _bomb_pairs(g):
             is_new_lead = (p.seat == table_seat
                            or (p.seat == partner and prev_left == 0))
             if not is_new_lead:
-                pairs.append((table, p))
+                # 注意是**牌组**不是 PlayRec —— 交给 as_meld 的是牌 ID 列表
+                pairs.append((table.cards, p.cards))
         table = p
         table_seat = p.seat
         prev_left = p.left
@@ -1691,8 +1692,11 @@ def check_beats_from_records(games=None) -> Result:
     return r
 
 
-def check_invariants() -> Result:
-    """③ 不变量：纯逻辑，不需要真值。"""
+def check_invariants(games=None) -> Result:
+    """③ 不变量：纯逻辑，不需要真值。
+
+    收一个用不到的 `games` 只是为了和 ①② 同一签名，`main()` 才能统一分发。
+    """
     r = Result("③ 不变量")
 
     r.total += 1
@@ -1721,8 +1725,8 @@ def check_invariants() -> Result:
     return r
 
 
-def check_wildcard() -> Result:
-    """④ 逢人配专项。"""
+def check_wildcard(games=None) -> Result:
+    """④ 逢人配专项（签名同 ③，见上）。"""
     r = Result("④ 逢人配")
     level = 5
     wilds = [32 + 5, 32 + 5 + 256]               # ♥5 / ♥5(二副)
@@ -1743,11 +1747,24 @@ def check_wildcard() -> Result:
             r.bad.append(f"{n} 张逢人配时应当能补出炸弹")
 
     r.total += 1
-    hand = [32 + 5, 15, 271, 14]                 # ♥5 + 大王 + 大王(二副) + 小王
-    for m in meld.melds_from(hand, level=level):
-        if m.kind == meld.BOMB and m.size == 4:
-            if not all(meld.cards.parts(c)[0] in (14, 15) for c in m.cards):
-                r.bad.append("王炸里混进了逢人配")
+    # ⚠️ 这手牌必须能真正触发断言。原先写的是「3 张王 + 1 张逢人配」，
+    # 而天王炸要 4 张王 —— `m.size == 4` 永不成立，断言一次都没执行过，
+    # 等于什么都不验证。改成两条能失败的：
+    wild5 = 32 + 5
+    three_jokers = [wild5, 14, 270, 15]                  # 逢人配 + 小王×2 + 大王
+    r.total += 1
+    if any(meld.bomb_class(m) == meld.CLASS_JOKER_BOMB
+           for m in meld.melds_from(three_jokers, level=level)):
+        r.bad.append("3 张王 + 1 张逢人配 不该能出天王炸（逢人配不能当王）")
+
+    four_jokers = [wild5, 14, 270, 15, 271]              # 逢人配 + 四张王
+    r.total += 1
+    jb = [m for m in meld.melds_from(four_jokers, level=level)
+          if meld.bomb_class(m) == meld.CLASS_JOKER_BOMB]
+    if len(jb) != 1:
+        r.bad.append(f"4 张王 + 1 张逢人配 应当恰好有一个天王炸，实得 {len(jb)} 个")
+    elif any(meld.is_wild(c, level) for c in jb[0].cards):
+        r.bad.append("天王炸里混进了逢人配")
     return r
 
 
