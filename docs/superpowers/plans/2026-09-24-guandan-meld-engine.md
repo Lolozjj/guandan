@@ -1538,11 +1538,29 @@ class Result:
 
 
 def as_meld(ids, level):
-    """把一实际的牌组判成一个 Meld；判不出返回 None。"""
+    """把一组**具体**的牌判成一个 Meld；判不出返回 None。
+
+    这里必须是精确集合 —— 参数就是那一手真实的牌，没有"代表牌"问题。
+    """
     for m in meld.melds_from(list(ids), level):
         if sorted(m.cards) == sorted(ids):
             return m
     return None
+
+
+def shape(m):
+    """比较用的**形状**键：(牌型, 张数, 主点数)。**不含具体是哪几张牌。**
+
+    为什么必须要形状键而不是精确牌组：`melds_from` 每个形状只给一个**代表**，
+    而两手牌可能打出同一个形状的不同具体牌（手里同时有 ♠ 与 ♥ 两套同顶端的同花顺、
+    同点数 5 张里挑哪 4 张做炸、两副牌的同名牌……）。用精确牌组比会把它们误报成
+    「枚举不出」，而那正是本验收要抓的失败类的**假阳性**版本。
+
+    炸弹归一：引擎用 `BOMB` 承载 4~8 张，而游戏协议用 card_type 8 表 4~5 张、
+    10 表 6 张 —— 比较时必须先把这两种 kind 归一，否则 6 张炸会假红。
+    """
+    kind = meld.BOMB if m.kind in (meld.BOMB, meld.BOMB6) else m.kind
+    return (kind, m.size, m.rank)
 
 
 def check_real_moves(games=None) -> Result:
@@ -1565,14 +1583,24 @@ def check_real_moves(games=None) -> Result:
                     r.bad.append(f"{g.t0:%m-%d %H:%M} 第{i}手 "
                                  f"桌面牌本身判不出牌型 {sorted(s.table)}")
                     continue
-            moves = meld.legal_moves(s.hand, table=table, level=s.level)
-            if not any(sorted(m.cards) == sorted(s.actual) for m in moves):
+            # 两步：先看真实那一手**本身**能不能判出牌型（精确集合，能抓牌型缺口，
+            # 例如「王当三带二的对子」那种）；再比**形状**是否在候选里
+            # （形状比而非精确集合，因为枚举只给代表，见 shape() 的说明）。
+            real = as_meld(s.actual, s.level)
+            if real is None:
                 r.bad.append(
                     f"{g.t0:%m-%d %H:%M} 第{i}手 座位{s.seat} "
-                    f"真实出 {sorted(s.actual)} 枚举不出"
+                    f"真实出的 {sorted(s.actual)} 本身判不出牌型"
+                    f"（card_type={s.card_type if hasattr(s, 'card_type') else '?'}）")
+                continue
+            moves = meld.legal_moves(s.hand, table=table, level=s.level)
+            if not any(shape(m) == shape(real) for m in moves):
+                r.bad.append(
+                    f"{g.t0:%m-%d %H:%M} 第{i}手 座位{s.seat} "
+                    f"真实出的 {sorted(s.actual)}（{shape(real)}）不在候选里"
                     f"（手牌 {len(s.hand)} 张，"
                     f"桌面 {sorted(s.table) if s.table else '空'}，"
-                    f"候选 {len(moves)} 个）")
+                    f"候选 {len(moves)} 个，形状集 {sorted({shape(m) for m in moves})}）")
     return r
 
 
