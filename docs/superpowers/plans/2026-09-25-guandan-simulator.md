@@ -1808,7 +1808,7 @@ def test_env_step_advances_and_awards_zero_until_the_hand_ends():
     e.reset(level=5, hands=[{A("S3")}, {A("S4")}, {A("S5")}, {A("S6")}], first=0)
     obs, r, done, info = e.step(0)             # 座位 0 出单张
     assert r == 0 and not done and info["seat"] == 0
-    assert obs.turn == 1                       # 轮到下家
+    assert obs.turn == 3                       # 下家是 3（出牌顺序 0→3→2→1，见 Task 1）
     assert obs.left == (0, 1, 1, 1)            # 座位 0 已经出完
 
 def test_terminal_reward_is_awarded_exactly_once_and_equals_the_team_points():

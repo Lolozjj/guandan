@@ -96,19 +96,38 @@ class Hand:
             raise IllegalPlay("这一手已经结束了")
         if self.turn != seat:
             raise IllegalPlay(f"现在轮到 {self.turn}，不是 {seat}")
-        # 从牌面重新判一次，**不用调用方给的 Meld** —— 牌型必须由牌面自己说了算。
-        # `as_meld` 取最强解释：一手同花连续的牌同时是顺子与同花顺，游戏叫它同花顺
-        # （`meld.strongest` 的 docstring 记了这条为什么只能有一份实现）。
-        judged = meld.as_meld(list(m.cards), self.level)
-        if judged is None:
-            raise IllegalPlay(f"不是合法牌型：{cards.decode_all(list(m.cards))}")
-        cs = set(judged.cards)
+        cs = set(m.cards)
         if not cs <= self.hands[seat]:
             raise IllegalPlay("座位%d 打出了手上没有的牌 %s"
                               % (seat, cards.decode_all(sorted(cs - self.hands[seat]))))
-        if self.table is not None and not meld.beats(judged, self.table):
-            raise IllegalPlay("压不过桌面：%s vs %s"
-                              % (meld.describe_meld(judged), meld.describe_meld(self.table)))
+        # ⚠️ **不能只用 `as_meld` 判一次就定案。** 实测 `as_meld(这组牌)` 与
+        # `melds_from(整手牌)` 会对**同一套牌**给出不同的读法（逢人配在场时最容易）：
+        # 随机自对弈 seed=16 那局（打 6），`melds_from` 给出一个 rank=13 的三带二，
+        # 而 `as_meld(那 5 张)` 给出 rank=1 —— 于是「`actions()` 把它当候选列出来、
+        # `play()` 却判压不过桌面」，一手牌走到中途就抛。
+        #
+        # 所以先看**手上这组牌的全部读法**（权威来源是 `melds_from(整手牌)`：
+        # 逢人配能不能用取决于手里还有什么，只看子集枚举会不全），
+        # 从中取压得过桌面的那条。
+        readings = [x for x in meld.melds_from(sorted(self.hands[seat]), self.level)
+                    if set(x.cards) == cs]
+        if readings:
+            good = [x for x in readings
+                    if self.table is None or meld.beats(x, self.table)]
+            if not good:
+                raise IllegalPlay("压不过桌面：%s vs %s"
+                                  % (meld.describe_meld(m), meld.describe_meld(self.table)))
+            judged = max(good, key=lambda x: (x.kind, x.rank))
+        else:
+            # 回放真实对局的路径：调用方给的是 `as_meld(真实牌张)`，它的牌张未必与
+            # 枚举出来的「代表」逐张相同（同形状换了花色），所以上面那条为空。
+            judged = meld.as_meld(sorted(cs), self.level)
+            if judged is None:
+                raise IllegalPlay(f"不是合法牌型：{cards.decode_all(sorted(cs))}")
+            if self.table is not None and not meld.beats(judged, self.table):
+                raise IllegalPlay("压不过桌面：%s vs %s"
+                                  % (meld.describe_meld(judged),
+                                     meld.describe_meld(self.table)))
 
         self.hands[seat] -= cs
         if not self.hands[seat] and seat not in self.order:

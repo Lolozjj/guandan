@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -139,3 +140,154 @@ def observe(hand: "rules.Hand", seat: int, played, table_meld: Optional["meld.Me
         turn=hand.turn,
         level=hand.level,
     )
+
+
+# ---------------------------------------------------------------- 动作编码
+
+#: spec §4.2：牌型 10 + 主点数 15 + 张数 9 + 逢人配 1 + 牌 108
+ACTION_DIM = 10 + 15 + 9 + 1 + 108
+assert ACTION_DIM == 143
+
+_A_OFF_KIND = 0
+_A_OFF_RANK = 10
+_A_OFF_SIZE = 25
+_A_OFF_WILD = 34
+_A_OFF_CARDS = 35
+
+#: 张数那一格：1..8 张 -> 0..7；**≥9 张或天王炸 -> 8**。
+#: spec §4.2 写的是「1~8 张 + 天王炸」，但掼蛋里还有 9 炸 / 10 炸（8 张同点 + 逢人配），
+#: 9 格装不下。这里把它们并进第 8 格 —— **不丢信息**，因为牌 multi-hot(108)
+#: 已经把这手牌是什么完全写清楚了，张数格只是给网络的一个提示。
+_SIZE_COMPOSITE = 8
+
+
+def encode_action(m, level: int) -> np.ndarray:
+    """一个候选着法 -> 143 维 float32。**`None`（过）编成全 0。**
+
+    ⚠️ 主点数那一格的口径与 `Meld.rank` 一致，而 `rank` 在两种口径之间：
+    序列类（顺子/连顺/钢板）存的是**自然值**（A 可作 1 或 14），
+    其余存的是 `meld.point_value`（级牌 14、王 15/16）。
+    天王炸的 `rank` 是 0。**所以这一格跨牌型不是单射** ——
+    真正的判别力在牌 multi-hot 上，这一格是给网络的便捷特征。
+    """
+    v = np.zeros(ACTION_DIM, dtype=np.float32)
+    if m is None:
+        return v                          # 「过」= 全 0（没有牌型、没有牌）
+    v[_A_OFF_KIND + m.kind - 1] = 1.0
+    v[_A_OFF_RANK + _rank_slot(m.rank)] = 1.0
+    if m.size >= 9 or meld.bomb_class(m) == meld.CLASS_JOKER_BOMB:
+        v[_A_OFF_SIZE + _SIZE_COMPOSITE] = 1.0
+    else:
+        v[_A_OFF_SIZE + m.size - 1] = 1.0
+    if m.wild_used:
+        v[_A_OFF_WILD] = 1.0
+    for c in m.cards:
+        v[_A_OFF_CARDS + cards.slot(c)] = 1.0
+    return v
+
+
+# ---------------------------------------------------------------- 环境
+
+@dataclass
+class EnvConfig:
+    """一手牌怎么开局。
+
+    `tribute=False`（默认）**不走进贡**：发牌后直接由 `first` 或随机座位领出。
+    理由见 spec §13.1 —— 一手一个 episode 时，进贡要依赖**上一手的名次**，
+    而训练时那个名次是采样的；`tribute=True` 配合 `prev_ranks` 才用得上。
+    **进贡规则本身已经实现并验过（Task 4 / 6），这里只是训练时开不开。**
+    另外进贡那条基线本身还不稳（spec §13.8：贡最大的牌只对了 18/25），
+    所以默认关着也顺带把那份不确定性挡在训练之外。
+    """
+    tribute: bool = False
+    level: Optional[int] = None       # None -> 每局从 1..13 采一个
+    seed: int = 0
+
+
+class GuandanEnv:
+    """一手牌的自对弈环境。
+
+    **`self.hand` 是明牌的 `rules.Hand`，绝不能交给策略。** 策略只能拿到
+    `observe()` 出来的 `Observation` 和 `encode_*` 的向量。
+    """
+
+    def __init__(self, cfg: EnvConfig = None, seed: int = None):
+        self.cfg = cfg or EnvConfig()
+        self.rng = random.Random(self.cfg.seed if seed is None else seed)
+        self.hand: Optional[rules.Hand] = None
+        self._played = {s: set() for s in rules.SEATS}
+        self._last_actor = None
+
+    # ------------------------------------------------------------ 开局
+
+    def reset(self, level=None, hands=None, first=None, prev_ranks=None) -> Observation:
+        lv = level if level is not None else self.cfg.level
+        if lv is None:
+            lv = self.rng.randint(1, 13)
+        h = rules.new_hand(self.rng, level=lv, hands=hands, first=first)
+        if self.cfg.tribute or prev_ranks is not None:
+            rules.apply_tribute(h, prev_ranks)      # 会顺手把 turn 设成先出者
+        self.hand = h
+        self._played = {s: set() for s in rules.SEATS}
+        self._last_actor = None
+        return self.observe()
+
+    # ------------------------------------------------------------ 查询
+
+    @property
+    def done(self) -> bool:
+        return self.hand.over
+
+    @property
+    def ranks(self) -> list:
+        return self.hand.ranks() if self.hand.over else None
+
+    def legal(self) -> list:
+        """当前该谁出，他的候选（含 `None` = 过）。"""
+        return self.hand.actions(self.hand.turn)
+
+    def observe(self, seat: int = None) -> Observation:
+        a = self.hand.turn if seat is None else seat
+        return observe(self.hand, a, self._played, self.hand.table)
+
+    # ------------------------------------------------------------ 一步
+
+    def step(self, index: int):
+        """走第 `index` 个候选。返回 `(obs, reward, done, info)`。
+
+        `reward` 只在**这一手结束的那一步**非零，且是**出牌人所在队**的收益
+        （spec §5.4 的零点五口径）。中间步恒为 0 —— 牌类游戏中间没有即时反馈，
+        DMC 的做法是拿终局 reward 当所有决策点的回归目标，那在训练循环里做。
+        """
+        seat = self.hand.turn
+        acts = self.legal()
+        if not 0 <= index < len(acts):
+            raise rules.IllegalPlay(f"动作下标 {index} 越界（候选 {len(acts)} 个）")
+        chosen = acts[index]
+        self.hand.play(seat, chosen)
+        if chosen is not None:
+            self._played[seat] |= set(chosen.cards)
+        self._last_actor = seat
+
+        r = 0.0
+        if self.hand.over:
+            r = rules.reward(self.hand.ranks(), seat)
+        info = {"seat": seat, "meld": chosen}
+        return self.observe(), r, self.hand.over, info
+
+    # ------------------------------------------------------------ 自对弈
+
+    def rollout(self, policy) -> list:
+        """跑完一手牌，返回每个决策点 `(obs, 候选, 选中下标, 出牌人)`。
+
+        `policy(obs, actions) -> index`。`rules.reward` 的终局值由调用方回填 ——
+        这里只负责把决策点如实记下来。
+        """
+        out = []
+        obs = self.observe()
+        while not self.done:
+            acts = self.legal()
+            i = policy(obs, acts)
+            out.append((obs, acts, i, self.hand.turn))
+            obs, _r, _done, _info = self.step(i)
+        return out
