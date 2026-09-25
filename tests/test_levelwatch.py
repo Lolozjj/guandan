@@ -69,3 +69,21 @@ def test_nothing_readable_means_no_level(tmp_path):
     w = LevelWatcher(log_dir=d)
     assert w.poll() is None
     assert w.level is None
+
+
+def test_it_looks_far_enough_back_on_the_first_read(tmp_path):
+    """**首次**读要往前看够远：结算行可能落在 300KB 之外。
+
+    实测踩过：今天那局日志 7 分钟长了 2.4 MB，06:51 的结算行根本不在
+    最后 300 KB 里 —— 级别读成 None，于是又是「一局全跳过」。
+    """
+    d = _log(tmp_path)                       # 先建目录
+    p = os.path.join(d, "2026-09-26-06.log")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(SETTLE + "\n")              # 关键的结算行在最前面
+        for i in range(4000):                # 后面灌 4000 行噪声（约 0.5 MB）
+            fh.write(f"2026-09-26|06:52:{i % 60:02d}:000|INFO|G|t|520|520|1|"
+                     f"噪声噪声噪声噪声噪声噪声噪声噪声 {i}\n")
+    assert os.path.getsize(p) > LevelWatcher.TAIL
+    w = LevelWatcher(log_dir=d)
+    assert w.poll() == 11, "首次读要往前看够远，别只看尾部"

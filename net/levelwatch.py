@@ -37,7 +37,12 @@ class LevelWatcher:
     只看每个文件的尾部：日志动辄几 MB，全扫一遍没必要。
     """
 
-    TAIL = 300_000          # 每次读文件最后这么多字节
+    #: 稳态跟读时每次回看这么多字节（够接上上一次的位置）
+    TAIL = 300_000
+    #: **首次**读往前看这么多字节。别只按 TAIL 看尾部 —— 实测踩过：
+    #: 今天那局日志 7 分钟长了 2.4 MB，06:51 的结算行（级别的唯一来源）
+    #: 根本不在最后 300 KB 里，级别读成 None，于是「一局 20 个决策点全跳过」。
+    FIRST_TAIL = 8_000_000
 
     def __init__(self, log_dir=LOG_DIR):
         self.log_dir = log_dir
@@ -61,7 +66,8 @@ class LevelWatcher:
                 continue
             start = self._pos.get(f)
             if start is None or size < start:
-                start = max(0, size - self.TAIL)     # 首次只看尾部
+                # 首次往前多看一截（见 FIRST_TAIL 的注释）
+                start = max(0, size - self.FIRST_TAIL)
             if size <= start:
                 continue
             with open(f, "rb") as fh:

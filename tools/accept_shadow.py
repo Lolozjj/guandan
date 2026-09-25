@@ -212,6 +212,12 @@ def run(capture=None, log_dir=None) -> list:
     deals = sorted(steps_by_deal)
     per_deal = {}
     levels = {}
+    # **按时间配对，不用 zip。** `net/raw.jsonl` 是**累积**的（不同场次的帧会追加在
+    # 一起），zip 会按位置硬配 —— 配不上的那些局就被**静默丢掉**（实测：今天那一局
+    # 的 11 个决策点因此没进 ②④⑥）。配不上的要报出来，不许装作没有。
+    if len(deals) != len(games):
+        r1.note += (f"。⚠️ 抓包里有 {len(deals)} 局、真值只覆盖 {len(games)} 局 —— "
+                    f"抓包是累积的（不同场次的帧混在一起），这次只验了能配上的那些")
     for deal, g in zip(deals, games):
         lme, hit = my_log_seat(g)
         r1.total += 1
