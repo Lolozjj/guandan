@@ -167,6 +167,16 @@ def newest_weights(root: str = "runs/rl") -> Optional[str]:
     return max(found, key=os.path.getmtime) if found else None
 
 
+def resolve_weights(path: str = None) -> Optional[str]:
+    """**这一版实际会加载哪份权重 —— 只有这一处口径。**
+
+    `load_net` 与影子日志的溯源字段都走它。分开写会漂：面板原来一边
+    `load_net()`（吃 `GUANDAN_WEIGHTS`）、一边把 `newest_weights()` 记进日志，
+    设了环境变量之后 session 行说的就是另一个文件。
+    """
+    return path or os.environ.get("GUANDAN_WEIGHTS") or newest_weights()
+
+
 def load_net(path: str = None, device: str = "cpu") -> Tuple[Optional[object], str]:
     """加载权重。返回 `(net, 错误说明)`；**加载失败不抛异常**（面板不许因为这个崩）。
 
@@ -177,7 +187,7 @@ def load_net(path: str = None, device: str = "cpu") -> Tuple[Optional[object], s
 
     from train.net import QNet
 
-    p = path or os.environ.get("GUANDAN_WEIGHTS") or newest_weights()
+    p = resolve_weights(path)
     if not p:
         return None, f"找不到权重（{os.environ.get('GUANDAN_WEIGHTS') or 'runs/rl/*/best.pt'}）"
     if not os.path.exists(p):

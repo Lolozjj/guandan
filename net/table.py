@@ -378,11 +378,11 @@ def main():
     args = ap.parse_args()
     st = GameState()
     sh = None
+    # 建记录器只有**一处**（`shadow.open_shadow`）—— launcher 也走它
+    sh = None
     if not args.no_advice:
-        from . import advise, shadow
-        net, err = advise.load_net()
-        sh = shadow.ShadowLog(net=net, weights=advise.newest_weights() or "",
-                              weights_note=err)
+        from . import shadow
+        sh = shadow.open_shadow()
         print(sh.last_line)
     if args.replay:
         run_replay(st, args.capture or default_capture(), seconds=args.seconds,

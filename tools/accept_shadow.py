@@ -343,7 +343,7 @@ def run(capture=None, log_dir=None) -> list:
             r6.bad.append(f"局 {rec['deal']} 位置 {rec['pos']}："
                           f"记录里的级别 {rec['level']} ≠ 本局 Trump {d['g'].trump}")
 
-    # 顺带量一下：**故意不刷新级别**时，有多少决策点会带着上一局的级别
+    # 顺带量一下：**故意按日志的滞后刷新级别**时，有多少决策点会带着上一局的级别
     # （实时那条路日志要 ~20 秒才写到，这段窗口有多大，只报不判）
     tmp2 = os.path.join(tmpdir, "shadow-lag.jsonl")
     _s2, _st2, _me2, recs2, _b2 = wire_pass(frames, net, tmp2, levels=levels, lag=True)
@@ -352,10 +352,13 @@ def run(capture=None, log_dir=None) -> list:
         d = per_deal.get(rec["deal"])
         if d is not None and rec["level"] != d["g"].trump:
             stale.append(rec["deal"])
-    r6.note = (f"级别刷新滞后（故意不换的那种跑法）："
-               f"{len(stale)}/{len([r for r in recs2 if r['type'] == 'decision'])} "
-               f"个决策点会带着上一局的级别"
-               + ("（这次的窗口恰好被「座位未确认」那段盖住了）" if not stale else ""))
+    n_lag = len([r for r in recs2 if r["type"] == "decision"])
+    r6.note = (f"级别刷新滞后（按真实帧时间戳模拟日志那 {LEVEL_LAG:.0f} 秒落盘延迟）："
+               f"{len(stale)}/{n_lag} 个决策点会带着上一局的级别。"
+               f"⚠️ **这条在本素材上没能真正试到风险时序**：两局的第一个决策点分别出现在"
+               f"开局后 +85 秒与 +44 秒，都远晚于滞后窗口；"
+               f"「一开局就轮到我」（日志还没追上）不在素材覆盖范围内 —— "
+               f"见交付台账第六节「已知限制」。")
     return out
 
 

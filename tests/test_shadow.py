@@ -146,3 +146,82 @@ def test_it_stays_silent_when_the_model_is_missing(tmp_path):
     log.close()
     assert not log.enabled and "找不到权重" in log.last_line
     assert not out.exists(), "降级之后不该产出任何文件"
+
+
+# ---------------------------------------------------------------- 终审抓出来的四条
+# 来源：整支分支的独立评审（2026-09-26）。前两条是「实机根本用不起来」级别的。
+
+def test_the_seat_unconfirmed_window_is_counted_not_silently_dropped(tmp_path):
+    """「座位未确认」这一档跳过**必须计数**。
+
+    原来守写在 `advise.advise` 之前就 `return` 了，于是 `skips` 里永远看不到它 ——
+    而台账给的判据正是「跳过原因必须可解释，不能一片全是座位未确认」，
+    那条判据永远不会触发；座位认定真坏了，日志看起来和「这几局本来就没机会出牌」一样。
+    """
+    log = _new(tmp_path)
+    st = GameState()
+    st.level = 9
+    _play(st, 1, 0, [A("S3")], [A("S4")], mine=True)      # 座位认出来
+    _play(st, 0, 3, [A("S9")], [A("SK")])
+    st.on_deal()                                          # 换局 -> me_confirmed 清零
+    st.turn = st.me                                       # 而服务器已经指到了「我」
+    log.after_event(st, {"type": "play"})
+    log.after_event(st, {"type": "play"})                 # 同一局面再来一次，不许重复计数
+    assert log.skips.get("座位未确认") == 1, f"该记一档跳过：{log.skips}"
+    log.close()
+    end = [r for r in _reader(log.out_path) if r["type"] == "deal_end"][-1]
+    assert end["skips"].get("座位未确认") == 1
+
+
+def test_deal_end_says_null_when_the_deal_was_not_seen_whole(tmp_path):
+    """没看全的一局，输赢必须是 `null`，不许凭「我们看到的第一名」判。
+
+    完整一局的出完人数必然是 2（双上）或 3（三家出完）；少于 2 就说明
+    我们接进来之前已经有人出完了 —— 那时 `finish[0]` 不是第 1 名，判出来会**反**。
+    """
+    log = _new(tmp_path)
+    st = GameState()
+    st.level = 9
+    _play(st, 1, 0, [A("S3")], [A("S4")], mine=True)
+    _play(st, 3, 2, [A("SK")], [])            # 只看到「我的队友出完」——第 1 名没看到
+    log.after_event(st, {"type": "play"})
+    st.on_deal()
+    log.after_event(st, {"type": "deal"})
+    end = [r for r in _reader(log.out_path) if r["type"] == "deal_end"][0]
+    assert end["finish"] == [3]
+    assert end["me_team_won"] is None, "没看全的一局不许给真假值"
+
+
+def test_close_is_idempotent(tmp_path):
+    """`close()` 必须幂等 —— 回放那条路每个 tick 都会调它一次。
+
+    `net/table.py` 的 `run_replay` 在回放喂完后**窗口还开着**，每个 tick 都进
+    `StopIteration` 分支再调一次 `close()`；原来 `close()` 无条件走 `_finish_deal`，
+    于是每 260 毫秒往 shadow.jsonl 追一行同样的 `deal_end`（放一晚几千行）。
+    """
+    log = _new(tmp_path)
+    st = GameState()
+    st.level = 9
+    _play(st, 1, 0, [A("S3")], [A("S4")], mine=True)
+    log.after_event(st, {"type": "play"})
+    log.close()
+    log.close()
+    log.close()
+    ends = [r for r in _reader(log.out_path) if r["type"] == "deal_end"]
+    assert len(ends) == 1, f"只该有一行局末：{[ (r['deal'], r['n_decisions']) for r in ends]}"
+
+
+def test_an_inference_error_does_not_take_the_panel_down(tmp_path, monkeypatch):
+    """推理抛异常时**这一条不记**，不许把面板带走 —— 面板挂了整晚就再也攒不到数据。"""
+    log = _new(tmp_path)
+    st = GameState()
+    st.level = 9
+    _play(st, 1, 0, [A("S3")], [A("S4")], mine=True)
+    _play(st, 0, 1, [A("S4")], [A("S9")])
+
+    def boom(*a, **kw):
+        raise RuntimeError("显存炸了")
+
+    monkeypatch.setattr(shadow.advise, "advise", boom)
+    log.after_event(st, {"type": "play"})          # 不许抛出去
+    assert any("推理异常" in k for k in log.skips), f"要记一档跳过：{log.skips}"

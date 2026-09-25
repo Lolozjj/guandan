@@ -208,6 +208,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-panel", action="store_true")
+    ap.add_argument("--no-advice", action="store_true",
+                    help="关掉影子模式（只显示牌局）")
     ap.add_argument("--console", action="store_true",
                     help="用终端文本面板（默认是图形牌桌）")
     ap.add_argument("--selftest", type=int, default=0,
@@ -270,12 +272,23 @@ def main():
                 time.sleep(1)
         else:
             from net.state import GameState
-            if args.console:
-                from net import panel
-                panel.run_live(GameState())
-            else:
-                from net import table
-                table.run_live(GameState())
+            from net import shadow
+            # ⚠️ **实机那条路就是这里** —— 面板的 `main()` 不会被走到，
+            # 所以记录器必须在这里开、并显式传进去。忘了这一步的后果是静默的：
+            # 用户照台账打几十局，net/shadow.jsonl 一个字节都不会有。
+            sh = None if args.no_advice else shadow.open_shadow()
+            if sh is not None:
+                print(sh.last_line)
+            try:
+                if args.console:
+                    from net import panel
+                    panel.run_live(GameState(), shadow_log=sh)
+                else:
+                    from net import table
+                    table.run_live(GameState(), shadow_log=sh)
+            finally:
+                if sh is not None:
+                    sh.close()          # 幂等：面板自己也会关一次
     except KeyboardInterrupt:
         print("\n收到退出信号。")
     except Exception as exc:                       # noqa: BLE001

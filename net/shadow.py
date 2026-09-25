@@ -32,6 +32,24 @@ SHADOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shadow.jsonl"
 SCHEMA = 1
 
 
+def open_shadow(out_path: str = SHADOW, topk: int = 3) -> "ShadowLog":
+    """建一个记录器 —— **唯一的一处**（`net.launcher` 与两个面板都走它）。
+
+    权重取 `GUANDAN_WEIGHTS` 或 `runs/rl/*/best.pt` 里最新的那份（`advise.resolve_weights`），
+    记进 session 行的也是**真正加载的那一份**。加载失败不抛异常：降级成「不记录」，
+    把原因放在 `last_line` 上给面板显示。
+
+    ⚠️ 这个函数存在的理由：原来建记录器的代码只写在两个面板的 `main()` 里，
+    而**实机入口 `net.launcher` 是直接调 `run_live()` 的**（绕过 `main()`）——
+    于是用户按台账打几十局，`net/shadow.jsonl` 一个字节都不会有。
+    """
+    from net import advise
+    path = advise.resolve_weights()
+    net, err = advise.load_net(path)
+    return ShadowLog(net=net, out_path=out_path, weights=path or "",
+                     weights_note=err, topk=topk)
+
+
 class ShadowLog:
     def __init__(self, net=None, out_path=SHADOW, weights="", weights_note="",
                  topk=3):
@@ -53,6 +71,7 @@ class ShadowLog:
         self._snap = {}
         self._n_unresolved = 0
         self._t_level = None
+        self._closed = False
         if net is not None:
             rec = {"type": "session", "schema": SCHEMA, "weights": weights}
             if weights:
@@ -79,15 +98,27 @@ class ShadowLog:
         self._snap = {"finish": list(st.finish_order), "level": st.level, "me": st.me}
         if self._pending is not None:
             return
-        if st.turn != st.me or not st.me_confirmed:
-            return
+        if st.turn != st.me:
+            return                       # 不是我的回合 —— 这不算决策点，不必计数
         key = (st.deal_seq, len(st.steps))
         if key == self._last_key:
             return                       # 同一个局面只算一次（手牌同步会反复触发）
         self._last_key = key
-        got = advise.advise(st, self.net, topk=self.topk)
+        if not st.me_confirmed:
+            # **这一段必须计数。** 换局后到我第一次出牌之间，报文里的座位是陈旧的，
+            # 这一手算不了。静默丢掉的话，台账那条判据（「跳过原因必须可解释，
+            # 不能一片全是座位未确认」）永远触发不了 —— 座位认定真坏了也看不出来。
+            self._count_skip(advise.SKIP_SEAT)
+            return
+        try:
+            got = advise.advise(st, self.net, topk=self.topk)
+        except Exception as exc:         # noqa: BLE001
+            # 推理期的任何异常都只让**这一条**不记：面板挂了整晚就再也攒不到数据了
+            # （红线是「不动游戏、不发报文」，所以这里只影响记录，不影响用户打牌）。
+            self._count_skip(f"推理异常：{type(exc).__name__}")
+            return
         if isinstance(got, advise.Skip):
-            self.skips[got.reason] = self.skips.get(got.reason, 0) + 1
+            self._count_skip(got.reason)
             return
         self._pending = {
             "type": "decision", "t": round(time.time(), 3),
@@ -110,14 +141,23 @@ class ShadowLog:
         }
         self._cands, self._q, self._order = got.cands, got.q, got.order
 
+    def _count_skip(self, reason: str) -> None:
+        self.skips[reason] = self.skips.get(reason, 0) + 1
+
     def note_level(self) -> None:
         """级别刚更新时调一次 —— 只为了在记录里留下「级别是什么时候变的」。"""
         self._t_level = time.time()
 
     def close(self) -> None:
-        """收尾：没回填的决策点也要落盘（丢掉的全是局末那几个，统计会有偏）。"""
-        if self.net is None:
+        """收尾：没回填的决策点也要落盘（丢掉的全是局末那几个，统计会有偏）。
+
+        **幂等** —— 回放那条路每个 tick 都会调它一次（`table.run_replay` 在回放喂完后
+        窗口还开着，每个 tick 都进 `StopIteration` 分支），不幂等的话
+        每 260 毫秒往日志追一行同样的 `deal_end`，放一晚几千行。
+        """
+        if self.net is None or self._closed:
             return
+        self._closed = True
         self._finish_deal(reason="面板退出")
         if self._fh is not None:
             self._fh.close()
@@ -191,9 +231,14 @@ class ShadowLog:
         finish = list(self._snap.get("finish") or [])
         me = self._snap.get("me")
         first = finish[0] if finish else None
+        # **看全了没有**：完整一局的出完人数必然是 2（双上）或 3（三家出完）。
+        # 少于 2 就是「我们接进来之前已经有人出完了」——那时 `finish[0]` 不是第 1 名，
+        # 拿它判输赢会**判反**（实测能复现：真值第 1 名是对手，我们只看到队友出完，
+        # 判出来是「我这队赢」）。宁可给 null，也不给一个错的真假值。
+        seen_all = len(finish) >= 2
         self._emit(type="deal_end", deal=self._deal_seq, seat=me,
                    level=self._snap.get("level"), finish=finish,
-                   me_team_won=(None if (first is None or me is None)
+                   me_team_won=(None if (not seen_all or first is None or me is None)
                                 else rules.TEAM[first] == rules.TEAM[me]),
                    n_decisions=self.n_decisions, n_unresolved=self._n_unresolved,
                    skips=dict(self.skips))

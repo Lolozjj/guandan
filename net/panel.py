@@ -15,6 +15,7 @@ import time
 
 from . import cards, protocol
 from .addon import EVENTS
+from .levelwatch import LevelWatcher
 from .state import GameState
 
 CLEAR = "\033[2J\033[H"
@@ -76,31 +77,63 @@ def apply_event(st: GameState, ev: dict) -> str:
     return ""
 
 
-def draw(st: GameState, hint: str, n_ev: int, live: bool) -> None:
+def draw(st: GameState, hint: str, n_ev: int, live: bool,
+         shadow_line: str = "") -> None:
     mode = "实时" if live else "回放"
     print(CLEAR, end="")
     print(f"{DIM}[{mode}] 已收 {n_ev} 个事件   {hint}{RESET}")
+    if shadow_line:
+        print(f"{DIM}{shadow_line}{RESET}")
     print(st.render())
 
 
-def run_live(st: GameState, path: str) -> None:
-    tail = Tailer(path)
+def run_live(st: GameState, path: str, level: int = None, shadow_log=None,
+             seconds: float = 0) -> None:
+    """实时跟读事件流。
+
+    `level` 给离线用；实时那条路自己从游戏日志读级别（`LevelWatcher` —— 网络里
+    没有本局级别，而级别一局之内不变，日志那 ~20 秒延迟无妨）。
+    `seconds` 只给测试用（>0 时跑这么久就返回）。
+    """
+    tail, lvl = Tailer(path), LevelWatcher()
     n, hint = 0, "等游戏服数据…"
-    draw(st, hint, n, True)
-    while True:
-        events = tail.read()
-        if events:
-            for ev in events:
-                h = apply_event(st, ev)
-                if h:
-                    hint = h
-                n += 1
-            draw(st, hint, n, True)
-        else:
-            time.sleep(0.05)
+    if level:
+        st.level = level
+        if shadow_log is not None:
+            shadow_log.note_level()
+    t0 = time.time()
+    draw(st, hint, n, True, shadow_log.last_line if shadow_log else "")
+    try:
+        while True:
+            events = tail.read()
+            if events:
+                for ev in events:
+                    h = apply_event(st, ev)
+                    if h:
+                        hint = h
+                    n += 1
+                    if shadow_log is not None:
+                        shadow_log.after_event(st, ev)
+                draw(st, hint, n, True,
+                     shadow_log.last_line if shadow_log else "")
+            else:
+                time.sleep(0.05)
+            lv = lvl.poll()
+            if lv is not None:
+                st.level = lv
+                hint = f"级别更新：打{st.level_name()}"
+                if shadow_log is not None:
+                    shadow_log.note_level()
+            if seconds and time.time() - t0 >= seconds:
+                return
+    finally:
+        # Ctrl-C 也要收尾：没回填的决策点不落盘的话，「分歧点」的统计会有偏
+        if shadow_log is not None:
+            shadow_log.close()
 
 
-def run_replay(st: GameState, capture: str, delay: float) -> None:
+def run_replay(st: GameState, capture: str, delay: float, level: int = None,
+               shadow_log=None) -> None:
     """把抓包文件当实时流慢慢喂，看面板长什么样。"""
     frames = []
     with open(capture, encoding="utf-8") as f:
@@ -161,12 +194,12 @@ def main():
     args = ap.parse_args()
 
     st = GameState()
+    # 建记录器只有**一处**（`shadow.open_shadow`）—— launcher 也走它，
+    # 免得「实机入口忘了接」这种事再发生一次
     sh = None
     if not args.no_advice:
-        from net import advise, shadow
-        net, err = advise.load_net()
-        sh = shadow.ShadowLog(net=net, weights=advise.newest_weights() or "",
-                              weights_note=err)
+        from net import shadow
+        sh = shadow.open_shadow()
         print(sh.last_line)
     try:
         if args.replay:
