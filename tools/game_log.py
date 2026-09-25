@@ -136,3 +136,82 @@ def conserved(g: GameLog) -> bool:
     played = sum(len(p.cards) for p in g.plays)
     left = sum(len(e.get("Cards") or []) for e in (g.settle.get("LeftCards") or []))
     return played + left == 108
+
+
+# ---------------------------------------------------------------- 语料快照
+#
+# 为什么需要：验收脚本读的是游戏日志，而**日志会被轮转删除**（只留约 2 天）。
+# 一旦日志没了，`load_games` 会（按设计）抛错，Plan 1 的回归防线就整个跑不起来 ——
+# 而 Plan 2/3 每次改模拟器都要靠它。快照让这道防线不依赖日志还活着。
+#
+# 注意 `load_games` 的语义**不因此改变**（它照旧只读实时日志、目录没了就抛错）：
+# 它的测试要真的在测实时解析。「优先快照」这条策略放在 `load_corpus` 里，
+# 并且会把实际用了哪一份报出来 —— 换源必须可见。
+
+SNAPSHOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "game_corpus.json")
+
+#: 最近一次 `load_corpus` 用的是哪一份语料（给人看的字符串）
+LAST_SOURCE = None
+
+#: 快照里保留的结算字段 —— 只留用得到的，别把整份 PlayerInfo 塞进仓库
+_SETTLE_KEEP = ("Rank", "LeftCards", "UpgradeInfo")
+
+
+def to_jsonable(g: GameLog) -> dict:
+    settle = None
+    if g.settle:
+        settle = {k: g.settle[k] for k in _SETTLE_KEEP if k in g.settle}
+    return {
+        "t0": g.t0.isoformat(),
+        "trump": g.trump,
+        "my_cards": list(g.my_cards),
+        "plays": [[p.seat, list(p.cards), p.card_type, p.left, p.nxt]
+                  for p in g.plays],
+        "settle": settle,
+        "unparsed": g.unparsed,
+    }
+
+
+def from_jsonable(d: dict) -> GameLog:
+    g = GameLog(t0=datetime.fromisoformat(d["t0"]),
+                trump=int(d["trump"]),
+                my_cards=list(d["my_cards"]),
+                unparsed=int(d.get("unparsed", 0)))
+    g.plays = [PlayRec(seat=int(a), cards=list(b), card_type=int(c),
+                       left=int(e), nxt=int(f))
+               for a, b, c, e, f in d["plays"]]
+    g.settle = d.get("settle")
+    return g
+
+
+def save_snapshot(games, path: str = SNAPSHOT) -> str:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump([to_jsonable(g) for g in games], fh, ensure_ascii=False)
+        fh.write("\n")
+    return path
+
+
+def load_snapshot(path: str = SNAPSHOT) -> list:
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"没有语料快照：{path}\n"
+            f"先生成：.venv/Scripts/python.exe -m tools.snapshot_logs")
+    with open(path, encoding="utf-8") as fh:
+        return [from_jsonable(d) for d in json.load(fh)]
+
+
+def load_corpus(log_dir: str = None, snapshot: str = SNAPSHOT) -> list:
+    """验收用：**优先快照**（日志会被轮转删），没有才退回实时日志。
+
+    用哪一份记在 `LAST_SOURCE` 里，调用方应当报出来 —— 换源必须可见，
+    不能让人以为在验实时日志、其实验的是几个月前的快照。
+    """
+    global LAST_SOURCE
+    if log_dir is None and snapshot and os.path.exists(snapshot):
+        LAST_SOURCE = f"语料快照 {os.path.relpath(snapshot)}（实时日志可能已被轮转删除）"
+        return load_snapshot(snapshot)
+    LAST_SOURCE = f"实时日志 {log_dir or LOG_DIR}"
+    return load_games(log_dir or LOG_DIR)

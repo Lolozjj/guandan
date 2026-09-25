@@ -94,3 +94,45 @@ def test_truncated_play_line_is_counted_not_dropped_silently(tmp_path):
     assert games[0].unparsed == 1, (
         f"截断行应计数 1（无 CardList 的消息不计），实际 {games[0].unparsed}")
     assert games[0].plays == [], "截断的行不该变成一手牌"
+
+
+# ---------------------------------------------------------------- 语料快照
+
+
+def test_snapshot_round_trips():
+    """冻结再读回来，每一局的牌局内容必须完全一致。
+
+    快照是 Plan 1 回归防线的替代语料（日志会被轮转删），它必须与实时解析等价 ——
+    差一张牌，验收结论就不能信。
+    """
+    if not os.path.isdir(LOG_DIR):
+        pytest.skip("本机没有游戏日志")
+    from tools.game_log import to_jsonable, from_jsonable
+    games = [g for g in load_games() if g.settle][:5]
+    assert games, "没有已结算的局可供比对"
+    for g in games:
+        back = from_jsonable(to_jsonable(g))
+        assert back.t0 == g.t0 and back.trump == g.trump
+        assert back.my_cards == g.my_cards
+        assert [(p.seat, p.cards, p.card_type, p.left, p.nxt)
+                for p in back.plays] == \
+               [(p.seat, p.cards, p.card_type, p.left, p.nxt)
+                for p in g.plays]
+        assert conserved(back) == conserved(g)
+
+
+def test_load_corpus_reports_which_source_it_used():
+    """用了快照还是实时日志，必须能报出来 —— 换源不能静默。"""
+    from tools import game_log
+    games = game_log.load_corpus()
+    assert games
+    assert game_log.LAST_SOURCE
+    assert ("快照" in game_log.LAST_SOURCE) or ("实时日志" in game_log.LAST_SOURCE)
+
+
+def test_missing_snapshot_raises_rather_than_returning_empty(tmp_path):
+    """快照不存在要明着报错，并告诉人怎么生成。"""
+    from tools.game_log import load_snapshot
+    with pytest.raises(FileNotFoundError) as e:
+        load_snapshot(str(tmp_path / "nope.json"))
+    assert "snapshot_logs" in str(e.value)

@@ -36,7 +36,8 @@ from dataclasses import dataclass, field
 
 from net.sim import meld
 from tools.decision_points import decision_points
-from tools.game_log import load_games
+from tools import game_log
+from tools.game_log import load_corpus
 
 # 语料地板：结算局少于这个数，①/② 的「全过」不足以称为结论。
 # 与 tests/test_game_log.py 的 `len(settled) >= 20` 同口径 —— 那边早就定了这条线，
@@ -125,7 +126,7 @@ def check_real_moves(games=None) -> Result:
     **局限：55 局只能证伪，不能证明**（spec §6①）。
     """
     r = Result("① 真实着法可枚举")
-    games = load_games() if games is None else games
+    games = load_corpus() if games is None else games
     for g in games:
         if not g.settle:
             continue
@@ -214,7 +215,7 @@ def check_beats_from_records(games=None) -> Result:
     算同花顺（炸弹），不算顺子。这与游戏自己的判据一致（card_type 9）。
     """
     r = Result("② 炸弹层级（谁压谁）")
-    games = load_games() if games is None else games
+    games = load_corpus() if games is None else games
     bomb_vs_bomb = 0            # 两边都是炸弹 —— 只有这些在验阶梯
     normal_vs_bomb = 0          # 一边炸弹、一边普通 —— 只验「炸弹压普通」
     with_9, with_10 = 0, 0      # 阶梯顶端（9炸 / 10炸）真正被覆盖到的条数
@@ -361,9 +362,12 @@ def main(games=None) -> int:
     「语料太少 / 一项都查不到」的假语料来证明这个门会红 —— 不注入的话没法构造。
     """
     _utf8_stdout()
-    games = load_games() if games is None else games
+    games = load_corpus() if games is None else games
     settled = sum(1 for g in games if g.settle)
     print(f"载入对局 {len(games)} 局，其中有结算的 {settled} 局\n")
+    # 换源必须可见：不能让人以为在验实时日志、其实验的是很久以前的快照。
+    print(f"语料来源：{game_log.LAST_SOURCE}")
+    print()
     dropped = sum(g.unparsed for g in games)
     # R7：日志解析失败的行必须**可见**，不能静默 ——
     # 这个数字不为 0 就说明语料有缺失，下面四项结论都要打折看。
