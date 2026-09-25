@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from net import cards
 from net.sim import env, meld, rules
@@ -63,3 +64,14 @@ def test_level_card_uses_point_value_not_the_raw_index():
     assert v2[seg].argmax() != v3[seg].argmax()
     assert v2[seg].argmax() == 13              # POINT_LEVEL -> 第 13 格
     assert v3[seg].argmax() == 1               # 点数 3 -> _POINT[3]=2 -> 槽位 1
+
+
+def test_encode_state_rejects_an_out_of_range_level():
+    """级别必须是 1..13。**14 与 None 都不许静默写进预留槽位。**
+
+    14 会落到第 14 格（那一格是预留的），None 会直接 TypeError ——
+    两者都是「一声不响地编出错的向量」，而级别错了**逢人配就全错**。
+    """
+    for bad in (14, None, 0, 99):
+        with pytest.raises(ValueError):
+            env.encode_state(_obs(level=bad))

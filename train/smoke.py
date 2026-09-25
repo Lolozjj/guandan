@@ -46,6 +46,10 @@ import torch
 import torch.nn as nn
 
 from net.sim import env, rules
+# `_utf8_stdout` 复用 accept_meld 那份，**不复制**（同 tools/accept_sim.py 的理由）。
+# 2026-09-25：正是漏了它，1800 秒训练跑完、末次胜率 92.5%，却在打印
+# 「通过 ✓」那一行抛 UnicodeEncodeError —— **训练成功、退出码丢掉**。
+from tools.accept_meld import _utf8_stdout
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_GAMES = 32              # spec §5.3：batch 32 局
@@ -151,6 +155,7 @@ def evaluate(net, games=EVAL_GAMES, seed=999):
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     budget = float(argv[0]) if argv else 1800.0
+    _utf8_stdout()          # 不调这个，GBK 控制台下最后那行「通过 ✓」会抛异常
 
     torch.manual_seed(0)
     rng = random.Random(0)

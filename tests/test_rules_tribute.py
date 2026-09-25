@@ -67,9 +67,15 @@ def test_resist_when_the_losing_team_holds_two_big_jokers():
 def test_level_card_outranks_ace_when_deciding_the_biggest_card():
     """**打 2 的时候 2 是级牌，比 A 大。** 自己比较点数会在这里栽跟头 ——
     所以取值必须走 `meld.point_value`。"""
-    h = _h(s0=[A("S9")], s1=[A("S8")], s2=[A("S3")], s3=[A("SA"), A("D2")])
+    # ⚠️ **必须用「原始点数索引会给出相反答案」的那组牌**，否则测了等于没测：
+    # 打 5 时 5♦ 是级牌（point_value = 14），而它的**索引** 5 比 K♠ 的 13 小 ——
+    # 拿 `cards.parts(...)[0]` 直接比大小的实现会选 K♠。
+    # （旧版用的是 SA vs D2、级别 2：那时索引 2 < A 的 1 是反的，恰好也能过 ——
+    #   所以换了一组能真正区分的。）
+    h = _h(level=5, s0=[A("S9")], s1=[A("S8")], s2=[A("S3")],
+           s3=[A("SK"), A("D5")])
     t = rules.apply_tribute(h, prev_ranks=[3, 2, 1, 4])
-    assert t.gave == {3: A("D2")}
+    assert t.gave == {3: A("D5")}
 
 
 def test_no_tribute_when_there_is_no_previous_hand():

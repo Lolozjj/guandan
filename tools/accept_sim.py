@@ -14,6 +14,15 @@
 比对口径是**形状**（`(kind, size, rank)`）而不是牌张集合 —— 因为 `melds_from` 的契约是
 「每个形状一条代表」（见 `net/sim/meld.py` 的 docstring）。真人打出的可能是 ♥5♥5，
 枚举给的代表可能是 ♠5♠5，形状相同就是对的。**这与 `accept_meld` 的验收①同口径。**
+
+**两路独立校验**（不经过 `meld.py` 的枚举）：
+  1. 服务器在每条出牌消息里报的 `LeftCardLen`（这一手之后该家还剩几张）——
+     拿它对我们算出来的手牌记账。实测 53 局 / 1655 手逐手相符。
+  2. 名次：出完顺序与日志的 `Rank` 逐局比。
+
+**这一层的能力边界要说清**：判「这一手能不能出」用到的 rank，两侧都出自同一批函数，
+所以**看得见轮转/接风/终局/记账的错，看不见「rank 读弱了」这类错**。
+（`rank` 读弱是 `melds_from` 的已知偏差，见交付文档里的 Plan 3 闸门。）
 """
 from __future__ import annotations
 
@@ -99,6 +108,16 @@ def replay(g) -> ReplayResult:
                 f"但候选里没有这个形状（候选 {len(cands)} 个）—— 枚举漏了")
         hand.play(rec.seat, m)
 
+        # ② **独立于牌型枚举的一路校验**：服务器自己在每条出牌消息里报了这一手之后
+        # 该家还剩几张（`LeftCardLen`）。拿它对我们算出来的手牌记账 ——
+        # 牌解析错、漏扣牌、手牌重建错，都会在这里露出来，而这一路不经过 meld.py。
+        # 实测 53 局 / 1655 手逐手相符（2026-09-25）。
+        if len(hand.hands[rec.seat]) != rec.left:
+            raise rules.IllegalPlay(
+                f"{g.t0} 第 {i} 手：座位{rec.seat} 出完后我们算他剩 "
+                f"{len(hand.hands[rec.seat])} 张，服务器说 {rec.left} 张 —— "
+                f"手牌记账错了")
+
     if not hand.is_over():
         raise rules.IllegalPlay(
             f"{g.t0} 牌都出完了却没判成终局（出完 {len(hand.order)} 家）")
@@ -106,20 +125,21 @@ def replay(g) -> ReplayResult:
 
 
 def check_replay(games) -> Result:
-    """跑全部能回放的局：① 轮转能走到尾、③ 名次与日志一致。
+    """跑全部能回放的局：① 轮转能走到尾、② 手牌记账、③ 名次与日志一致。
 
     顺带把「我们算的升级点 vs 日志的 Upgrade」的分布写进 `note` ——
     **只报告、不判失败**：spec §13.4 实测「双上 -> 3」只对了 13/24 局、
     另 11 局是 4，而那一格依赖升级/过A 的字段，按 §13.1 不在 Plan 2 内。
     报出来是为了让下一层（Plan 3）看得见这个偏差有多大。
     """
-    res = Result("① 真实对局回放（轮转 / 接风 / 终局 / 名次）")
+    res = Result("① 真实对局回放（轮转 / 接风 / 终局 / 名次 / 手牌记账）")
     playable = [g for g in games if g.settle and g.plays]
     if len(playable) < _MIN_REPLAYABLE:
         res.floor = (f"能回放的对局只有 {len(playable)} 局 < 地板 {_MIN_REPLAYABLE} 局 —— "
                      f"「全过」不足以称为结论（语料被轮转删了？）")
         return res
     pairs = Counter()
+    passes_all = 0
     for g in playable:
         res.total += 1
         try:
@@ -127,6 +147,7 @@ def check_replay(games) -> Result:
         except (rules.IllegalPlay, ValueError) as e:
             res.bad.append(str(e))
             continue
+        passes_all += r.passes_inferred
         logged = g.settle["Rank"]
         for i, seat in enumerate(r.hand.order):
             if logged[seat] != i + 1:
@@ -140,8 +161,15 @@ def check_replay(games) -> Result:
 
     dist = "、".join(f"我们{p}/日志{u}：{n}局" for (p, u), n in sorted(pairs.items()))
     same = sum(n for (p, u), n in pairs.items() if p == u)
-    res.note = (f"       升级点核对（**只报告不判失败**，spec §13.4）：{same}/{res.total} 局一致\n"
-                f"       {dist}")
+    nl = chr(10)          # 用 chr(10)：这个文件里的 "\n" 被 shell 的 heredoc 吃过一次
+    res.note = (f"       升级点核对（**只报告不判失败**，spec §13.4）：{same}/{res.total} 局一致"
+                + nl + f"       {dist}"
+                + nl + "       手牌记账逐手拿服务器的 LeftCardLen 校过：全对"
+                       "（这一路不经过 meld.py，是独立校验）"
+                + nl + f"       推断出的「过」共 {passes_all} 次"
+                       "（日志里不记「过」，只能推断 —— 是**推断**不是观测）"
+                + nl + "       能力边界：判「能不能出」的 rank 两侧同源，"
+                       "所以**看得见轮转/接风/终局/记账的错，看不见「rank 读弱了」**")
     return res
 
 

@@ -10,7 +10,10 @@
 泄漏的后果（spec §3）：会训出靠偷看才成立的打法 —— 训练分数漂亮、真机全废，
 **而且静默失效**（同本项目「合成 val 骗过一次」的教训）。
 
-座位一律**相对化**：索引 0 = 自己、1 = 下家、2 = 对家、3 = 上家。
+座位一律**相对化**。索引按**出牌顺序**排：0 = 自己、
+1 = 先于我的那家、2 = 对家、3 = 我的下家（`rules.NEXT[自己]`）。
+⚠️ 出牌顺序是 `0 → 3 → 2 → 1`（见 `rules.py`），所以「下家」落在索引 3 ——
+**别再按「1 就是下家」写面板**（这里曾经把 1/3 写反过）。
 四个座位共享一套权重，所以相对化不是可选项。
 """
 from __future__ import annotations
@@ -80,12 +83,23 @@ class Observation:
 
 
 def _rel(seq, seat: int):
-    """把按绝对座位排的序列转成相对座位（0 = 自己、1 = 下家 …）。"""
+    """把按绝对座位排的序列转成相对座位。
+
+    索引按**出牌顺序**排：0 = 自己、1 = 先于我的那家、2 = 对家、
+    3 = 我的下家（`rules.NEXT[seat]`）。出牌顺序是 `0 → 3 → 2 → 1`，
+    所以下家在索引 3 而不是 1。
+    """
     return tuple(seq[(seat + i) % 4] for i in range(4))
 
 
 def encode_state(obs: Observation) -> np.ndarray:
     """`Observation` -> 700 维 float32。**只吃 `Observation`**，别给它开别的入口。"""
+    if not isinstance(obs.level, int) or not 1 <= obs.level <= 13:
+        raise ValueError(
+            f"级别必须在 1..13（A=1）。收到 {obs.level!r} —— "
+            f"14 是日志里 A 的另一种写法（先过 meld.norm_level()），"
+            f"None 说明这一局还没定级。"
+            f"**别让它静默写进预留槽位**：14 会落到第 14 格、None 会直接 TypeError。")
     v = np.zeros(STATE_DIM, dtype=np.float32)
 
     for c in obs.hand:

@@ -152,3 +152,44 @@ def test_three_seats_out_ends_the_hand_when_the_winners_are_not_first_and_second
     h.play(2, meld.as_meld([A("S2")], 2))       # 打 2 时 2 是级牌，压得过 A
     assert h.is_over(), "出完 3 家必须终局"
     assert h.order == [0, 3, 2]                 # 名次与升级点在 Task 2 里验
+
+
+def test_the_wild_can_be_placed_in_the_triple_even_when_naturals_suffice():
+    """**手里多一张牌，不该让一手合法的牌消失。**
+
+    打 6（逢人配 = ♥6）时 `A♠A♥ + 2♠2♥ + ♥6` 这 5 张，游戏读成
+    「三个 A 带一对 2」（rank 13）—— 用逢人配顶第三张 A。它能压过 rank<13 的三带二。
+
+    但手里的**第三张 A** 会让这条读法凭空消失：枚举三带二时自然牌是**贪婪**占位的
+    （`g[t][:3]` 把三张 A 全用掉），于是「A,A + 逢人配」这条永远产不出来，
+    `actions()` 面对 rank=5 的三带二**一个候选都不给**。手里的第三张 2 则没这个问题。
+
+    实测（2026-09-25，最终评审发现）：第三张 A -> 候选为空；第三张 2 -> 候选 rank 13。
+    """
+    target = {A("SA"), A("HA"), A("S2"), A("H2"), A("H6")}
+    for extra, name in ((A("CA"), "第三张 A"), (A("C2"), "第三张 2")):
+        h = _hand(level=6, s0=target | {extra},
+                  s1=[A("S9")], s2=[A("ST")], s3=[A("SJ")])
+        h.table = meld.Meld(meld.TRIPLE_PAIR, 5, 5,
+                            (A("C3"), A("D3"), A("C3", deck=2), A("S4"), A("H4")))
+        h.table_seat = 3
+        ranks = [m.rank for m in h.actions(0)
+                 if m is not None and set(m.cards) == target]
+        assert ranks, f"（{name}）这 5 张能压过 rank=5 的三带二，候选里却一个都没有"
+        assert max(ranks) == 13, f"（{name}）最强读法应当是 rank 13，实际 {sorted(ranks)}"
+
+
+def test_two_wilds_plus_two_ranks_do_not_duplicate_a_candidate():
+    """**Review Focus #2 的另一半：候选不许有重复。**
+
+    光「两张逢人配能凑出三个 9」还不够 —— 那半边在原来的手牌上**测不出重复**
+    （删掉 `melds_from` 的去重它照样绿）。真正会产生重复的是这组牌：
+    两张逢人配 + **两个各 2 张的点数**（`9♠9♥` 与 `4♠4♥`）。
+    实测去重前 `_melds_wild` 为同一组 5 张牌产出 **4 条**三带二
+    （「三个 9 带一对 4」与「三个 4 带一对 9」各自成组）——
+    没有去重的话，一个物理上只能出一次的牌会占掉动作空间的 4 格。
+    """
+    h = _hand(s0=[A("H2"), A("H2", deck=2), A("S9"), A("H9"), A("S4"), A("H4")],
+              s1=[A("S6")], s2=[A("S7")], s3=[A("S8")])
+    keys = [(m.kind, tuple(sorted(m.cards))) for m in h.actions(0)]
+    assert len(keys) == len(set(keys)), "候选里出现了完全重复的着法"
