@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import sys
 
-from tools.game_log import LOG_DIR, conserved, load_games, save_snapshot
+from tools.game_log import (LOG_DIR, conserved, load_games,
+                            load_tributes, save_snapshot)
 
 
 def main() -> int:
@@ -20,11 +21,13 @@ def main() -> int:
     if bad:
         sys.exit(f"[FAIL] {len(bad)} 局不守恒，语料有问题，拒绝冻结快照："
                  f"{[str(g.t0) for g in bad[:3]]}")
-    path = save_snapshot(games)
+    tributes = load_tributes()
+    path = save_snapshot(games, tributes=tributes)
     import os
     print(f"已冻结 {len(games)} 局（有结算 {len(settled)} 局，守恒 "
           f"{len(settled)}/{len(settled)}）")
     print(f"  -> {path}  ({os.path.getsize(path) / 1024:.1f} KB)")
+    print(f"  进贡记录 {len(tributes)} 条 —— 只存在于日志里，日志一转就没了")
     print(f"  源: {LOG_DIR}")
     return 0
 

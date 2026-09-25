@@ -186,21 +186,58 @@ def from_jsonable(d: dict) -> GameLog:
     return g
 
 
-def save_snapshot(games, path: str = SNAPSHOT) -> str:
+def _tribute_jsonable(r: TributeRec) -> list:
+    return [r.t.isoformat() if r.t else None, r.kind, r.giver, r.taker, r.card]
+
+
+def _tribute_from_jsonable(a) -> TributeRec:
+    return TributeRec(datetime.fromisoformat(a[0]) if a[0] else None,
+                      a[1], int(a[2]), None if a[3] is None else int(a[3]),
+                      int(a[4]))
+
+
+def save_snapshot(games, path: str = SNAPSHOT, tributes=None) -> str:
+    """写快照。**同时写进贡记录** —— 进贡只存在于日志里，而日志会轮转删除。
+
+    格式是 `{"games": [...], "tributes": [...]}`。旧快照是**裸列表**，
+    `load_snapshot` 两种都读（见那里），所以 Plan 1 冻的那份老文件不会因此读不出来。
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {"games": [to_jsonable(g) for g in games],
+               "tributes": [_tribute_jsonable(r) for r in (tributes or [])]}
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump([to_jsonable(g) for g in games], fh, ensure_ascii=False)
+        json.dump(payload, fh, ensure_ascii=False)
         fh.write("\n")
     return path
 
 
-def load_snapshot(path: str = SNAPSHOT) -> list:
+def _read_snapshot_raw(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"没有语料快照：{path}\n"
             f"先生成：.venv/Scripts/python.exe -m tools.snapshot_logs")
     with open(path, encoding="utf-8") as fh:
-        return [from_jsonable(d) for d in json.load(fh)]
+        return json.load(fh)
+
+
+def load_snapshot(path: str = SNAPSHOT) -> list:
+    """读对局。**旧格式（裸列表）也读得动** —— Plan 1 冻的那份就是裸列表。"""
+    raw = _read_snapshot_raw(path)
+    items = raw["games"] if isinstance(raw, dict) else raw
+    return [from_jsonable(d) for d in items]
+
+
+def load_snapshot_tributes(path: str = SNAPSHOT) -> list:
+    """读进贡记录。**旧格式（裸列表）里没有这一项，返回 `[]`。**
+
+    返回空是**诚实的**：那份快照确实没存过进贡。但调用方（`accept_tribute`）
+    必须把「0 条」当成**未通过**而不是「全过」—— 这正是本项目的验收纪律
+    （spec §6⑥：失败必须响）。
+    """
+    raw = _read_snapshot_raw(path)
+    if not isinstance(raw, dict):
+        return []
+    return [_tribute_from_jsonable(a) for a in raw.get("tributes") or []]
 
 
 def load_corpus(log_dir: str = None, snapshot: str = SNAPSHOT) -> list:
@@ -215,3 +252,76 @@ def load_corpus(log_dir: str = None, snapshot: str = SNAPSHOT) -> list:
         return load_snapshot(snapshot)
     LAST_SOURCE = f"实时日志 {log_dir or LOG_DIR}"
     return load_games(log_dir or LOG_DIR)
+
+
+#: 最近一次 `load_corpus_tributes` 用的是哪一份（换源必须可见，同 LAST_SOURCE）
+LAST_TRIBUTE_SOURCE = None
+
+
+def load_corpus_tributes(log_dir: str = None, snapshot: str = SNAPSHOT) -> list:
+    """进贡记录版的 `load_corpus`：**优先快照**，没有才退回实时日志。"""
+    global LAST_TRIBUTE_SOURCE
+    if log_dir is None and snapshot and os.path.exists(snapshot):
+        recs = load_snapshot_tributes(snapshot)
+        LAST_TRIBUTE_SOURCE = (f"语料快照 {os.path.relpath(snapshot)}"
+                               f"（进贡 {len(recs)} 条）")
+        return recs
+    LAST_TRIBUTE_SOURCE = f"实时日志 {log_dir or LOG_DIR}"
+    return load_tributes(log_dir or LOG_DIR)
+
+
+# ---------------------------------------------------------------- 进贡记录
+#
+# 进贡是**局间**的事（上一手结算之后、这一手发牌之前），不属于任何一手，
+# 所以不塞进 GameLog，单独返回。
+#
+# 两行一起用才完整（2026-09-25 在 26 个日志文件 / 114 MB 上核出，spec §13.6）：
+#   TributeService NotifyTribute localId=N Card=N          -> 谁贡出了哪张（进贡）
+#   TributeSectionEndService NotifyTributeSectionEnd
+#       fromLocalId=N destLocalId=M card=N                 -> 谁还给谁哪张（还贡）
+# `card=` 是**牌 ID**，与 net/cards.py 的编码一致（>255 = 第二副），可直接喂 meld.py。
+
+_TRIB_GIVE = re.compile(r"TributeService NotifyTribute localId=(\d+) Card=(\d+)")
+_TRIB_RETURN = re.compile(
+    r"TributeSectionEndService NotifyTributeSectionEnd "
+    r"fromLocalId\s*=\s*(\d+)\s+destLocalId\s*=\s*(\d+)"
+    r"\s+card\s*=\s*(\d+)")
+
+
+@dataclass
+class TributeRec:
+    t: Optional[datetime]
+    kind: str              # "give" = 进贡 / "return" = 还贡
+    giver: int             # 交出牌的人
+    taker: Optional[int]   # 收到牌的人（"give" 那行日志里没有，为 None）
+    card: int
+
+
+def load_tributes(log_dir: str = LOG_DIR) -> list[TributeRec]:
+    """从实时日志里解出进贡/还贡记录。
+
+    **目录不在就抛**（同 `load_games`）—— 返回空列表会让下游验收「0 项全过」。
+    """
+    if not os.path.isdir(log_dir):
+        raise FileNotFoundError(
+            f"日志目录不存在：{log_dir}\n"
+            f"日志只保留 2 天。进贡记录的**唯一**来源就是它 —— "
+            f"别把它当成「0 条进贡」继续跑。")
+    files = sorted(glob.glob(os.path.join(log_dir, "*.log")))
+    if not files:
+        raise RuntimeError(f"目录在但一个 .log 都没有：{log_dir}")
+    out: list[TributeRec] = []
+    for f in files:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                ts = _ts(line)
+                m = _TRIB_GIVE.search(line)
+                if m:
+                    out.append(TributeRec(ts, "give", int(m.group(1)), None,
+                                          int(m.group(2))))
+                    continue
+                m = _TRIB_RETURN.search(line)
+                if m:
+                    out.append(TributeRec(ts, "return", int(m.group(1)),
+                                          int(m.group(2)), int(m.group(3))))
+    return out
