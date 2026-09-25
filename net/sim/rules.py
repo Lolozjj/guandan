@@ -245,3 +245,56 @@ def reward(ranks, seat: int, multiplier: float = None) -> float:
     m = MULTIPLIER if multiplier is None else multiplier
     p = points(ranks) * m
     return p if TEAM[seat] == winner_team(ranks) else -p
+
+
+# ---------------------------------------------------------------- 牌堆与发牌
+
+#: 完整牌堆：两副牌 108 张的牌 ID。**顺序固定**（`range` 升序），
+#: 这样给定 seed 的发牌结果永远一样 —— 训练要可复现。
+FULL_DECK = tuple(c for c in range(0, 334) if cards.is_card(c))
+
+_DEAL_EACH = 27                     # 两副牌 108 / 4 家
+
+
+def _check_level(level) -> None:
+    """**级别 14 不许顺着接口流进来**（spec Global Constraints）。
+
+    日志里 A 有时写 14。`cards.parts(14)` 会把 14 当成**小王** —— 于是级牌判定、
+    逢人配判定全错，而且一声不响。归一只有 `meld.norm_level` 一处，接口上拦住
+    比在内部到处归一安全。
+    """
+    if level is None:
+        return
+    if not isinstance(level, int) or not 1 <= level <= 13:
+        raise ValueError(
+            f"级别必须在 1..13（A=1）。收到 {level!r} —— "
+            f"14 是日志里 A 的另一种写法，请先过 meld.norm_level()")
+
+
+def deal(rng, level=None, first=None) -> "Hand":
+    """洗牌发牌，每家 27 张。`first` 不给就随机定领出者。"""
+    _check_level(level)
+    deck = list(FULL_DECK)
+    rng.shuffle(deck)
+    hands = [set(deck[i * _DEAL_EACH:(i + 1) * _DEAL_EACH]) for i in SEATS]
+    return Hand(hands=hands, level=level,
+                turn=rng.randrange(4) if first is None else first)
+
+
+def new_hand(rng, level=None, hands=None, first=None) -> "Hand":
+    """建一手牌。**这是唯一的入口** —— `Hand(...)` 直接构造只允许出现在测试里。
+
+    - `hands` 给定：直接用（**不洗牌**），供回放真实对局
+    - `hands=None`：洗牌发牌
+
+    **进贡不走这里。** 进贡只有 `apply_tribute(hand, prev_ranks)` 一个入口
+    （见本模块的进贡一节）—— 曾经这里也想收一个 `prev_ranks`，那是两条路做
+    同一件事，本仓库为「副本会漂」吃过亏（`melds_from` 的 docstring 记过一条）。
+    """
+    _check_level(level)
+    if hands is None:
+        h = deal(rng, level=level, first=first)
+    else:
+        h = Hand(hands=[set(x) for x in hands], level=level,
+                 turn=rng.randrange(4) if first is None else first)
+    return h
