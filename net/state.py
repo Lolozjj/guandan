@@ -66,6 +66,18 @@ class GameState:
     passes: List[int] = field(default_factory=list)  # 本轮要不起的座位
     me: int = ME_SEAT                    # 我在哪个座位（见 ME_SEAT 的说明）
     deal_hand: set = field(default_factory=set)   # 本局起手牌，用来交叉验证座位
+    #: 本局的动作流水（按时序）：`(座位, 出的牌)`，`None` = 该座位「要不起」。
+    #: **和 `rules.Hand.steps` 同语义**：出完的座位不占步。影子模式的历史就取它。
+    #: 注意里面**有推断出来的步** —— 我自己要不起时服务器不发事件（实测），
+    #: 只能从轮转补；补的位置在下一个事件之前，见 `_advance_to`。
+    steps: List[tuple] = field(default_factory=list)
+    #: 局号。`on_deal` 时 +1；面板中途接进来时是 0。影子日志用它把决策点归到一局。
+    deal_seq: int = 0
+    #: 本局的座位认出来了没有。**换局时必须清零** —— 座位号每局都变，
+    #: 认出来之前算出来的相对方位全是错的。
+    me_confirmed: bool = False
+    #: 本局出完的座位，按出完先后。影子日志的「那局赢没赢」用它推。
+    finish_order: List[int] = field(default_factory=list)
     _votes: Dict[int, int] = field(default_factory=dict)
     _me_note: str = ""
 
@@ -87,16 +99,63 @@ class GameState:
         if len(ids) > len(self.deal_hand):
             self.deal_hand = set(ids)
 
+    def _is_finished(self, seat: int) -> bool:
+        """这个座位出完了吗。
+
+        `remaining` 是服务器在每条出牌消息里直接给的（`LeftCardLen`），最可靠；
+        没记到的时候退回「出过的张数 >= 27」—— 两副牌一个座位起手 27 张。
+        """
+        if seat in self.remaining:
+            return self.remaining[seat] == 0
+        played = sum(len(p.cards) for p in (self.history.get(seat) or []))
+        return played >= 27
+
+    def _advance_to(self, seat: int) -> None:
+        """补上「从当前轮次走到 `seat`」中间那些**没有事件**的「要不起」。
+
+        为什么必须有这一步：出牌顺序是座位号递减（`0→3→2→1`），而
+        **我自己要不起时服务器不通知我**（实测）。轮次从别人跳到我、或从我
+        跳到别人时，中间那一步只能自己推。
+        `on_play` 与 `on_pass` **两条入口都要调它** —— 只挂在 `on_play` 上会漏：
+        我过了之后，如果下一条事件是别人的「要不起」（3006），轮次照样越过了我。
+
+        已出完的座位不补（`_is_finished`）—— 他没有「过」这个动作。
+        """
+        if self.turn is None or self.turn == seat:
+            return
+        s = self.turn
+        for _ in range(4):
+            if s == seat:
+                return
+            if s not in self.passes:
+                self.passes.append(s)
+                if not self._is_finished(s):
+                    self.steps.append((s, None))
+            s = (s - 1) % 4
+
     def on_hand(self, ids: List[int]) -> None:
         """服务器同步了我的手牌（msgid 3019，周期性重发）。"""
         self._sync_hand(ids)
 
     def on_deal(self, level: Optional[int] = None) -> None:
-        """新一局：清桌面状态，但保留级别（级别是跨局累积的）。"""
+        """新一局：清桌面状态，但保留级别（级别是跨局累积的）。
+
+        `me_confirmed` 也要清 —— 报文里的座位号**每局都会变**，
+        在认出本局的座位之前，任何相对方位都是猜的。
+        """
         if level is not None:
             self.level = level
+        self.deal_seq += 1
         self.hand = []
         self.plays = []
+        self.steps = []
+        self.finish_order = []
+        self.me_confirmed = False
+        # `turn` 也要清：新一局谁先出是由服务器重新分配的，**上一局的轮次是陈旧数据**。
+        # 不清的话，换局后第一条事件会拿旧轮次去推「中间谁过了」，
+        # 凭空补出几个不存在的手（`_advance_to` 是照 `turn` 走的）。
+        # 清成 None 之后 `_advance_to` 会直接返回，直到本局第一条事件把轮次带回来。
+        self.turn = None
         self.history = {0: [], 1: [], 2: [], 3: []}
         self.remaining = {}
         self.table = None
@@ -143,19 +202,21 @@ class GameState:
                 self.me = seat
                 self._sync_hand(left_cards)
             else:
+                # 换局的第一手：新手牌不是上一局的子集，`_sync_hand` 会清场。
+                # **清完之后必须把座位也认下来** —— 报文里的座位号每局都会变，
+                # 这里漏认的话整局的方位标签都会反（用户报过两次）。
+                # 顺序不能反：`_sync_hand` 可能触发 `on_deal`（会把 me_confirmed 清零），
+                # 所以赋值必须在它后面。
                 self._sync_hand(left_cards)
+                if seat != self.me:
+                    self._me_note = f"换局重认座位：报文座位 {seat} 是我"
+                self.me = seat
+            self.me_confirmed = True
 
         # 出牌人跟预测的下一手对不上，说明中间那些座位行动过了（要不起）。
         # **服务器不给自己发「我要不起」的通知**（自己发起的不需要通知），
-        # 所以这一步是必要的补记；不然轮次会一直停在我身上。
-        if self.turn is not None and self.turn != seat:
-            s = self.turn
-            for _ in range(4):
-                if s == seat:
-                    break
-                if s not in self.passes:
-                    self.passes.append(s)
-                s = (s - 1) % 4
+        # 所以这一步是必要的补记；不然轮次会一直停在我身上。顺带进动作流水。
+        self._advance_to(seat)
         self.plays.append(p)
         self.history.setdefault(seat, []).append(p)
         if ids:
@@ -167,6 +228,9 @@ class GameState:
             # left 是「这一手之后还剩几张」，0 是合法值（打完了），
             # 不能像别的字段那样把 0 当成"没这个信息"。
             self.remaining[seat] = max(0, left)
+            self.steps.append((seat, list(ids)))
+            if self.remaining[seat] == 0 and seat not in self.finish_order:
+                self.finish_order.append(seat)
         self.turn = next_seat if 0 <= next_seat <= 3 else None
         self._vote(seat, ids)
         return p
@@ -196,9 +260,15 @@ class GameState:
         第一版漏了这件事：只看 3005 的 NextTurnSeatID，就会在
         「我出一手、别人都要不起、又轮回我」的时候一直停在别人身上 ——
         面板说「轮到右对手」，游戏里却已经亮着出牌按钮了。
+
+        `_advance_to` 放在最前面：轮次可能已经越过了一些座位（包括我自己 ——
+        我自己要不起时**收不到任何事件**，只能在这里补）。
         """
+        self._advance_to(seat)
         if seat not in self.passes:
             self.passes.append(seat)
+            if not self._is_finished(seat):
+                self.steps.append((seat, None))
         if next_seat is not None:
             self.turn = next_seat
             return
