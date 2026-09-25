@@ -46,47 +46,19 @@ import torch
 import torch.nn as nn
 
 from net.sim import env, rules
+from train.net import (DEVICE, LSTM_HIDDEN, MLP_HIDDEN, MLP_LAYERS,
+                       QNet, q_values as _q)
 # `_utf8_stdout` 复用 accept_meld 那份，**不复制**（同 tools/accept_sim.py 的理由）。
 # 2026-09-25：正是漏了它，1800 秒训练跑完、末次胜率 92.5%，却在打印
 # 「通过 ✓」那一行抛 UnicodeEncodeError —— **训练成功、退出码丢掉**。
 from tools.accept_meld import _utf8_stdout
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_GAMES = 32              # spec §5.3：batch 32 局
 LR = 1e-4
 EPS_START, EPS_END = 1.0, 0.1
-MLP_LAYERS = 6
-MLP_HIDDEN = 512
-LSTM_HIDDEN = 128
 EVAL_EVERY_GAMES = BATCH_GAMES * 20
 EVAL_GAMES = 200
 PASS_WINRATE = 0.60      # 见 docstring：60% + 曲线不降 = 学得起来
-
-
-class QNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.lstm = nn.LSTM(env.HISTORY_DIM, LSTM_HIDDEN, batch_first=True)
-        layers, d = [], env.STATE_DIM + env.ACTION_DIM + LSTM_HIDDEN
-        for _ in range(MLP_LAYERS):
-            layers += [nn.Linear(d, MLP_HIDDEN), nn.ReLU()]
-            d = MLP_HIDDEN
-        layers += [nn.Linear(d, 1)]
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, state, action, hist):
-        _out, (h, _c) = self.lstm(hist)
-        return self.mlp(torch.cat([state, action, h[-1]], dim=-1)).squeeze(-1)
-
-
-def _q(net, obs, acts, hist):
-    """一次前向算出一批候选的 Q。`obs`/`hist` 是单个局面的。"""
-    st = torch.from_numpy(env.encode_state(obs)).unsqueeze(0).to(DEVICE)
-    ac = torch.from_numpy(np.stack([env.encode_action(a, obs.level)
-                                    for a in acts])).to(DEVICE)
-    hi = torch.from_numpy(hist).unsqueeze(0).to(DEVICE)
-    with torch.no_grad():
-        return net(st.expand(len(acts), -1), ac, hi.expand(len(acts), -1, -1))
 
 
 def self_play_batch(net, rng, eps):
