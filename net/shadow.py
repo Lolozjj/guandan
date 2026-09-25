@@ -63,8 +63,11 @@ class ShadowLog:
         #: **它同时决定记录里的 `advice_shown`** —— 上过屏的那段数据不再干净
         #: （人会被建议影响），离线分析「模型与人的分歧」时要把这段排除掉。
         self.show_advice = show_advice
-        #: 给面板显示的一行建议（"建议：…（第 1/14，Q=0.183）"）；出手后清空
+        #: 给**终端**面板显示的一行建议（"建议：…（第 1/14，Q=0.183）"）；出手后清空
         self.last_advice = ""
+        #: 给**图形**面板的结构化建议：`[{cards:[牌ID…], kind, q}, …]`，首选在前。
+        #: 图形面板自己画牌面（用户 2026-09-26 要的：不要数字，用图片）；出手后清空。
+        self.advice_top = []
         self.n_decisions = 0
         self.skips = {}
         self.last_line = weights_note or "影子模式已就绪"
@@ -152,6 +155,8 @@ class ShadowLog:
             # 3.2.2 之后有两个来源，可信度不同，离线要能分开看
             "level_src": getattr(st, "level_src", ""),
         }
+        if self.show_advice:
+            self.advice_top = self._pending["top"]
         if self.show_advice and got.order:
             i0 = got.order[0]
             m0 = got.cands[i0]
@@ -247,6 +252,7 @@ class ShadowLog:
         rec["actual_shape"] = list(self._shape_of(cs, rec["level"]))
         rec["actual_rank"] = self._rank_of(cs, rec["level"])
         self.last_advice = ""            # 出手了 -> 清掉，别挂着上一手的建议误导人
+        self.advice_top = []
         self._emit(**rec)
         self.n_decisions += 1
         self.last_line = (f"影子：本局 {self.n_decisions} 个决策点"

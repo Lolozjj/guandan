@@ -44,11 +44,20 @@ TURN = "#ffd54f"
 FONT = "Microsoft YaHei"
 FONT_SYM = "Segoe UI Symbol"
 
-W, H = 1200, 830
+#: 右侧多留一栏给「模型建议」（用户 2026-09-26：原来那行字不够明显）
+W, H = 1520, 830
 CARD = (34, 46)             # 出过的牌
 MY_CARD = (52, 74)          # 我的手牌
 STEP = 21                   # 出过的牌横向步进（叠着放，露出左上角点数）
 MY_STEP = 34
+
+
+def _wrap(items, per_row: int) -> list:
+    """把一串东西按每行 `per_row` 个切开 —— 建议栏画牌面时用（8 张的炸要换行）。
+
+    纯函数，不碰窗口：面板的显示逻辑要能不打开窗口就测（HANDOFF 第八节第 6 条）。
+    """
+    return [list(items[i:i + per_row]) for i in range(0, len(items), per_row)]
 
 
 def parse_name(name: str):
@@ -62,6 +71,9 @@ def parse_name(name: str):
 
 class TableWindow:
     """四个方位各自一块区域。每家出过的牌就铺在自己的区域里。"""
+
+    #: 右侧「模型建议」栏的位置 (x0, y0, x1, y1)
+    ADVICE = (1210, 60, 1500, 660)
 
     # 每家的摆放区域 (x0, y0, x1, y1)，以及标签位置
     AREA = {
@@ -158,7 +170,50 @@ class TableWindow:
 
     # ------------------------------------------------------------ 主绘制
 
-    def draw(self, st, hint, n_ev, shadow_line=""):
+    # ------------------------------------------------------------ 建议栏
+
+    def _advice_panel(self, advice):
+        """右侧「模型建议」：**画牌面图片，不写 Q 值/名次这些数字**。
+
+        `advice` 是记录器给的 `[{cards, kind, q}, …]`（首选在前，牌 ID）。
+        用户 2026-09-26 定的形式：首选大图 + 两个备选小图。
+        ⚠️ 上屏会被影响 —— 记录里每条都带 `advice_shown`，离线分析分歧时要排除。
+        """
+        x0, y0, x1, y1 = self.ADVICE
+        cv = self.cv
+        cv.create_rectangle(x0, y0, x1, y1, outline=BG_EDGE, width=2)
+        cv.create_text((x0 + x1) / 2, y0 + 22, text="模型建议",
+                       font=self.f_mid, fill=TURN)
+        if not advice:
+            cv.create_text((x0 + x1) / 2, y0 + 70, text="（轮到我时显示）",
+                           font=self.f_small, fill=DIM)
+            cv.create_text((x0 + x1) / 2, y1 - 18, text="只记录，不影响你打牌",
+                           font=self.f_small, fill=DIM)
+            return
+        y = y0 + 48
+        for i, item in enumerate(advice[:3]):
+            big = (i == 0)
+            size = (46, 62) if big else (30, 40)
+            step = 34 if big else 22
+            cs = list(item.get("cards") or [])
+            if not cs:
+                cv.create_text(x0 + 16, y, anchor="nw", text="过（不要这手）",
+                               font=self.f_small, fill=TEXT)
+                y += size[1] + 14
+                continue
+            for row in _wrap(cs, 5):            # 一手最多 5 张一行
+                x = x0 + 16
+                for cid in row:
+                    self._card(x, y, size, cards.decode(cid), small=not big)
+                    x += step
+                y += size[1] + 6
+            y += 12
+        cv.create_text((x0 + x1) / 2, y1 - 18, text="只记录，不影响你打牌",
+                       font=self.f_small, fill=DIM)
+
+    # ------------------------------------------------------------ 主绘制
+
+    def draw(self, st, hint, n_ev, shadow_line="", advice=None):
         cv = self.cv
         cv.delete("all")
         cv.create_rectangle(14, 14, W - 14, H - 14, outline=BG_EDGE, width=3)
@@ -201,10 +256,10 @@ class TableWindow:
         self._seat_area(st, (st.me + 3) % 4, "right")   # 右
         self._seat_area(st, st.me, "me")                # 我
 
-        # 我的手牌
+        # 我的手牌（右边界让给建议栏，不许压过去）
         hx0, hy = 240, H - 128
-        self._flow(st.hand_grouped(), hx0, hy, W - 240, H - 50,
-                   step=MY_STEP, size=MY_CARD)
+        self._flow(st.hand_grouped(), hx0, hy, min(W - 240, self.ADVICE[0] - 20),
+                   H - 50, step=MY_STEP, size=MY_CARD)
         cv.create_text(W / 2, H - 108,
                        text=f"我的手牌（{len(st.hand)} 张，按大小排序）",
                        font=self.f_small, fill=DIM)
@@ -214,6 +269,9 @@ class TableWindow:
         if shadow_line:
             cv.create_text(W / 2, H - 66, text=shadow_line,
                            font=self.f_small, fill=DIM)
+
+        # 右侧：模型建议（画牌面）
+        self._advice_panel(advice)
 
         if st.passes:
             cv.create_text(600, 496, text="要不起：" + "、".join(
@@ -272,7 +330,8 @@ def run_live(st, events_path=EVENTS, seconds=0, level=None, shadow_log=None):
             if shadow_log is not None:
                 shadow_log.note_level()
         win.draw(st, box["hint"], box["n"],
-                 shadow_log.panel_text() if shadow_log else "")
+                 shadow_log.panel_text() if shadow_log else "",
+                 advice=shadow_log.advice_top if shadow_log else None)
         root.after(150, tick)
 
     if seconds:
@@ -341,7 +400,8 @@ def run_replay(st, capture, delay_ms=260, seconds=0, level=None, shadow_log=None
             if shadow_log is not None:
                 shadow_log.close()
         win.draw(st, box["hint"], box["n"],
-                 shadow_log.panel_text() if shadow_log else "")
+                 shadow_log.panel_text() if shadow_log else "",
+                 advice=shadow_log.advice_top if shadow_log else None)
         root.after(delay_ms, tick)
 
     if seconds:
