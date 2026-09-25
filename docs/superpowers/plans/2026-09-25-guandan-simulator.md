@@ -1644,9 +1644,17 @@ _RANK_SLOTS = 15
 
 
 def _rank_slot(point: int) -> int:
-    if point >= meld.POINT_LEVEL:
-        return _RANK_SLOTS - 1
-    return min(max(point, 1), _RANK_SLOTS - 1) - 1
+    """主点数 -> 0..14 的槽位：普通点数 1..13 -> 0..12、**级牌 -> 13**、王 -> 14。
+
+    ⚠️ 别写成 `point >= POINT_LEVEL` 一档到底 —— 那样**级牌会掉进王的槽位**
+    （POINT_LEVEL=14 而王是 15/16），于是「桌面是级牌」与「桌面是一对王」
+    在编码里分不开，而它们是两个完全不同的层级。
+    """
+    if point >= meld.POINT_SMALL:          # 15 / 16 = 王
+        return _RANK_SLOTS - 1             # 14
+    if point >= meld.POINT_LEVEL:          # 14 = 级牌
+        return _RANK_SLOTS - 2             # 13
+    return min(max(point, 1), _RANK_SLOTS - 2) - 1
 
 
 @dataclass(frozen=True)
