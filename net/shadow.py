@@ -26,7 +26,7 @@ import os
 import time
 
 from net import advise, cards
-from net.sim import rules
+from net.sim import meld, rules
 
 SHADOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shadow.jsonl")
 SCHEMA = 1
@@ -106,7 +106,7 @@ class ShadowLog:
                      "q": round(got.q[i], 4)}
                     for i in got.order[:self.topk]],
             "actual": None, "actual_names": [], "actual_is_me": None,
-            "actual_rank": None, "resolved": False,
+            "actual_shape": None, "actual_rank": None, "resolved": False,
         }
         self._cands, self._q, self._order = got.cands, got.q, got.order
 
@@ -125,18 +125,35 @@ class ShadowLog:
 
     # ------------------------------------------------------------ 内部
 
-    def _rank_of(self, cs) -> int:
+    def _rank_of(self, cs, level) -> int:
         """我实际出的这一手在候选里的 Q 名次（0 = 就是头名）。`-1` = **不在候选里**。
 
-        `-1` 要当成告警看：状态没错的话，我出的牌一定在合法候选里
-        （`accept_meld` 的验收①就是这个口径 —— 1706 手真实着法全都枚举得出来）。
+        ⚠️ **按「形状」比，不按牌张比。** `melds_from` 的契约是「每个形状一条代表」
+        （spec §13.2），候选里的牌常常是换了花色的同形状牌 —— 拿牌张比会把
+        合法着法误判成「不在候选里」（实测：全量抓包两局里有 2 个决策点被误报成
+        `actual_rank == -1`，其中一手是单张 ♣9。这也正是 `accept_meld` 验收① 的口径）。
+
+        `-1` 才是告警：那说明状态重建有问题（我出的牌当时不是合法着法）。
         """
-        want = sorted(cs or [])
+        want = self._shape_of(cs, level)
         for i, c in enumerate(self._cands):
-            got = sorted(c.cards) if c is not None else []
+            # 「过」在候选里是 `None`，它的形状与 `_shape_of(None)` 一样是 (0,0,0)
+            got = (0, 0, 0) if c is None else (c.kind, c.size, c.rank)
             if got == want:
                 return self._order.index(i)
         return -1
+
+    @staticmethod
+    def _shape_of(cs, level):
+        """一手牌的「形状」`(牌型, 张数, 主点数)`；「过」是 `(0, 0, 0)`。
+
+        判不出牌型时返回 `(-1, -1, -1)` —— 它不会与任何候选相等，
+        于是 `actual_rank` 落成 `-1`，正是我们要的告警。
+        """
+        if not cs:
+            return (0, 0, 0)
+        m = meld.as_meld(list(cs), level)
+        return (m.kind, m.size, m.rank) if m is not None else (-1, -1, -1)
 
     def _resolve(self, st) -> None:
         if self._pending is None:
@@ -152,7 +169,11 @@ class ShadowLog:
         # 这一步**本该是我**（决策点就是「轮到我了」）—— 不是我的话，
         # 说明状态机把着法归错了人，这条记录要能被离线挑出来。
         rec["actual_is_me"] = (seat == rec["seat"])
-        rec["actual_rank"] = self._rank_of(cs)
+        # 形状（牌型/张数/主点数）也记下来：离线看「模型与人的分歧」时，
+        # 光有牌张还得再判一次牌型；而且候选是「每形状一条代表」，
+        # 拿形状比才对得上（见 `_rank_of`）。
+        rec["actual_shape"] = list(self._shape_of(cs, rec["level"]))
+        rec["actual_rank"] = self._rank_of(cs, rec["level"])
         self._emit(**rec)
         self.n_decisions += 1
         self.last_line = (f"影子：本局 {self.n_decisions} 个决策点"

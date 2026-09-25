@@ -133,6 +133,27 @@ class GameState:
                     self.steps.append((s, None))
             s = (s - 1) % 4
 
+    def _maybe_clear_table(self) -> None:
+        """一圈扫不到人接手（或扫回主人自己）就清桌 —— 与 `rules.Hand._advance` 同一套判据。
+
+        **不清的话「桌面待压」会一直挂着上一轮那手牌**：面板显示错，建议也错
+        （以为必须压一手，其实是我领出）。实测（全量抓包两局）：4 个决策点的桌面
+        与日志真值不符，连带那几手的建议全错。
+        """
+        if self.table is None or self.turn is None:
+            return
+        s = (self.table.seat - 1) % 4          # 出牌顺序是座位号递减
+        for _ in range(3):                     # 另外三家
+            if self._is_finished(s) or s in self.passes:
+                s = (s - 1) % 4
+                continue
+            return                             # 有人还能接手 -> 这一轮没结束
+        # 清桌要**连「谁要不起」一起清** —— `rules.Hand._advance` 就是两样一起清的：
+        # 一轮结束、下一轮重新开始，上一轮的要不起名单不该留着
+        # （留着的话喂给网络的那 4 维 `passed` 与训练时不一致，实测 4 个决策点因此不符）。
+        self.table = None
+        self.passes = []
+
     def on_hand(self, ids: List[int]) -> None:
         """服务器同步了我的手牌（msgid 3019，周期性重发）。"""
         self._sync_hand(ids)
@@ -220,10 +241,15 @@ class GameState:
         self.plays.append(p)
         self.history.setdefault(seat, []).append(p)
         if ids:
-            # 「要不起」只在新一轮（领出的人再次出牌）才清空 —— 同一轮里
-            # 要不起的人是一直出局的，清早了轮次就会算错。
-            if self.table is None or seat == self.table.seat:
-                self.passes = []
+            # **一手打出来 = 重新开一轮**：其余三家重新获得机会（含之前「要不起」过的）。
+            # 这条与 `rules.Hand.play` 完全一致（它在 55 局真实对局上验过），
+            # 也是影子日志里 `passed` 那一维与训练时同源的前提。
+            #
+            # 原来写的是「只有领出的人再次出牌才清空」，理由是「不然轮次会算错」——
+            # 那个理由站不住：有人压过一手之后，前面那些「要不起」还挂在名单上，
+            # 于是 `_advance_to` 以为他们不用补步，**流水会少记**。
+            # 实测（全量抓包那一局）：抓包 77 步 vs 日志真值 101 步，差的就是这个。
+            self.passes = []
             self.table = p
             # left 是「这一手之后还剩几张」，0 是合法值（打完了），
             # 不能像别的字段那样把 0 当成"没这个信息"。
@@ -232,6 +258,7 @@ class GameState:
             if self.remaining[seat] == 0 and seat not in self.finish_order:
                 self.finish_order.append(seat)
         self.turn = next_seat if 0 <= next_seat <= 3 else None
+        self._maybe_clear_table()
         self._vote(seat, ids)
         return p
 
@@ -271,6 +298,7 @@ class GameState:
                 self.steps.append((seat, None))
         if next_seat is not None:
             self.turn = next_seat
+            self._maybe_clear_table()
             return
         leader = self.table.seat if self.table else None
         nxt = (seat - 1) % 4
@@ -279,6 +307,7 @@ class GameState:
                 break
             nxt = (nxt - 1) % 4
         self.turn = nxt
+        self._maybe_clear_table()
 
     # ------------------------------------------------------------- 显示用
 

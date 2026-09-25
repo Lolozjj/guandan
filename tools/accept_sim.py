@@ -61,8 +61,13 @@ class ReplayResult:
     hand: rules.Hand
 
 
-def replay(g) -> ReplayResult:
+def replay(g, record=None) -> ReplayResult:
     """把一局真实对局走一遍。**认不出的局面直接炸**，不跳过。
+
+    `record(kind, hand)` 每**将要**走一步时调一次（`kind` 是 `"pass"` 或 `"play"`），
+    传进来的是**动手之前**的 `hand` —— 影子模式的验收要拿它在每个决策点取真值
+    （手牌、桌面、谁要不起、各家剩几张）。**回放循环只有这一份**（本仓库为
+    「副本会漂」吃过亏），所以真值侧复用它、不另写一份。
 
     ⚠️ **日志里没有「过」。** 所以不能写成「轮到日志的座位了就出手」——
     真人可能先过。判据必须是：**轮到日志的座位了，而且他这一手确实压得过桌面**
@@ -96,6 +101,9 @@ def replay(g) -> ReplayResult:
                 raise rules.IllegalPlay(
                     f"{g.t0} 第 {i} 手：轮到领出的是座位{hand.turn}，"
                     f"但日志说这手是座位{rec.seat}出的 —— 领出者判错了")
+            if record is not None:
+                # **动手之前**的快照：这一刻就是「轮到 hand.turn 出牌」的决策点
+                record("pass", hand)
             hand.pass_turn(hand.turn)
             passes += 1
             guard += 1
@@ -106,6 +114,8 @@ def replay(g) -> ReplayResult:
             raise rules.IllegalPlay(
                 f"{g.t0} 第 {i} 手：座位{rec.seat} 真实出了 {meld.describe_meld(m)}，"
                 f"但候选里没有这个形状（候选 {len(cands)} 个）—— 枚举漏了")
+        if record is not None:
+            record("play", hand)
         hand.play(rec.seat, m)
 
         # ② **独立于牌型枚举的一路校验**：服务器自己在每条出牌消息里报了这一手之后
