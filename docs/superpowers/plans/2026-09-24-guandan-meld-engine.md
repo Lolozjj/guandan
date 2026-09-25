@@ -16,8 +16,12 @@
 - **牌型真源只有一个：`net/sim/meld.py`。** 它按**牌 ID**（int）工作，**该文件里不允许出现牌名字符串**（如 `"S3"`、`"5♥"`）。`live/rules.py` 的 6 个 bug 有一半来自字符串处理。
 - **不复制 `live/rules.py`**（它有 6 处已证实的错，见 spec §2.3）。它只作为「牌名 → 牌 ID」的适配层保留。
 - **级别口径与游戏日志一致**：`A=1`、`2..10`、`J=11`、`Q=12`、`K=13`；小王 `14`、大王 `15`。这与 `net/cards.parts()` 的 idx 完全一致。
-- **炸弹顺序（用户口述 + 数据 0 矛盾）**：`4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 天王炸`。
-- **牌型表**：单张/对子/三张/顺子(5)/三带二(5)/三连对(6)/钢板(6)/炸弹(4~8)/同花顺(5)/天王炸。**没有三带一**（4 张只有炸弹）。
+- **炸弹顺序**：`4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 9炸 < 10炸 < 天王炸`。
+  4炸~8炸 由**用户口述 + 24 对真实证据**（0 矛盾）；
+  **9炸/10炸 在 8炸 与天王炸之间，已由用户 2026-09-25 确认**
+  （数据侧只有「9 张炸存在」的实例、没有「它对压谁」的证据，所以是用户口述级依据）。
+- **A 可当小牌进钢板**（`AAA222`）—— 用户 2026-09-25 确认；语料 9 手钢板里 0 手含 A。
+- **牌型表**：单张/对子/三张/顺子(5)/三带二(5)/三连对(6)/钢板(6)/炸弹(4~10，8 张天然 + 最多 2 张逢人配)/同花顺(5)/天王炸。**没有三带一**（4 张只有炸弹）。
 - **连对 = 恰好 3 对**；**钢板 = 恰好 2 个连续三张**（数据里只见过这两个长度，更长的一律不产生）。
 - **遇认不出的局面必须明着 `raise`**，不许静默返回「合法」或「过」。宁可崩掉，也不要拿错规则偷偷训出一版废模型。
 - **数据路径**：游戏日志 `C:\Users\17837\AppData\Roaming\Tencent\xwechat\radium\users\67b5ef56e08ab757e0cd7cac86e2366d\applet\local\wx2f60a7b40f3828a9\usr\HappySDKLogFiles`（**只保留 2 天**）；抓包事件 `net/events.jsonl`。
@@ -140,7 +144,11 @@ git commit -m "chore: 建 pytest 骨架与 net/sim 包"
 - 出牌行：`NotifyGiveCards 后台通知客户端出牌结果 info = {json}`，字段 `SeatID` `NextTurnSeatID` `CardType` `LeftCardLen` `CardLen` `CardList`。
 - 结算行：`EVA1B001结算协议 = {json}`，字段 `Rank`（**`Rank[i]` = 座位 i 的名次**，i 为 0-based）、`UpgradeInfo`、`LeftCards`（每家剩的牌）。
 - 时间戳格式：`2026-09-22|16:33:00:239|INFO|...`（毫秒用**冒号**分隔，不是点）。
-- 实测：126 个发牌段，其中 55 局有结算，且 **55/55 局「出过的牌 + 结算剩的牌 = 108」分毫不差**。
+- 实测：**63 个真发牌段**，其中 **55 局有结算**，且 **55/55 局「出过的牌 + 结算剩的牌 = 108」分毫不差**。
+- ⚠️ **`SendCardsService set roundID` 前缀共命中 126 行，其中一半是不带 JSON 载荷的伴随行**
+  （同一毫秒、恒定相隔 8 行，形如 `roundID:S7380R1T1669t6AB4E78ES0A`）。
+  **必须显式跳过伴随行**，否则会对它抛 `RuntimeError`；跳过判定要放在「收上一局」之前，
+  否则会把当前局截断成两局。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -160,7 +168,8 @@ def test_loads_games():
     assert len(games) > 0, "日志目录在，却一局都没解出来 —— 不要静默通过"
     for g in games[:5]:
         assert len(g.my_cards) == 27
-        assert 1 <= g.trump <= 13
+        # 日志偶尔用 14 表示 A（net/cards.py 里也踩过这条），所以上限放到 14
+        assert 1 <= g.trump <= 14
 
 
 def test_settled_games_are_conserved():
@@ -339,9 +348,25 @@ git commit -m "feat: 游戏日志解析器（含 108 张守恒校验）"
 
 每家起手牌 = **他出过的所有牌 ∪ 他结算时剩的牌**。进贡/还贡发生在任何出牌之前，所以这样重建出来的正好是「进贡之后、第一手之前」的手牌，之后只减不增 —— 因此对局中每个时刻的手牌 = 该重建集合减去他此刻已出过的牌。
 
-桌面的判定**不看牌型**（否则就循环依赖了，比较函数 Task 4 才实现）：
-- 某一手是「领出」，当且仅当**上一手服务器给的 `nxt` 正好指回当前桌面的主人或他的队友**（说明这一轮转完了 / 队友接风）。
-- 这是本局第一手时，桌面为空。
+桌面的判定**不看牌型**（否则就循环依赖了，比较函数 Task 4 才实现）。
+「新领出」只有两种情况：
+
+1. **同一座位又出牌了** —— 其余三家都要不起，他重新领出；
+2. **队友接风** —— 桌面主人上一手把牌打完了（`left == 0`），队友接着领出。
+
+⚠️ **不能用服务器的 `NextTurnSeatID`（`PlayRec.nxt`）判领出 —— 已用 55 局实测证伪：**
+
+- `nxt == 桌面主人` 全量 **0 次**（`nxt` 是「我这一手之后轮到谁」，不会绕回自己；
+  其余三家要不起走的是 3006 报文，不会更新这一手记录里的 `nxt`）
+- `nxt == 队友` 命中 44 次，但**成因是服务器算下一手时跳过已出完的座位**，不是接风
+- 按 `nxt` 判的后果：全 55 局出现 **27 手「轮内不同型且非炸弹」的非法响应**（该清的桌没清）
+
+改成「同座位 或（队友 且 主人已出完）」后，同一口径下非法响应 **0 手**。
+反方向也验过：队友紧接着出牌的 114 手里，**主人没出完的 63 手中 0 手需要清桌**
+（56 手与桌面同型、本就是合法响应），**主人已出完的 51 手中 33 手必须清桌** ——
+所以「主人已出完」这个附加条件不是可选项，是必需的。
+
+本局第一手时桌面为空。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -390,6 +415,20 @@ def test_hand_never_grows():
                 assert len(s.hand) <= prev[s.seat], \
                     f"{g.t0} 座位{s.seat} 手牌变多了"
             prev[s.seat] = len(s.hand)
+
+
+def test_same_seat_playing_again_is_a_new_lead():
+    """同一座位连续出两手 = 其余三家都要不起 = 他重新领出，桌面必须清空。
+
+    漏了这条，会把「他重新领出」误当成「他压自己」，验收①就会报假红。
+    """
+    for g in _settled()[:20]:
+        snaps = decision_points(g)
+        prev = None
+        for s in snaps:
+            if prev is not None and s.seat == prev.seat:
+                assert s.table is None,                     f"{g.t0} 座位{s.seat} 连续出牌，桌面却没清空"
+            prev = s
 
 
 def test_first_snapshot_is_a_lead():
@@ -462,13 +501,19 @@ def decision_points(g: GameLog) -> list:
     snaps = []
     table = None
     table_seat = None
-    prev_nxt = None
+    prev_left = None          # 上一手 PlayRec.left；判队友接风要用
 
     for p in g.plays:
-        if table is not None and p.seat != table_seat:
-            # 上一手之后服务器说轮到桌面主人（或队友接风）-> 一轮走完 -> 重新领出
+        if table is not None:
             partner = (table_seat + 2) % 4
-            if prev_nxt in (table_seat, partner):
+            # 新领出只有两种情况：
+            #   1) 同一座位又出牌了 —— 其余三家都要不起，他重新领出
+            #   2) 队友接风 —— 桌面主人上一手把牌打完了（left == 0），队友接着领出
+            #
+            # **不要用 prev_nxt 判**：服务器算 nxt 时会跳过已出完的座位，所以 nxt 指到
+            # 队友既可能是接风、也可能只是跳过了一个出完的座位（那时队友其实在压牌）。
+            # 实测按 nxt 判会有 27 手非法响应；按下面这个判法 0 手。
+            if p.seat == table_seat or (p.seat == partner and prev_left == 0):
                 table = None
 
         snaps.append(Snapshot(seat=p.seat,
@@ -490,14 +535,14 @@ def decision_points(g: GameLog) -> list:
 
         table = list(p.cards)
         table_seat = p.seat
-        prev_nxt = p.nxt
+        prev_left = p.left
     return snaps
 ```
 
 - [ ] **Step 4: 跑测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_decision_points.py -q`
-Expected: `4 passed`
+Expected: `5 passed`
 
 若 `test_last_snapshot_hand_matches_settlement` 失败：**不要改测试去迁就实现。**
 那说明领出/桌面的判定有问题。先打印失败局的 `plays` 与 `LeftCards` 人工核对，
@@ -555,6 +600,14 @@ def test_point_value_level_card_beats_ace():
     assert meld.point_value(1, 5) > meld.point_value(13, 5)    # A 比 K 大
 
 
+def test_norm_level_ace_written_as_14():
+    """日志里 A 可能写成 14，必须归一成 1，否则会被当成小王。"""
+    assert meld.norm_level(14) == 1
+    assert meld.norm_level(5) == 5
+    assert meld.point_value(1, 14) == meld.point_value(1, 1)
+    assert meld.point_value(14, 14) == meld.point_value(14, 1)   # 小王不变
+
+
 def test_point_value_level_two_and_ace():
     """边界：级牌正好是 2 或 A。"""
     assert meld.point_value(2, 2) > meld.point_value(1, 2)     # 打2，2 最大
@@ -578,6 +631,31 @@ def test_two_decks_are_two_cards():
     pairs = [m for m in meld.melds_from(hand, level=2) if m.kind == meld.PAIR]
     assert len(pairs) == 1
     assert len(pairs[0].cards) == 2 and len(set(pairs[0].cards)) == 2
+
+
+def test_triple_pair_allows_joker_pair():
+    """王可以当三带二里的对子。
+
+    真实数据里有一手 card_type=5：2♦ 2♦(二副) 2♣ + 小王 小王(二副)。
+    排除王的话这手枚举不出来，Task 7 的验收①会直接报红。
+    """
+    hand = C("2♦", "2♦(二副)", "2♣", "小王", "小王(二副)")
+    tp = [m for m in meld.melds_from(hand, level=9)
+          if m.kind == meld.TRIPLE_PAIR]
+    assert len(tp) == 1
+    assert sorted(tp[0].cards) == sorted(hand)
+    assert tp[0].rank == meld.point_value(2, 9)      # 主键是三张的点数，不是王的
+
+
+def test_two_jokers_make_a_pair_but_not_a_triple():
+    """两张王成对；但凑不出三张，也凑不出普通炸弹。"""
+    pair = C("小王", "小王(二副)")
+    kinds = {m.kind for m in meld.melds_from(pair, level=9)}
+    assert kinds == {meld.SINGLE, meld.PAIR}
+
+    mixed = C("小王", "大王")
+    kinds = {m.kind for m in meld.melds_from(mixed, level=9)}
+    assert kinds == {meld.SINGLE}                     # 小王+大王 不成对
 
 
 def test_bomb_sizes():
@@ -720,14 +798,30 @@ _POINT = {**{i: i - 1 for i in range(2, 11)}, 11: 10, 12: 11, 13: 12, 1: 13}
 POINT_LEVEL, POINT_SMALL, POINT_BIG = 14, 15, 16
 
 _MIN_BOMB = 4
-_MAX_BOMB = 8          # 两副牌，一个点数最多 8 张
+# 两副牌一个点数最多 8 张，**再加最多 2 张逢人配 = 10**。
+# 真实数据里就有一手 9 张炸：J♠J♠(二副) J♥J♥(二副) J♣J♣(二副) J♦J♦(二副) + 3♥
+# （打 3 时 ♥3 是逢人配，card_type=10）。定成 8 会让它枚举不出来。
+_MAX_BOMB = 10
 
-_BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6}
+# 炸弹阶层。4炸<5炸<同花顺<6炸<7炸<8炸 是**用户口述 + 24 对真实证据**（0 矛盾）；
+# **9炸 / 10炸 的位置是自然延伸，数据未验** —— 数据里有 9 张炸的实例，但没有
+# 「9炸与别的炸对压」的证据。遇到反例从这里查。
+_BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8}
 CLASS_FLUSH = 3
-CLASS_JOKER_BOMB = 7
+CLASS_JOKER_BOMB = 9
+
+
+def norm_level(level: Optional[int]) -> Optional[int]:
+    """级别归一。**日志里偶尔用 14 表示 A**（net/cards.py 的 sort_key 也处理过这条），
+    不归一的话 14 会被当成小王，级牌判定与顺子权重全错。
+    """
+    if level == 14:
+        return 1
+    return level
 
 
 def point_value(idx: int, level: Optional[int]) -> int:
+    level = norm_level(level)
     if idx == JOKER_BIG:
         return POINT_BIG
     if idx == JOKER_SMALL:
@@ -739,6 +833,7 @@ def point_value(idx: int, level: Optional[int]) -> int:
 
 def is_wild(cid: int, level: Optional[int]) -> bool:
     """级牌红桃 = 逢人配（万能牌）。"""
+    level = norm_level(level)
     if level is None:
         return False
     idx, suit, _ = cards.parts(cid)
@@ -759,7 +854,17 @@ class Meld:
 
 
 def _all_jokers(ids) -> bool:
-    return (len(ids) == 4
+    """四张牌全是王（大小王各两张，即天王炸）。
+
+    先过 `cards.is_card` 再取 `parts`：单测里允许用占位整数当 cards（比较关系
+    只取决于 kind/size/rank），不该为此炸 KeyError。真实牌局里 cards 全是合法牌 ID，
+    这一层零影响。
+
+    注意 `len(ids) == 4` 会**短路**，所以只有恰为 4 张的占位 Meld 会触发这条 ——
+    brief 最初没加这层保护时，恰好是 2 个测试失败（test_bomb_order_matches_user_spec
+    与 test_bomb_beats_normal_and_not_reverse）。
+    """
+    return (len(ids) == 4 and all(cards.is_card(c) for c in ids)
             and all(cards.parts(c)[0] in (JOKER_SMALL, JOKER_BIG) for c in ids))
 
 
@@ -772,7 +877,8 @@ def bomb_class(m: Meld) -> Optional[int]:
     if m.kind in (BOMB, BOMB6):
         cls = _BOMB_CLASS_BY_SIZE.get(m.size)
         if cls is None:
-            raise ValueError(f"不认识的炸弹张数 {m.size}（牌 {m.cards}）")
+            raise ValueError(
+                f"不认识的炸弹张数 {m.size}（合法 {_MIN_BOMB}~{_MAX_BOMB}，牌 {m.cards}）")
         return cls
     return None
 
@@ -845,12 +951,14 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
 
     逢人配在这里**当作它自己那张级牌**参与枚举（Task 6 再加替代能力）。
     """
+    level = norm_level(level)
     g = _by_idx(hand)
     out = _melds_basic(hand, level)
     triples = [(i, v[:3]) for i, v in g.items()
                if i < JOKER_SMALL and len(v) >= 3]
-    pairs = [(i, v[:2]) for i, v in g.items()
-             if i < JOKER_SMALL and len(v) >= 2]
+    # 王**可以**当三带二里的对子（真实数据：2♦2♦2♣ + 小王 小王(二副)，card_type=5）。
+    # 但王**不能**凑三张 —— 每种王只有两张，所以下面 triples 保持排除王。
+    pairs = [(i, v[:2]) for i, v in g.items() if len(v) >= 2]
     out += _melds_triple_pair(level, triples, pairs)
     out += _melds_joker_bomb(hand)
     return out
@@ -868,7 +976,11 @@ def legal_moves(hand: Sequence[int], table: Optional[Meld],
 - [ ] **Step 4: 跑测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_meld_basic.py -q`
-Expected: `13 passed`
+Expected: `15 passed`
+
+⚠️ **如果照着上面 `_all_jokers` 的最初写法（不带 `is_card` 保护）跑，会看到
+`13 passed, 2 failed`（`KeyError: 0`）—— 那不是你写错了，是 brief 原代码的真缺陷。**
+测试用占位整数构造 Meld 来隔离比较逻辑，`cards.parts` 对非牌 ID 会崩。
 
 - [ ] **Step 5: 提交**
 
@@ -944,6 +1056,30 @@ def test_straight_flush_requires_same_suit():
     assert meld.STRAIGHT in km
 
 
+def test_straight_flush_survives_card_order():
+    """同花顺不能因为「同点数的杂色牌排在前面」而漏掉。
+
+    两副牌下每个点数必有两张不同花色，所以这是常态而非边角。
+    漏掉不只是少一个建议 —— Task 7 的验收①会把真实打出的同花顺报成枚举不出。
+    """
+    has_flush = C("5♥", "5♠", "6♠", "7♠", "8♠", "9♠")     # 5♠ 排在后面
+    ordered = C("5♠", "5♥", "6♠", "7♠", "8♠", "9♠")
+    for hand, name in ((has_flush, "杂色在前"), (ordered, "同花在前")):
+        sf = [m for m in meld.melds_from(hand, level=2)
+              if m.kind == meld.STRAIGHT_FLUSH]
+        assert len(sf) == 1, f"{name} 的手牌漏了同花顺"
+        assert sf[0].rank == 9
+        assert {meld.cards.parts(c)[1] for c in sf[0].cards} == {"♠"}
+
+
+def test_ace_low_straight_flush_survives_card_order():
+    """A 低窗同样：A♦ 排在 A♥ 前面时不能漏掉 A♥2♥3♥4♥5♥。"""
+    hand = C("A♦", "A♥", "2♥", "3♥", "4♥", "5♥")
+    sf = [m for m in meld.melds_from(hand, level=9)
+          if m.kind == meld.STRAIGHT_FLUSH]
+    assert len(sf) == 1 and sf[0].rank == 5
+
+
 def test_pair_run_is_exactly_three_pairs():
     three = C("4♦", "4♣", "5♦", "5♠", "6♣", "6♠")
     two = C("4♦", "4♣", "5♦", "5♠")
@@ -1004,17 +1140,32 @@ def _idx_for_nat(nat: int) -> int:
     return 1 if nat == _NAT_MAX else nat
 
 
-def _melds_straights(g: dict, level) -> list:
+def _melds_straights(nat: dict, level) -> list:
+    """`nat` = `_seq_lookup(g)`（自然值 -> 牌）。
+
+    ⚠️ **同花顺必须逐花色试，不能只看每格第一张牌。**
+    两副牌下每个点数必有两张不同花色，所以「第一张是杂色」是常态；
+    只看第一张会漏掉真实存在的同花顺（同一手牌换个手序结果就不同）：
+        5♥ 5♠ 6♠ 7♠ 8♠ 9♠  -> 漏（5♠6♠7♠8♠9♠ 明明在手上）
+        5♠ 5♥ 6♠ 7♠ 8♠ 9♠  -> 命中
+    漏掉的后果不只是少一个建议：Task 7 的验收①会把真实打出的同花顺报成「枚举不出」。
+    """
     out = []
-    for start in range(1, _NAT_MAX - _SEQ_LEN + 2):
-        nats = list(range(start, start + _SEQ_LEN))
-        picked = [g.get(_idx_for_nat(n), [None])[0] for n in nats]
-        if any(c is None for c in picked):
+    for top in range(_SEQ_LEN, _NAT_MAX + 1):
+        nats = list(range(top - _SEQ_LEN + 1, top + 1))
+        if any(not nat.get(n) for n in nats):
             continue
-        ids = list(picked)
-        out.append(Meld(STRAIGHT, _SEQ_LEN, nats[-1], tuple(ids)))
-        if len({cards.parts(c)[1] for c in ids}) == 1:
-            out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, nats[-1], tuple(ids)))
+        out.append(Meld(STRAIGHT, _SEQ_LEN, top,
+                        tuple(nat[n][0] for n in nats)))
+        # **每个花色都产出，不要 break。** 虽然同花顺比大小只看顶端，
+        # 但手里的同花顺是**具体哪几张**会影响玩家实际能打出的牌：
+        # 同时握着 ♠ 与 ♥ 两套同顶端同花顺时，只留一个代表会让真实打出另一套的
+        # 局面「枚举不出」。上限 4 个/顶端，可忽略。
+        for suit in "♠♥♣♦":
+            pick = [next((x for x in nat.get(n, [])
+                          if cards.parts(x)[1] == suit), None) for n in nats]
+            if all(c is not None for c in pick):
+                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(pick)))
     return out
 
 
@@ -1048,9 +1199,11 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
     out = _melds_basic(hand, level)
     triples = [(i, v[:3]) for i, v in g.items()
                if i < JOKER_SMALL and len(v) >= 3]
-    pairs = [(i, v[:2]) for i, v in g.items()
-             if i < JOKER_SMALL and len(v) >= 2]
+    # 王**可以**当三带二里的对子（真实数据：2♦2♦2♣ + 小王 小王(二副)，card_type=5）。
+    # 但王**不能**凑三张 —— 每种王只有两张，所以下面 triples 保持排除王。
+    pairs = [(i, v[:2]) for i, v in g.items() if len(v) >= 2]
     out += _melds_triple_pair(level, triples, pairs)
+    out += _melds_joker_bomb(hand)          # <-- 别漏！Task 4 加的，漏了天王炸就没了
     out += _melds_straights(g, level)
     out += _melds_pair_run(g, level)
     out += _melds_plate(g, level)
@@ -1060,7 +1213,7 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
 - [ ] **Step 4: 跑测试，确认通过**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_meld_seq.py tests/test_meld_basic.py -q`
-Expected: `22 passed`
+Expected: `26 passed`（test_meld_basic 17 + test_meld_seq 9）
 
 - [ ] **Step 5: 提交**
 
@@ -1171,23 +1324,34 @@ def _split_wild(hand, level):
 # **整体改名，函数体一行都不动**。不要写成 `return melds_from(...)`那样会无限递归。
 # 改完之后本文件里应该只剩下一个 melds_from —— 就是下面 Task 6 新写的那个。
 
-def _missing(g: dict, nats, per: int) -> int:
-    """要凑出 nats 这些点数、每个 per 张，还缺几张。"""
+def _missing(nat: dict, nats, per: int) -> int:
+    """要凑出 nats 这些自然值、每个 per 张，还缺几张。
+
+    `nat` 是 `_seq_lookup(g)` 的结果（自然值 -> 牌），A 同时落在 1 与 14 两格。
+    不要用 idx 直接查 `g` —— A 的两面性只在 `_seq_lookup` 里处理一次。
+    """
     d = 0
     for n in nats:
-        have = len(g.get(_idx_for_nat(n), []))
+        have = len(nat.get(n, []))
         if have < per:
             d += per - have
     return d
 
 
-def _take(g: dict, nats, per: int) -> tuple:
+def _take(nat: dict, nats, per: int) -> tuple:
     out = []
     for n in nats:
-        out.extend(g.get(_idx_for_nat(n), [])[:per])
+        out.extend(nat.get(n, [])[:per])
     return tuple(out)
 
 
+# ⚠️⚠️ 本块**已被交付实现取代，不要照抄** ⚠️⚠️
+# 交付版在 `net/sim/meld.py` 的 `_melds_wild`，与下面两处不同：
+#   1) 收的是**逢人配的牌列表 `wilds`** 而不是张数 `n_wild` —— 补进去的牌必须真的进
+#      `Meld.cards`，否则 Task 7 的验收①（按真实牌组的精确集合判型）会把 **90/98 手**
+#      带逢人配的真实着法报成「判不出牌型」。
+#   2) 取牌走 `_with_wild`，不是 `tuple(g[i])`。
+# 保留旧文本只为记录当时的思路；**以交付代码为准**。
 def _melds_wild(g: dict, level, n_wild: int) -> list:
     """用逢人配补出来的牌型。g 是**不含逢人配**的牌分组。
 
@@ -1195,6 +1359,7 @@ def _melds_wild(g: dict, level, n_wild: int) -> list:
     """
     if n_wild <= 0:
         return []
+    nat = _seq_lookup(g)          # 自然值 -> 牌（A 同时落 1 与 14）
     out = []
     ranks = [i for i in g if i < JOKER_SMALL]
 
@@ -1219,30 +1384,41 @@ def _melds_wild(g: dict, level, n_wild: int) -> list:
                 out.append(Meld(TRIPLE_PAIR, 5, point_value(t, level),
                                 tuple(g[t]) + tuple(g[p]), wild_used=d))
 
-    for start in range(1, _NAT_MAX - _SEQ_LEN + 2):
-        nats = list(range(start, start + _SEQ_LEN))
-        d = _missing(g, nats, 1)
+    for top in range(_SEQ_LEN, _NAT_MAX + 1):
+        nats = list(range(top - _SEQ_LEN + 1, top + 1))
+        d = _missing(nat, nats, 1)
         if 0 < d <= n_wild:
-            ids = _take(g, nats, 1)
-            out.append(Meld(STRAIGHT, _SEQ_LEN, nats[-1], ids, wild_used=d))
-            present = [cards.parts(c)[1] for c in ids]
-            if present and len(set(present)) == 1:
-                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, nats[-1], ids,
-                                wild_used=d))
+            out.append(Meld(STRAIGHT, _SEQ_LEN, top, _take(nat, nats, 1),
+                            wild_used=d))
+        # 同花顺单独试，且**要在 `if 0 < d` 之外** —— 每个自然值都有牌、
+        # 但都不是同一花色时，d == 0 而缺的全靠逢人配补。
+        # 同样必须逐花色试（见 _melds_straights 的说明），不能只看 _take 那几张的花色。
+        for suit in "♠♥♣♦":
+            pick, miss = [], 0
+            for n in nats:
+                c = next((x for x in nat.get(n, [])
+                          if cards.parts(x)[1] == suit), None)
+                if c is None:
+                    miss += 1
+                else:
+                    pick.append(c)
+            if 0 < miss <= n_wild:      # miss == 0 是天然的，由 _melds_straights 负责
+                out.append(Meld(STRAIGHT_FLUSH, _SEQ_LEN, top, tuple(pick),
+                                wild_used=miss))    # 同样不 break，见 Task 5 的说明
 
     for start in range(1, _NAT_MAX - _PAIR_RUN_LEN + 2):
         nats = list(range(start, start + _PAIR_RUN_LEN))
-        d = _missing(g, nats, 2)
+        d = _missing(nat, nats, 2)
         if 0 < d <= n_wild:
             out.append(Meld(PAIR_RUN, _PAIR_RUN_LEN * 2, nats[-1],
-                            _take(g, nats, 2), wild_used=d))
+                            _take(nat, nats, 2), wild_used=d))
 
     for start in range(1, _NAT_MAX - _PLATE_LEN + 2):
         nats = list(range(start, start + _PLATE_LEN))
-        d = _missing(g, nats, 3)
+        d = _missing(nat, nats, 3)
         if 0 < d <= n_wild:
             out.append(Meld(PLATE, _PLATE_LEN * 3, nats[-1],
-                            _take(g, nats, 3), wild_used=d))
+                            _take(nat, nats, 3), wild_used=d))
     return out
 ```
 
@@ -1380,12 +1556,50 @@ class Result:
         return "\n".join(lines)
 
 
+def _stronger(a, b) -> bool:
+    """同一组牌符合多个牌型时，a 是否比 b 更「强」。"""
+    ca, cb = meld.bomb_class(a), meld.bomb_class(b)
+    if (ca is None) != (cb is None):
+        return ca is not None                 # 炸弹类优先
+    if ca is not None and cb is not None and ca != cb:
+        return ca > cb
+    return a.kind > b.kind
+
+
 def as_meld(ids, level):
-    """把一实际的牌组判成一个 Meld；判不出返回 None。"""
+    """把一组**具体**的牌判成一个 Meld；判不出返回 None。
+
+    这里必须是精确集合 —— 参数就是那一手真实的牌，没有"代表牌"问题。
+
+    ⚠️ **同一组牌可能符合多个牌型，必须取最强的那个：**
+    5 张同花连续的牌**同时**是顺子(kind 4)与同花顺(kind 9)，
+    `melds_from` 先产出顺子。取第一个的话：
+      - 真实打出的同花顺会被当成顺子 -> 验收①对「漏枚举同花顺」完全视而不见
+      - 桌面上的同花顺会被低估成顺子 -> legal_moves 会放进本该压不过的顺子
+    游戏自己也把它叫同花顺（card_type 9）。
+    """
+    best = None
     for m in meld.melds_from(list(ids), level):
-        if sorted(m.cards) == sorted(ids):
-            return m
-    return None
+        if sorted(m.cards) != sorted(ids):
+            continue
+        if best is None or _stronger(m, best):
+            best = m
+    return best
+
+
+def shape(m):
+    """比较用的**形状**键：(牌型, 张数, 主点数)。**不含具体是哪几张牌。**
+
+    为什么必须要形状键而不是精确牌组：`melds_from` 每个形状只给一个**代表**，
+    而两手牌可能打出同一个形状的不同具体牌（手里同时有 ♠ 与 ♥ 两套同顶端的同花顺、
+    同点数 5 张里挑哪 4 张做炸、两副牌的同名牌……）。用精确牌组比会把它们误报成
+    「枚举不出」，而那正是本验收要抓的失败类的**假阳性**版本。
+
+    炸弹归一：引擎用 `BOMB` 承载 4~10 张，而游戏协议用 card_type 8 表 4~5 张、
+    10 表 6 张 —— 比较时必须先把这两种 kind 归一，否则 6 张炸会假红。
+    """
+    kind = meld.BOMB if m.kind in (meld.BOMB, meld.BOMB6) else m.kind
+    return (kind, m.size, m.rank)
 
 
 def check_real_moves(games=None) -> Result:
@@ -1408,46 +1622,90 @@ def check_real_moves(games=None) -> Result:
                     r.bad.append(f"{g.t0:%m-%d %H:%M} 第{i}手 "
                                  f"桌面牌本身判不出牌型 {sorted(s.table)}")
                     continue
-            moves = meld.legal_moves(s.hand, table=table, level=s.level)
-            if not any(sorted(m.cards) == sorted(s.actual) for m in moves):
+            # 两步：先看真实那一手**本身**能不能判出牌型（精确集合，能抓牌型缺口，
+            # 例如「王当三带二的对子」那种）；再比**形状**是否在候选里
+            # （形状比而非精确集合，因为枚举只给代表，见 shape() 的说明）。
+            real = as_meld(s.actual, s.level)
+            if real is None:
                 r.bad.append(
                     f"{g.t0:%m-%d %H:%M} 第{i}手 座位{s.seat} "
-                    f"真实出 {sorted(s.actual)} 枚举不出"
+                    f"真实出的 {sorted(s.actual)} 本身判不出牌型"
+                    f"（card_type={s.card_type if hasattr(s, 'card_type') else '?'}）")
+                continue
+            moves = meld.legal_moves(s.hand, table=table, level=s.level)
+            if not any(shape(m) == shape(real) for m in moves):
+                r.bad.append(
+                    f"{g.t0:%m-%d %H:%M} 第{i}手 座位{s.seat} "
+                    f"真实出的 {sorted(s.actual)}（{shape(real)}）不在候选里"
                     f"（手牌 {len(s.hand)} 张，"
                     f"桌面 {sorted(s.table) if s.table else '空'}，"
-                    f"候选 {len(moves)} 个）")
+                    f"候选 {len(moves)} 个，形状集 {sorted({shape(m) for m in moves})}）")
     return r
 
 
-def check_beats_from_records(games=None) -> Result:
-    """② 从真实对局反推的「谁压谁」，beats() 必须逐条一致。
+def _bomb_pairs(g):
+    """同一轮内「炸弹 A 之后又出了炸弹 B」的证据对。
 
-    同一轮内后一手压掉前一手 —— 桌面换了就说明新的一手压过了旧的。
+    轮次边界判据与 tools/decision_points.py **完全一致**：
+    同一座位又出牌、或队友接风（桌面主人上一手已出完）。
+
+    ⚠️ **不要用 PlayRec.nxt 判** —— 服务器算下一手时会跳过已出完的座位，
+    所以 nxt 指到队友既可能是接风、也可能只是在跳过。详见 Task 3 的原理说明。
+
+    这条**独立于 legal_moves**：它只从出牌序列推「谁大」，所以 ① 全绿它仍可能红。
     """
-    r = Result("② 谁压谁逐条对齐")
+    pairs = []
+    table = None
+    table_seat = None
+    prev_left = None
+    for p in g.plays:
+        if table is not None:
+            partner = (table_seat + 2) % 4
+            # 与 tools/decision_points.py 同一判据。**不能用 nxt**：
+            # 服务器算 nxt 时会跳过已出完的座位，会把它误判成接风。
+            is_new_lead = (p.seat == table_seat
+                           or (p.seat == partner and prev_left == 0))
+            if not is_new_lead:
+                # 注意是**牌组**不是 PlayRec —— 交给 as_meld 的是牌 ID 列表
+                pairs.append((table.cards, p.cards))
+        table = p
+        table_seat = p.seat
+        prev_left = p.left
+    return pairs
+
+
+def check_beats_from_records(games=None) -> Result:
+    """② 炸弹层级：真实对局里「炸弹 A 被炸弹 B 压掉」的证据必须逐条成立。
+
+    专门验用户口述的炸弹顺序（4炸<5炸<同花顺<6炸<7炸<8炸<天王炸）。
+    注意「同花顺夹在 5炸与 6炸之间」那半边**用户口述时数据没覆盖**（spec §2.1）
+    —— 跑出来的条数要报出来，是 0 条就说明这段仍未验到。
+    """
+    r = Result("② 炸弹层级（谁压谁）")
     games = load_games() if games is None else games
     for g in games:
         if not g.settle:
             continue
-        prev = None
-        for s in decision_points(g):
-            if prev is not None and prev.table and s.table \
-                    and sorted(prev.table) != sorted(s.table):
-                a = as_meld(prev.table, s.level)
-                b = as_meld(s.table, s.level)
-                if a is None or b is None:
-                    continue
-                r.total += 1
-                if not meld.beats(b, a):
-                    r.bad.append(
-                        f"{g.t0:%m-%d %H:%M} {sorted(prev.table)} -> "
-                        f"{sorted(s.table)} 但 beats() 说压不过")
-            prev = s
+        for a_ids, b_ids in _bomb_pairs(g):
+            a = as_meld(a_ids, g.trump)
+            b = as_meld(b_ids, g.trump)
+            if a is None or b is None:
+                continue
+            if meld.bomb_class(a) is None and meld.bomb_class(b) is None:
+                continue                      # 不是炸弹对，本检查不管
+            r.total += 1
+            if not meld.beats(b, a):
+                r.bad.append(
+                    f"{g.t0:%m-%d %H:%M} {sorted(a_ids)} -> {sorted(b_ids)} "
+                    f"但 beats() 说压不过")
     return r
 
 
-def check_invariants() -> Result:
-    """③ 不变量：纯逻辑，不需要真值。"""
+def check_invariants(games=None) -> Result:
+    """③ 不变量：纯逻辑，不需要真值。
+
+    收一个用不到的 `games` 只是为了和 ①② 同一签名，`main()` 才能统一分发。
+    """
     r = Result("③ 不变量")
 
     r.total += 1
@@ -1476,12 +1734,15 @@ def check_invariants() -> Result:
     return r
 
 
-def check_wildcard() -> Result:
-    """④ 逢人配专项。"""
+def check_wildcard(games=None) -> Result:
+    """④ 逢人配专项（签名同 ③，见上）。"""
     r = Result("④ 逢人配")
     level = 5
-    wilds = [32 + 5, 32 + 5 + 256]               # ♥5 与 ♥5(二副)
-    naturals = [64 + 5, 48 + 5]                  # ♦5 ♣5
+    wilds = [32 + 5, 32 + 5 + 256]               # ♥5 / ♥5(二副)
+    # ⚠️ 必须用**非级牌**的点数（6，不是 5）。用 5 的话两张 ♥5 本身就是两张 5，
+    # n=2 时天然就是四炸、wild_used == 0，而「天然优先」要求它必须是 0 ——
+    # 断言 wild_used > 0 会与本任务的硬规格直接冲突。
+    naturals = [64 + 6, 48 + 6, 16 + 6]          # ♦6 ♣6 ♠6
 
     for n in (0, 1, 2):
         r.total += 1
@@ -1490,16 +1751,29 @@ def check_wildcard() -> Result:
                  if m.kind == meld.BOMB]
         if n == 0:
             if bombs:
-                r.bad.append("没有逢人配时，两张 5 不该有炸弹")
+                r.bad.append("没有逢人配时，三张 6 不该有炸弹")
         elif not any(m.wild_used > 0 for m in bombs):
             r.bad.append(f"{n} 张逢人配时应当能补出炸弹")
 
     r.total += 1
-    hand = [32 + 5, 15, 271, 14]                 # ♥5 + 大王 + 大王(二副) + 小王
-    for m in meld.melds_from(hand, level=level):
-        if m.kind == meld.BOMB and m.size == 4:
-            if not all(meld.cards.parts(c)[0] in (14, 15) for c in m.cards):
-                r.bad.append("王炸里混进了逢人配")
+    # ⚠️ 这手牌必须能真正触发断言。原先写的是「3 张王 + 1 张逢人配」，
+    # 而天王炸要 4 张王 —— `m.size == 4` 永不成立，断言一次都没执行过，
+    # 等于什么都不验证。改成两条能失败的：
+    wild5 = 32 + 5
+    three_jokers = [wild5, 14, 270, 15]                  # 逢人配 + 小王×2 + 大王
+    r.total += 1
+    if any(meld.bomb_class(m) == meld.CLASS_JOKER_BOMB
+           for m in meld.melds_from(three_jokers, level=level)):
+        r.bad.append("3 张王 + 1 张逢人配 不该能出天王炸（逢人配不能当王）")
+
+    four_jokers = [wild5, 14, 270, 15, 271]              # 逢人配 + 四张王
+    r.total += 1
+    jb = [m for m in meld.melds_from(four_jokers, level=level)
+          if meld.bomb_class(m) == meld.CLASS_JOKER_BOMB]
+    if len(jb) != 1:
+        r.bad.append(f"4 张王 + 1 张逢人配 应当恰好有一个天王炸，实得 {len(jb)} 个")
+    elif any(meld.is_wild(c, level) for c in jb[0].cards):
+        r.bad.append("天王炸里混进了逢人配")
     return r
 
 
@@ -1511,6 +1785,11 @@ def main() -> int:
     games = load_games()
     print(f"载入对局 {len(games)} 局，其中有结算的 "
           f"{sum(1 for g in games if g.settle)} 局\n")
+    dropped = sum(g.unparsed for g in games)
+    # R7：日志解析失败的行必须**可见**，不能静默 ——
+    # 这个数字不为 0 就说明语料有缺失，下面四项结论都要打折看。
+    print(f"解析失败的行合计 unparsed = {dropped}"
+          + ("  <- 非 0！语料有缺失，结论要打折看" if dropped else ""))
     failed = 0
     for fn in CHECKS:
         res = fn(games)
@@ -1577,7 +1856,13 @@ from live import rules
 
 
 def test_ten_is_handled():
-    """旧实现遇到 10 会直接崩（bug #1）。"""
+    """十的口径。⚠️ 这条**不是**在钉「旧实现会崩」—— 旧实现在生产词表下不崩
+    （见 spec §2.3 对 bug #1 的更正）。它钉的是**适配层要收生产那一套写法**：
+    十是 `"T"` 不是 `"10"`。真正会崩的是旧代码内部 `10`/`T` 不一致，但它的真实输入
+    永远触发不到。"""
+    # 生产词表（synth/layout.py 的 CLASSES）：十写作 "T"
+    assert rules.classify(["ST", "HT", "DT"], "2") == "三张"
+    # 两种写法都收，兼容老测试与手写调用
     assert rules.classify(["S10", "H10", "D10"], "2") == "三张"
 
 
@@ -1608,7 +1893,12 @@ def test_describe_falls_back():
 - [ ] **Step 2: 跑测试，确认失败**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_rules_adapter.py -q`
-Expected: FAIL（`test_ten_is_handled` 报 `ValueError: substring not found`）
+Expected: **部分** FAIL —— 但**不是全红**。
+
+⚠️ **实测只有 3 条会红**，`test_ten_is_handled` 在新旧实现下**都通过**：
+老实现的 `_legal_exact` 在 `n == 3` 就 return 了，走不到那行会崩的 `_idx()`；
+`"10"` 崩溃要 n ≥ 4 或走逢人配路径才触发。**所以那条断言根本没钉住它声称要钉的 bug #1** ——
+必须另外补能真正触发崩溃的断言（4 张以上同点数、或含逢人配的路径），否则 bug #1 无覆盖。
 
 - [ ] **Step 3: 实现**
 
@@ -1680,7 +1970,8 @@ def level_idx(level) -> Optional[int]:
 **牌型真源在 `net/sim/meld.py`**（网络直读 + RL 是主路径）。这里只做
 「牌面名 <-> 牌 ID」的转换再转发。
 
-老实现有 6 处已证实的错（见 spec §2.3）："10" vs "T" 直接崩、A 不能当小牌、
+老实现有已证实的错（见 spec §2.3，其中 bug #1「10/T 直接崩」已更正为**不成立**）：
+A 不能当小牌、
 两个王不算对子、二连对判合法、docstring 说有三带一、逢人配能力低估。
 **不要再改回老实现**，那等于把 bug 固化。
 """
@@ -1698,20 +1989,44 @@ def _to_ids(names: list) -> list:
     return out
 
 
+def _stronger(a: meld.Meld, b: meld.Meld) -> bool:
+    """同一组牌能解释成多个牌型时，a 是不是更强的那条。
+
+    口径与 `tools/accept_meld.py` 的 `_stronger` 一致（那边是验收①「取最强解释」用的）。
+
+    ⚠️ **这一步不能省**：`melds_from` 对同一组牌会给出多条解释（天然 vs 逢人配补的、
+    顺子 vs 同花顺，枚举顺序里顺子在前）。**取第一条会把 `9♣10♣J♣Q♣+♥2` 报成「顺子」，
+    而它是同花顺（炸弹，压 5 炸）** —— 老实现在这一点上是对的，换适配层不能弄丢。
+    实测影响 49/1740 手（2.8%）。
+    """
+    ca, cb = meld.bomb_class(a), meld.bomb_class(b)
+    if (ca is None) != (cb is None):
+        return ca is not None
+    if ca is not None and cb is not None and ca != cb:
+        return ca > cb
+    return a.kind > b.kind
+
+
 def classify(cards: list, level: str = "2") -> str | None:
     """判牌型。合法返回牌型名，不合法返回 None。
 
     level 是当前级牌（'2'..'10' / 'J' / 'Q' / 'K' / 'A'）。
+    **认不出的牌名或级别会抛 ValueError**，不返回 None —— 把「认不出」悄悄变成
+    「不合法」正是老实现那种静默的坑。
     """
     if not cards:
         return None
     lv = meld.level_idx(level)
     ids = _to_ids(cards)
-    for m in meld.melds_from(ids, level=lv):
-        if sorted(m.cards) == sorted(ids):
-            got = meld.describe_meld(m)
-            return got + ("（含逢人配）" if m.wild_used else "")
-    return None
+    want = sorted(ids)
+    hits = [m for m in meld.melds_from(ids, level=lv) if sorted(m.cards) == want]
+    if not hits:
+        return None
+    best = hits[0]
+    for m in hits[1:]:
+        if _stronger(m, best):
+            best = m
+    return meld.describe_meld(best) + ("（含逢人配）" if best.wild_used else "")
 
 
 def describe(cards: list, level: str = "2") -> str:
@@ -1742,7 +2057,8 @@ git commit -m "refactor: live/rules.py 改为 net/sim/meld.py 的适配层"
 
 - [ ] `.venv/Scripts/python.exe -m pytest tests/ -q` 全绿
 - [ ] `.venv/Scripts/python.exe -m tools.accept_meld` 四项 `[OK]`，退出码 0
-- [ ] `net/sim/meld.py` 里除适配层那几行外，没有牌名字符串字面量
+- [ ] `net/sim/meld.py` 的**代码路径**里没有牌名字符串字面量
+      （docstring 里为说明 `live/rules.py` 历史 bug 而提到的 `"10"` / `"T"` 属散文，不算）
 - [ ] `git log --oneline` 有 8 个任务提交
 
 ## 下一步（不在本计划内）

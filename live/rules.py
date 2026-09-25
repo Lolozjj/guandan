@@ -1,156 +1,75 @@
-"""掼蛋牌型校验 —— 用来判断识别出来的出牌「合不合理」。
+"""掼蛋牌型校验 —— 适配层（给 live/ 那条截图识别线用）。
 
-为什么需要（用户提的，很对）：模型有时会把「三个 10 带对三」这种 5 张牌
-认成「两个 3 + 一个 10」这种 3 张牌。**这种组合在掼蛋里根本不存在** ——
-也就是说，识别结果自己就暴露了它是错的。
+**牌型真源在 `net/sim/meld.py`**（网络直读 + RL 是主路径）。这里只做
+「牌面名 <-> 牌 ID」的转换再转发。
 
-实测那次：机器人3 那 5 张牌里最左边两张被「出牌」按钮**完全盖住**，
-模型连 0.03 门槛都输出不了。按钮底下的牌，任何算法都读不出来，
-所以正确的做法不是硬猜，而是**认出「这个结果不合法」，然后老实说不知道**。
+老实现有 6 处已证实的错（见 spec §2.3）：`"10"` vs `"T"` 混用、A 不能当小牌、
+两个王不算对子、二连对判合法、docstring 说有三带一、逢人配能力低估。
+**不要再改回老实现**，那等于把 bug 固化。
 
-合法牌型：
-    单张 / 对子 / 三张 / 三带二 / 三带一(3+1) / 顺子(5) / 同花顺(5)
-    连对(2 或 3 连对) / 钢板(2 个连续三张) / 炸弹(4 张及以上同点数)
-    四大天王(4 张王)
-另外**级牌红桃是万能牌**（逢人配），可以当任意牌用，所以判合法性时要把它
-当通配符去凑。
+老实现的判型主体（`RANK_SEQ` / `_rank` / `_idx` / `_legal_exact` /
+老 `classify` / 老 `describe`）已整体删除。留在这里的只有两件：
+  - `_to_ids`  牌名 -> ID（词表是生产者那一套，见下）
+  - `classify` / `describe`  对外的旧接口（签名与旧版完全一致）
+
+原先这里还有一份 `_stronger`（「同一组牌有多个解释时取最强」）。它和
+`tools/accept_meld.py` 里那份**逐字相同**，而且这条规则在两边各修过一次 ——
+现在只有一份：`net/sim/meld.py` 的 `meld.strongest`（那边同时也有
+`meld.as_meld`，生产推理链判桌面牌用的就是它）。
+
+⚠️ **词表是 `synth/layout.py` 的 `CLASSES`（54 类），不是我们编的**：
+`ST` 是十、王是 `JOKER_S` / `JOKER_B`、打十的级别是 `'T'` —— 因为
+`live/main.py:229` 传进来的就是模型类名本身。词表对不上的后果**不是少个功能**：
+`render_lines` 在 tkinter 的 `after` 回调里，抛错曾经会**永久打断刷新链**。
+现在那条路径由 `live/main.py` 的 `safe_render_lines` 兜住（不再打断、也不再吞，
+而是在面板上显示一行错误 + 往 stderr 打栈）—— 但**适配层仍然不许自己吞**：
+吞掉就等于把「认不出」洗成一个看起来正常的牌型结论。
+所以 `tests/test_rules_adapter.py` 里有一条测试**直接拿 `synth.layout.CLASSES`
+当输入**（见该测试的 docstring）。
 """
 from __future__ import annotations
 
-RANK_SEQ = "23456789TJQKA"          # 从小到大
-SUIT_OF = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
+from net.sim import meld
 
 
-def _rank(cls: str) -> str | None:
-    """牌的类别 -> 点数；大小王返回 None。"""
-    if cls.startswith("JOKER"):
-        return None
-    return cls[1:]
+def _to_ids(names: list) -> list:
+    """牌名 -> 牌 ID。词表 = `synth.layout.CLASSES`（生产那一套）。
 
-
-def _suit(cls: str) -> str | None:
-    return None if cls.startswith("JOKER") else cls[0]
-
-
-def _idx(rank: str) -> int:
-    return RANK_SEQ.index(rank)
-
-
-def _is_bomb(ranks: list[str]) -> str | None:
-    if len(ranks) >= 4 and len(set(ranks)) == 1:
-        return "%d 张炸" % len(ranks)
-    return None
-
-
-def _legal_exact(cards: list[str], level: str) -> str | None:
-    """不含万能牌时的牌型判定。cards 是类别列表。"""
-    jokers = [c for c in cards if c.startswith("JOKER")]
-    norm = [c for c in cards if not c.startswith("JOKER")]
-    n = len(cards)
-
-    if jokers:
-        # 只有「四张王」是合法牌型；大小王不能被当普通牌用
-        if n == 4 and len(jokers) == 4:
-            return "四大天王"
-        if n == 1:
-            return "单张"
-        if n == 2 and len(jokers) == 2:
-            return None          # 两个王不是对子
-        return None
-
-    ranks = [_rank(c) for c in norm]
-    suits = [_suit(c) for c in norm]
-    uniq = set(ranks)
-
-    if n == 1:
-        return "单张"
-    if n == 2:
-        return "对子" if len(uniq) == 1 else None
-    if n == 3:
-        return "三张" if len(uniq) == 1 else None
-
-    bomb = _is_bomb(ranks)
-    if bomb:
-        return bomb
-
-    if n == 4:
-        # 两个连续对子（木板）
-        if len(uniq) == 2:
-            a, b = sorted(_idx(r) for r in uniq)
-            if b - a == 1:
-                return "连对"
-        return None
-
-    if n == 5:
-        # 三带二 / 三带一
-        cnt = {}
-        for r in ranks:
-            cnt[r] = cnt.get(r, 0) + 1
-        if sorted(cnt.values()) == [2, 3]:
-            return "三带二"
-        # 顺子 / 同花顺
-        idx = sorted(_idx(r) for r in uniq)
-        if len(uniq) == 5 and idx[-1] - idx[0] == 4:
-            return "同花顺" if len(set(suits)) == 1 else "顺子"
-        return None
-
-    if n == 6:
-        cnt = {}
-        for r in ranks:
-            cnt[r] = cnt.get(r, 0) + 1
-        vals = sorted(cnt.values())
-        idx = sorted(_idx(r) for r in uniq)
-        if vals == [2, 2, 2]:
-            if idx[-1] - idx[0] == 2 and len(uniq) == 3:
-                return "三连对"
-        if vals == [3, 3] and len(uniq) == 2 and idx[-1] - idx[0] == 1:
-            return "钢板"
-        return None
-
-    return None
+    认不出的名字由 `meld.cid_from_name` **抛 ValueError**，这里不 try/except：
+    把「认不出」悄悄变成「不合法」正是老实现那种「静默返回 None」的坑
+    （识别错了却看起来像规则判的）。它会一路抛到 `live/main.py` 的
+    `render_lines` —— 那里现在由 `safe_render_lines` 接住并**显示出来**
+    （链不再断、错也不吞），但**这里依旧不许吞**：吞掉就等于把「认不出」
+    洗成一个看着正常的结论。代价是词表必须与生产者对齐，所以有测试从生产者取材。
+    """
+    return [meld.cid_from_name(name) for name in names]
 
 
 def classify(cards: list[str], level: str = "2") -> str | None:
     """判牌型。合法返回牌型名，不合法返回 None。
 
-    level 是当前级牌点数；级牌红桃（逢人配）当万能牌，会尝试各种补法。
+    level 是当前级牌（'2'..'10' / 'J' / 'Q' / 'K' / 'A'）。
+    **认不出的牌名或级别会抛 ValueError**（不是返回 None）—— 见 `_to_ids`。
+
+    「同一组牌可能解释成多个牌型，取最强的那条」由 **`meld.strongest`** 负责
+    （规则真源在引擎里，不在这里）：`melds_from` 对同一组牌会给出多条 ——
+    天然牌型与逢人配补出来的牌型、顺子与同花顺（枚举顺序里顺子在前面）。取第一条
+    会把 `9♣10♣J♣Q♣+♥2` 报成「顺子」，而它是**同花顺**（炸弹，压 5 炸）——
+    旧实现在这一点上是对的（`return "同花顺" if len(set(suits)) == 1`），
+    换成适配层不能把它弄丢。
     """
     if not cards:
         return None
-    wild_cls = "H" + level
-    n_wild = sum(1 for c in cards if c == wild_cls)
-
-    if n_wild == 0:
-        return _legal_exact(list(cards), level)
-
-    # 先按原样判一次 —— 级牌红桃也可能就是在当它自己那张牌用
-    # （比如 ♠3♣3♥3 本身就是三个 3），这时不该标「含逢人配」
-    direct = _legal_exact(list(cards), level)
-    if direct:
-        return direct
-
-    rest = [c for c in cards if c != wild_cls]
-    if n_wild == 1:
-        # 万能牌当哪张都行：补上任意一种牌再看合不合法
-        for r in RANK_SEQ:
-            for s in "SCDH":
-                got = _legal_exact(rest + [s + r], level)
-                if got:
-                    return got + "（含逢人配）"
+    lv = meld.level_idx(level)
+    ids = _to_ids(cards)
+    want = sorted(ids)
+    hits = [m for m in meld.melds_from(ids, level=lv) if sorted(m.cards) == want]
+    best = meld.strongest(hits)
+    if best is None:
         return None
-    # 两张及以上万能牌：组合数很少，直接穷举
-    import itertools
-    pool = [s + r for r in RANK_SEQ for s in "SCDH"]
-    for combo in itertools.combinations_with_replacement(pool, n_wild):
-        got = _legal_exact(rest + list(combo), level)
-        if got:
-            return got + "（含逢人配）"
-    return None
+    return meld.describe_meld(best) + ("（含逢人配）" if best.wild_used else "")
 
 
 def describe(cards: list[str], level: str = "2") -> str:
     """给面板显示用：合法就写牌型，不合法就明确说不合法。"""
-    t = classify(cards, level)
-    if t:
-        return t
-    return "不合法"
+    return classify(cards, level) or "不合法"
