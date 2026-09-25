@@ -23,7 +23,7 @@
 cd C:\Users\17837\PycharmProjects\yolo
 
 # 验收（不用联网、不用装证书）
-.venv/Scripts/python.exe -m pytest tests/ -q              # 323 passed
+.venv/Scripts/python.exe -m pytest tests/ -q              # 331 passed
 .venv/Scripts/python.exe -m tools.accept_shadow           # 六项 [OK] -> 退出码 0
 
 # 离线冒烟：不开游戏也能产出影子日志（14 秒自动关窗口）
@@ -49,7 +49,7 @@ python -m net.launcher
 | `net/panel.py` / `net/table.py` | 两个面板都挂上记录器：`--level` / `--no-advice`，回放也能离线产出影子日志 |
 | `tools/accept_shadow.py` | 第三层验收：抓包 + 日志双源逐位对齐（六项 + 地板） |
 | `tools/accept_sim.py` | `replay()` 加了 `record` 回调（真值侧复用同一个回放循环，不另写一份） |
-| `tests/test_state_steps.py` 等 5 个 | 新增 16 个单测 |
+| `tests/` 下 7 个新文件 | 新增 23 个单测（含「实机入口」「训练设备」这两类以前没有的）|
 
 **推理链只加载裁判与权重，不加载模拟器**（spec §8.1）：`net/advise.py` 不建
 `GuandanEnv`、不跑对局循环，编码/裁判/打分一律复用
