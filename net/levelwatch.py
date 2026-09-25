@@ -1,11 +1,22 @@
 """从游戏日志里读级别（打几）。
 
-为什么走日志而不是网络：级别在网络报文里找不到（3006/3009/3004/3019 都翻过了），
-但**级别一局之内根本不变**，而日志的延迟只有约 20 秒 —— 对这个字段毫无影响。
-这样就不用截图、不用视觉识别，面板保持「纯数据」。
+⚠️ **游戏 3.2.2（2026-09-26）把发牌行删了** —— 老格式那条
+`SendCardsService set roundID:… k : {"Trump":N,…}` 现在一条都没有
+（实测命中 0），于是「级别」这个字段一度全空，面板一个决策点都算不出来。
+现在的主来源是**结算行**（还在）里的 `UpgradeInfo`，语义实测如下
+（拿 34 局老格式样本对齐，那时本局 Trump 是确定的）：
+
+    UpgradeInfo.TrumpValue = **赢家升级后、下一局要打的级别**   ← 34/34 对上
+    UpgradeInfo.trump[]    = 升级后每座位的级别（两队各一个）
+
+⚠️ **它不是本局级别**（34 局里 0 局相等）。踩过这个坑：拿 TrumpValue 当本局级别，
+算出来的建议连牌型都判不出来（那一局打 9，我按 11 算，`9♥ AAA` 这种逢人配牌全解不出）。
+
+发牌行那条路**保留**（游戏回退时还得能用），两条都在时以**后出现的那条**为准。
 """
 
 import glob
+import json
 import os
 import re
 import time
@@ -16,7 +27,8 @@ LOG_DIR = (r"C:\Users\17837\AppData\Roaming\Tencent\xwechat\radium\users"
 
 DEAL_RE = re.compile(r"SendCardsService set roundID:([\d,]+) k : "
                      r"\{.*?\"Trump\":(\d+)")
-SETTLE_RE = re.compile(r"结算协议 = \{")
+#: 结算行（3.2.2 之后级别的主要来源）。只关心 UpgradeInfo。
+SETTLE_RE = re.compile(r"EVA1B001结算协议 = (\{.*)")
 
 
 class LevelWatcher:
@@ -30,6 +42,11 @@ class LevelWatcher:
     def __init__(self, log_dir=LOG_DIR):
         self.log_dir = log_dir
         self.level = None
+        #: 这个级别是从哪读来的（"发牌行（本局）" / "结算行（下一局）"）——
+        #: 影子日志会记下它，离线上分得清「这条记录的级别可不可信」。
+        self.level_src = ""
+        #: 最近一次结算行里每座位的级别（两队各一个）
+        self.last_levels = None
         self.last_seen = 0.0
         self._pos = {}
 
@@ -55,15 +72,37 @@ class LevelWatcher:
                 continue
             self._pos[f] = start + cut + 1
             text = raw[:cut + 1].decode("utf-8", "replace")
+            # 按行序处理：两条都在时**后出现的那条**算 —— 结算行总是在发牌行之后
             for line in text.splitlines():
                 m = DEAL_RE.search(line)
                 if m:
-                    found = int(m.group(2))
+                    found, src = int(m.group(2)), "发牌行（本局）"
+                    continue
+                j = SETTLE_RE.search(line)
+                if j:
+                    got = self._from_settle(j.group(1))
+                    if got is not None:
+                        found, src = got, "结算行（下一局）"
         if found is not None and found != self.level:
-            self.level = found
+            self.level, self.level_src = found, src
             self.last_seen = time.time()
             return found
         return None
+
+    def _from_settle(self, payload: str):
+        """从结算 JSON 里取「下一局要打的级别」；取不到返回 None。
+
+        语义见模块 docstring —— `TrumpValue` 是**下一局**的级别，不是本局的。
+        """
+        try:
+            info = json.loads(payload).get("UpgradeInfo") or {}
+        except ValueError:
+            return None
+        v = info.get("TrumpValue")
+        lv = info.get("trump")
+        if isinstance(lv, list) and len(lv) == 4:
+            self.last_levels = [int(x) for x in lv]
+        return int(v) if isinstance(v, int) and 1 <= v <= 13 else None
 
 
 if __name__ == "__main__":

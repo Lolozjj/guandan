@@ -87,6 +87,8 @@ def draw(st: GameState, hint: str, n_ev: int, live: bool,
     print(st.render())
 
 
+
+
 def run_live(st: GameState, path: str, level: int = None, shadow_log=None,
              seconds: float = 0) -> None:
     """实时跟读事件流。
@@ -99,10 +101,11 @@ def run_live(st: GameState, path: str, level: int = None, shadow_log=None,
     n, hint = 0, "等游戏服数据…"
     if level:
         st.level = level
+        st.level_src = "--level（手输）"
         if shadow_log is not None:
             shadow_log.note_level()
     t0 = time.time()
-    draw(st, hint, n, True, shadow_log.last_line if shadow_log else "")
+    draw(st, hint, n, True, shadow_log.panel_text() if shadow_log else "")
     try:
         while True:
             events = tail.read()
@@ -114,14 +117,14 @@ def run_live(st: GameState, path: str, level: int = None, shadow_log=None,
                     n += 1
                     if shadow_log is not None:
                         shadow_log.after_event(st, ev)
-                draw(st, hint, n, True,
-                     shadow_log.last_line if shadow_log else "")
+                draw(st, hint, n, True, shadow_log.panel_text() if shadow_log else "")
             else:
                 time.sleep(0.05)
             lv = lvl.poll()
             if lv is not None:
                 st.level = lv
-                hint = f"级别更新：打{st.level_name()}"
+                st.level_src = lvl.level_src
+                hint = f"级别更新：打{st.level_name()}（{lvl.level_src}）"
                 if shadow_log is not None:
                     shadow_log.note_level()
             if seconds and time.time() - t0 >= seconds:
@@ -149,6 +152,7 @@ def run_replay(st: GameState, capture: str, delay: float, level: int = None,
     n, hint = 0, "回放开始"
     if level:
         st.level = level
+        st.level_src = "--level（手输）"
     for r in frames:
         body = bytes.fromhex(r["hex"])
         msg = protocol.parse(body)
@@ -175,7 +179,7 @@ def run_replay(st: GameState, capture: str, delay: float, level: int = None,
             if shadow_log is not None:
                 shadow_log.after_event(st, ev)
         if n:
-            draw(st, hint, n, False, shadow_log.last_line if shadow_log else "")
+            draw(st, hint, n, False, shadow_log.panel_text() if shadow_log else "")
             time.sleep(delay)
     if shadow_log is not None:
         shadow_log.close()
@@ -191,6 +195,8 @@ def main():
     ap.add_argument("--level", type=int, default=None,
                     help="回放/离线时直接给级别（网络里没有本局级别）")
     ap.add_argument("--no-advice", action="store_true", help="关掉影子模式")
+    ap.add_argument("--no-show-advice", action="store_true",
+                    help="算建议但不显示（记录里会如实写 advice_shown:false）")
     args = ap.parse_args()
 
     st = GameState()
@@ -199,7 +205,7 @@ def main():
     sh = None
     if not args.no_advice:
         from net import shadow
-        sh = shadow.open_shadow()
+        sh = shadow.open_shadow(show_advice=not args.no_show_advice)
         print(sh.last_line)
     try:
         if args.replay:

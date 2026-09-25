@@ -32,7 +32,8 @@ SHADOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shadow.jsonl"
 SCHEMA = 1
 
 
-def open_shadow(out_path: str = SHADOW, topk: int = 3) -> "ShadowLog":
+def open_shadow(out_path: str = SHADOW, topk: int = 3,
+                show_advice: bool = True) -> "ShadowLog":
     """建一个记录器 —— **唯一的一处**（`net.launcher` 与两个面板都走它）。
 
     权重取 `GUANDAN_WEIGHTS` 或 `runs/rl/*/best.pt` 里最新的那份（`advise.resolve_weights`），
@@ -47,17 +48,23 @@ def open_shadow(out_path: str = SHADOW, topk: int = 3) -> "ShadowLog":
     path = advise.resolve_weights()
     net, err = advise.load_net(path)
     return ShadowLog(net=net, out_path=out_path, weights=path or "",
-                     weights_note=err, topk=topk)
+                     weights_note=err, topk=topk, show_advice=show_advice)
 
 
 class ShadowLog:
     def __init__(self, net=None, out_path=SHADOW, weights="", weights_note="",
-                 topk=3):
+                 topk=3, show_advice=True):
         self.net = net
         self.out_path = out_path
         self.weights = weights
         self.weights_note = weights_note
         self.topk = topk
+        #: 建议要不要给面板显示（用户 2026-09-26 要的；默认开）。
+        #: **它同时决定记录里的 `advice_shown`** —— 上过屏的那段数据不再干净
+        #: （人会被建议影响），离线分析「模型与人的分歧」时要把这段排除掉。
+        self.show_advice = show_advice
+        #: 给面板显示的一行建议（"建议：…（第 1/14，Q=0.183）"）；出手后清空
+        self.last_advice = ""
         self.n_decisions = 0
         self.skips = {}
         self.last_line = weights_note or "影子模式已就绪"
@@ -73,7 +80,8 @@ class ShadowLog:
         self._t_level = None
         self._closed = False
         if net is not None:
-            rec = {"type": "session", "schema": SCHEMA, "weights": weights}
+            rec = {"type": "session", "schema": SCHEMA, "weights": weights,
+                   "show_advice": show_advice}
             if weights:
                 rec.update(advise.weights_info(weights))
             self._emit(**rec)
@@ -138,11 +146,35 @@ class ShadowLog:
                     for i in got.order[:self.topk]],
             "actual": None, "actual_names": [], "actual_is_me": None,
             "actual_shape": None, "actual_rank": None, "resolved": False,
+            # 这条建议有没有上过屏（上了屏 -> 这份数据不再干净，见 show_advice）
+            "advice_shown": bool(self.show_advice),
+            # 级别是从哪读来的（"结算行（下一局）" / "发牌行（本局）"）——
+            # 3.2.2 之后有两个来源，可信度不同，离线要能分开看
+            "level_src": getattr(st, "level_src", ""),
         }
+        if self.show_advice and got.order:
+            i0 = got.order[0]
+            m0 = got.cands[i0]
+            who = cards.names_sorted(m0.cards, st.level) if m0 is not None else []
+            self.last_advice = (f"建议：{' '.join(who) if who else '过'}"
+                                f"（第 1/{len(got.cands)}，Q={got.q[i0]:.3f}）")
         self._cands, self._q, self._order = got.cands, got.q, got.order
+
+    def panel_text(self) -> str:
+        """面板底部那一行：影子进度 + 模型建议（**只有这一处定义**）。
+
+        建议是用户 2026-09-26 要的（他要知道「模型和我想的一不一样」）。
+        显示与记录**同源**：`last_advice` 就是这里算出来的那一份，面板不另算一遍。
+        `--no-show-advice` 时它是空串，那一行就只剩进度。
+        """
+        return "    ".join(x for x in (self.last_line, self.last_advice) if x)
 
     def _count_skip(self, reason: str) -> None:
         self.skips[reason] = self.skips.get(reason, 0) + 1
+        # **跳过也要说得出来。** 面板只有这一行反馈：不写的话，级别读不到 /
+        # 座位没认出来的那种整局跳过，用户看到的和「什么都没发生」一模一样
+        # （2026-09-26 真踩过：一局 20 个决策点全被静默跳过，面板只写「已就绪」）。
+        self.last_line = f"影子：跳过 {sum(self.skips.values())}（{reason}）"
 
     def note_level(self) -> None:
         """级别刚更新时调一次 —— 只为了在记录里留下「级别是什么时候变的」。"""
@@ -214,6 +246,7 @@ class ShadowLog:
         # 拿形状比才对得上（见 `_rank_of`）。
         rec["actual_shape"] = list(self._shape_of(cs, rec["level"]))
         rec["actual_rank"] = self._rank_of(cs, rec["level"])
+        self.last_advice = ""            # 出手了 -> 清掉，别挂着上一手的建议误导人
         self._emit(**rec)
         self.n_decisions += 1
         self.last_line = (f"影子：本局 {self.n_decisions} 个决策点"

@@ -73,6 +73,9 @@ class GameState:
     steps: List[tuple] = field(default_factory=list)
     #: 局号。`on_deal` 时 +1；面板中途接进来时是 0。影子日志用它把决策点归到一局。
     deal_seq: int = 0
+    #: 级别的来源（"结算行（下一局）" / "发牌行（本局）" / ""）。
+    #: 只是给人看的溯源信息：游戏 3.2.2 之后级别有两个来源，可信度不同。
+    level_src: str = ""
     #: 本局的座位认出来了没有。**换局时必须清零** —— 座位号每局都变，
     #: 认出来之前算出来的相对方位全是错的。
     me_confirmed: bool = False

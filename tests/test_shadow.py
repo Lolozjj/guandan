@@ -225,3 +225,90 @@ def test_an_inference_error_does_not_take_the_panel_down(tmp_path, monkeypatch):
     monkeypatch.setattr(shadow.advise, "advise", boom)
     log.after_event(st, {"type": "play"})          # 不许抛出去
     assert any("推理异常" in k for k in log.skips), f"要记一档跳过：{log.skips}"
+
+
+# ---------------------------------------------------------------- 上屏与级别来源
+# 2026-09-26：游戏升级到 3.2.2 删了发牌行 -> 级别一度全空 -> 一局 20 个决策点
+# 被静默跳过，面板上只写着「影子模式已就绪」。用户看不到任何线索。
+
+def test_the_panel_gets_told_why_decision_points_are_skipped(tmp_path):
+    """跳过要在面板上说得出来 —— 否则用户只看到「什么都没发生」。"""
+    log = _new(tmp_path)
+    st = GameState()
+    st.level = None                                   # 级别未知（读不到日志时就是这样）
+    _play(st, 1, 0, [A("S3")], [A("S4")], mine=True)
+    _play(st, 0, 1, [A("S4")], [A("S9")])
+    log.after_event(st, {"type": "play"})
+    assert "跳过" in log.last_line and "级别" in log.last_line, log.last_line
+
+
+def test_the_advice_can_be_shown_and_is_marked_in_the_record(tmp_path):
+    """上屏是用户 2026-09-26 要的（他要知道自己有没有被带偏，所以记录里要留痕）。
+
+    生命周期：算出建议那一刻 `last_advice` 有值（面板显示的就是它），
+    我一出手就清空（不然会一直挂着上一手的建议误导人）。
+    """
+    log = _new(tmp_path, show_advice=True)
+    st = GameState()
+    st.level = 9
+    _play(st, 1, 0, [A("S3")], [A("S4"), A("H5")], mine=True)
+    _play(st, 0, 1, [A("S4")], [A("S9")])
+    log.after_event(st, {"type": "play"})
+    assert log.last_advice, "轮到我时面板该能看到建议"
+    _play(st, 1, 0, [A("H5")], [A("S4")], mine=True)   # 我出手
+    log.after_event(st, {"type": "play"})
+    assert log.last_advice == "", "出手之后要清空"
+    dec = [r for r in _reader(log.out_path) if r["type"] == "decision"][0]
+    assert dec["advice_shown"] is True, "记录里要留下「这条上过屏」"
+
+
+def test_advice_is_off_by_default_when_asked(tmp_path):
+    """`--no-show-advice`：不看建议时，记录里也要如实写 `advice_shown: false`。"""
+    log = _new(tmp_path, show_advice=False)
+    st = GameState()
+    st.level = 9
+    _play(st, 1, 0, [A("S3")], [A("S4"), A("H5")], mine=True)
+    _play(st, 0, 1, [A("S4")], [A("S9")])
+    log.after_event(st, {"type": "play"})
+    assert log.last_advice == ""
+    _play(st, 1, 0, [A("H5")], [A("S4")], mine=True)
+    log.after_event(st, {"type": "play"})
+    dec = [r for r in _reader(log.out_path) if r["type"] == "decision"][0]
+    assert dec["advice_shown"] is False
+
+
+def test_the_record_says_where_the_level_came_from(tmp_path):
+    """级别是哪来的要记下来 —— 3.2.2 之后它有两个来源，可信度不同。"""
+    log = _new(tmp_path)
+    st = GameState()
+    st.level = 9
+    st.level_src = "结算行（下一局）"
+    _play(st, 1, 0, [A("S3")], [A("S4"), A("H5")], mine=True)
+    _play(st, 0, 1, [A("S4")], [A("S9")])
+    log.after_event(st, {"type": "play"})
+    _play(st, 1, 0, [A("H5")], [A("S4")], mine=True)
+    log.after_event(st, {"type": "play"})
+    dec = [r for r in _reader(log.out_path) if r["type"] == "decision"][0]
+    assert dec["level_src"] == "结算行（下一局）"
+
+
+def test_the_panel_line_composes_progress_and_advice(tmp_path):
+    """面板那一行只有**一处**定义（`ShadowLog.panel_text`）—— 两个面板都调它。
+
+    原来两个面板各写了一份同样的拼接（本仓库最忌的「副本会漂」）。
+    """
+    log = _new(tmp_path, show_advice=True)
+    st = GameState()
+    st.level = 9
+    _play(st, 1, 0, [A("S3")], [A("S4"), A("H5")], mine=True)
+    _play(st, 0, 1, [A("S4")], [A("S9")])
+    log.after_event(st, {"type": "play"})
+    line = log.panel_text()
+    assert "建议：" in line, line
+    # 关掉显示时只有进度
+    log2 = _new(tmp_path / "b", show_advice=False)
+    st2 = GameState(); st2.level = 9
+    _play(st2, 1, 0, [A("S3")], [A("S4"), A("H5")], mine=True)
+    _play(st2, 0, 1, [A("S4")], [A("S9")])
+    log2.after_event(st2, {"type": "play"})
+    assert "建议" not in log2.panel_text()

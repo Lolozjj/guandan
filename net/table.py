@@ -254,6 +254,7 @@ def run_live(st, events_path=EVENTS, seconds=0, level=None, shadow_log=None):
     box = {"n": 0, "hint": "等游戏数据…（打开掼蛋打一局）"}
     if level:
         st.level = level
+        st.level_src = "--level（手输）"
 
     def tick():
         for ev in tail.read():
@@ -266,11 +267,12 @@ def run_live(st, events_path=EVENTS, seconds=0, level=None, shadow_log=None):
         lv = lvl.poll()
         if lv is not None:
             st.level = lv
-            box["hint"] = f"级别更新：打{st.level_name()}"
+            st.level_src = lvl.level_src
+            box["hint"] = f"级别更新：打{st.level_name()}（{lvl.level_src}）"
             if shadow_log is not None:
                 shadow_log.note_level()
         win.draw(st, box["hint"], box["n"],
-                 shadow_log.last_line if shadow_log else "")
+                 shadow_log.panel_text() if shadow_log else "")
         root.after(150, tick)
 
     if seconds:
@@ -293,6 +295,7 @@ def run_replay(st, capture, delay_ms=260, seconds=0, level=None, shadow_log=None
     box = {"n": 0, "hint": "回放中…"}
     if level:
         st.level = level
+        st.level_src = "--level（手输）"
 
     def apply(msg):
         """解出来的帧 -> 事件字典，再交给**生产那份分发**（`panel.apply_event`）。
@@ -338,7 +341,7 @@ def run_replay(st, capture, delay_ms=260, seconds=0, level=None, shadow_log=None
             if shadow_log is not None:
                 shadow_log.close()
         win.draw(st, box["hint"], box["n"],
-                 shadow_log.last_line if shadow_log else "")
+                 shadow_log.panel_text() if shadow_log else "")
         root.after(delay_ms, tick)
 
     if seconds:
@@ -375,14 +378,15 @@ def main():
     ap.add_argument("--level", type=int, default=None,
                     help="回放/离线时直接给级别（网络里没有本局级别）")
     ap.add_argument("--no-advice", action="store_true", help="关掉影子模式")
+    ap.add_argument("--no-show-advice", action="store_true",
+                    help="算建议但不显示（记录里会如实写 advice_shown:false）")
     args = ap.parse_args()
     st = GameState()
-    sh = None
     # 建记录器只有**一处**（`shadow.open_shadow`）—— launcher 也走它
     sh = None
     if not args.no_advice:
         from . import shadow
-        sh = shadow.open_shadow()
+        sh = shadow.open_shadow(show_advice=not args.no_show_advice)
         print(sh.last_line)
     if args.replay:
         run_replay(st, args.capture or default_capture(), seconds=args.seconds,
