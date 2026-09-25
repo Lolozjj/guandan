@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -128,12 +129,21 @@ def _all_jokers(ids) -> bool:
 
 
 def bomb_class(m: Meld) -> Optional[int]:
-    """炸弹层级；不是炸弹返回 None。天王炸最高。"""
+    """炸弹层级；不是炸弹返回 None。天王炸最高。
+
+    ⚠️ **先判 kind 再判 `_all_jokers`**，顺序是刻意反过来的：
+    `bomb_class` 在自对弈里被调用 **240 万次/300 局**（`beats` 每个候选都要问一次），
+    而绝大多数是单张/对子这类**根本不是炸弹**的牌型。原来的顺序对每一张单张
+    都要先跑一遍 `_all_jokers`（它先看长度就返回，但那是 **229 万次函数调用**）。
+    先看 kind 把这一整类直接挡在外面。
+    语义不变：天王炸在 `_melds_joker_bomb` 里就是 `kind=BOMB`，
+    所以它照样落在 `kind in (BOMB, BOMB6)` 这一支里。
+    """
     if m.kind == STRAIGHT_FLUSH:
         return CLASS_FLUSH
-    if _all_jokers(m.cards):
-        return CLASS_JOKER_BOMB
     if m.kind in (BOMB, BOMB6):
+        if _all_jokers(m.cards):
+            return CLASS_JOKER_BOMB
         cls = _BOMB_CLASS_BY_SIZE.get(m.size)
         if cls is None:
             raise ValueError(
@@ -220,15 +230,36 @@ def _seq_lookup(g: dict) -> dict:
     return nat
 
 
-def _window(nat: dict, top: int, span: int):
+#: (top, span) -> 窗口位掩码。窗口只在 3 种 span、top ∈ span..14 上取，预计算。
+_WIN_MASK = {(top, span): sum(1 << n for n in range(top - span + 1, top + 1))
+             for span in (_SEQ_LEN, _PAIR_RUN_LEN, _PLATE_LEN)
+             for top in range(span, _NAT_MAX + 1)}
+
+
+def _seq_mask(nat: dict) -> int:
+    """「哪些自然值有牌」的位掩码（一位一个自然值，1..14）。
+
+    只有 ≤14 个键，比下面逐格 `nat.get(n)` 便宜得多。
+    """
+    m = 0
+    for n in nat:
+        m |= 1 << n
+    return m
+
+
+def _window(mask: int, top: int, span: int):
     """[top-span+1, top] 这一段连续自然值；只要有一格没牌就返回 None。
 
     张数够不够（连对要 2、钢板要 3）由调用方自己判 —— 顺子一格一张就够。
+
+    ⚠️ 原来这里是「建一个 list，再 `any(not nat.get(n) for n in nats)`」。
+    剖面显示它被调用 **335 万次**（300 局）、连带 `any` 与生成式共占总耗时约 **18%**。
+    改成一次位与之后这一段基本消失（`_melds_straights` 的累计耗时 7.9s 里大头在此）。
     """
-    nats = list(range(top - span + 1, top + 1))
-    if any(not nat.get(n) for n in nats):
+    w = _WIN_MASK[(top, span)]
+    if mask & w != w:
         return None
-    return nats
+    return list(range(top - span + 1, top + 1))
 
 
 def _melds_straights(g: dict, level) -> list:
@@ -248,9 +279,10 @@ def _melds_straights(g: dict, level) -> list:
     打的是另一种花色时验收① 依然会红。
     """
     nat = _seq_lookup(g)
+    mask = _seq_mask(nat)
     out = []
     for top in range(_SEQ_LEN, _NAT_MAX + 1):
-        nats = _window(nat, top, _SEQ_LEN)
+        nats = _window(mask, top, _SEQ_LEN)
         if nats is None:
             continue
         # 顺子每格取一个代表即可（大小只跟顶端有关）；王的 nat 为空，进不来
@@ -267,9 +299,10 @@ def _melds_straights(g: dict, level) -> list:
 def _melds_pair_run(g: dict, level) -> list:
     """连对（恰好 3 个连续对子）。4 张只有炸弹，所以没有二连对。"""
     nat = _seq_lookup(g)
+    mask = _seq_mask(nat)
     out = []
     for top in range(_PAIR_RUN_LEN, _NAT_MAX + 1):
-        nats = _window(nat, top, _PAIR_RUN_LEN)
+        nats = _window(mask, top, _PAIR_RUN_LEN)
         if nats is None:
             continue
         if any(len(nat[n]) < 2 for n in nats):
@@ -282,9 +315,10 @@ def _melds_pair_run(g: dict, level) -> list:
 def _melds_plate(g: dict, level) -> list:
     """钢板（恰好 2 个连续三张）。"""
     nat = _seq_lookup(g)
+    mask = _seq_mask(nat)
     out = []
     for top in range(_PLATE_LEN, _NAT_MAX + 1):
-        nats = _window(nat, top, _PLATE_LEN)
+        nats = _window(mask, top, _PLATE_LEN)
         if nats is None:
             continue
         if any(len(nat[n]) < 3 for n in nats):
@@ -479,7 +513,7 @@ def _melds_natural(hand: Sequence[int], level: Optional[int]) -> list:
     return out
 
 
-def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
+def _melds_from_uncached(hand: Sequence[int], level: Optional[int] = None) -> list:
     """枚举手牌能组成的牌型，逢人配当万能牌，但**先试天然的**。
 
     两段拼起来：天然牌型（`_melds_natural`，`wild_used == 0`）+ 补牌牌型
@@ -525,6 +559,40 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
         elif m.rank > uniq[i].rank:
             uniq[i] = m          # 同一组牌有更强的读法 -> 换掉那条
     return uniq
+
+
+#: 枚举缓存的容量。**故意小。**
+#:
+#: 实测（2026-09-25，`tools/bench_sim.py` 剖面 + 扫参）：
+#:   `melds_from` 占自对弈总耗时的 **81%**；而同一手牌里同一种牌面被**反复枚举**
+#:   （300 局里叫了 95,297 次，不同的 (级别, 手牌) 只有 16,537 种 —— 重复率 83%）。
+#: 命中率在 256 就封顶（82%），再大反而慢（字典开销 + 内存压力）：
+#:   maxsize=256 -> 86.2 局/秒 · 4096 -> 78.6 · 32768 -> 77.7 · 不设上限 -> 70.8
+#: 复用是**极局部**的：同一副牌面只在它那几手之内被重复问到。
+_CACHE_MAXSIZE = 256
+
+
+@functools.lru_cache(maxsize=_CACHE_MAXSIZE)
+def _melds_from_cached(hand_key: tuple, level: Optional[int]) -> list:
+    return _melds_from_uncached(list(hand_key), level)
+
+
+def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
+    """`_melds_from_uncached` 的**缓存外壳**（形状契约见那个函数的 docstring）。
+
+    为什么要缓存：见 `_CACHE_MAXSIZE` 的注释 —— 那 81% 里 83% 是在重算同一种牌面。
+
+    ⚠️ **两条契约**（都有测试钉着，见 `tests/test_meld_cache.py`）：
+
+    1. **键是「这一手是哪些牌」的快照**（`tuple(hand)`），**不是对象身份**。
+       手牌是就地改的（`Hand.play()` 就是 `self.hands[seat] -= cs`），
+       按身份缓存会把出牌之后的查询喂成出牌之前的答案。
+       注意**顺序也算键的一部分** —— `_by_idx` 保留插入序，代表牌按 `ids[0]` 取，
+       所以顺序不同就是不同的输入（这是对的，不是缺陷）。
+    2. **别就地改返回的 list**（同一个 list 会交给下一个调用方）。
+       现有调用方都是「读一遍就丢」或自己再包一层，符合这条。
+    """
+    return _melds_from_cached(tuple(hand), level)
 
 
 def legal_moves(hand: Sequence[int], table: Optional[Meld],
