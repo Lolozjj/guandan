@@ -10,13 +10,22 @@
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import torch
 import torch.nn as nn
 
 from net.sim import env
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+#: 用哪个设备训练/推理。**默认「有 CUDA 就用」**，但允许环境变量覆盖 ——
+#: 因为实测（2026-09-26）这个训练循环**在 GPU 上反而更慢**：
+#:     CPU 14~15 局/秒（Plan 3 那 5 万局也是这个量级）  vs  CUDA 11.5 局/秒
+#: 瓶颈不是前向的算力，而是「一次前向只算一个局面的候选」的调用开销
+#: （spec §14.3 量到的那 37,689 次调用），GPU 摊不平这个开销。
+#: 所以夜里的长跑用 `GUANDAN_DEVICE=cpu`（还能与已有曲线直接比）。
+DEVICE = os.environ.get("GUANDAN_DEVICE") or (
+    "cuda" if torch.cuda.is_available() else "cpu")
 MLP_LAYERS = 6
 MLP_HIDDEN = 512
 LSTM_HIDDEN = 128
