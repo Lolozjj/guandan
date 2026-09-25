@@ -41,7 +41,7 @@ import torch
 from net.sim import env, rules
 from train import replay
 from train.eval import match
-from train.net import QNet, q_argmax_batch
+from train.net import DEVICE, QNet, q_argmax_batch
 from train.policies import greedy_policy, random_policy
 
 BATCH_GAMES = 32              # spec §5.3
@@ -137,7 +137,11 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           out_dir: str = None, log=print):
     torch.manual_seed(seed)
     rng = random.Random(seed)
-    net = QNet()
+    # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
+    # 训练照跑、只是慢 —— Plan 3 那 5 万局与 2026-09-26 那次 9 小时跑都是这么过去的
+    # （GPU 从没被用上）。训练步的瓶颈就是网络前向（spec §14.3）。
+    # `tests/test_train_device.py` 用 1 秒预算真跑一次钉住这件事。
+    net = QNet().to(DEVICE)
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     out_dir = out_dir or os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M"))
