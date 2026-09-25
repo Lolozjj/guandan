@@ -179,3 +179,69 @@ class Hand:
         if len(self.order) == 2 and TEAM[self.order[0]] == TEAM[self.order[1]]:
             return True
         return len(self.order) == 3
+
+    # ------------------------------------------------------------ 结算
+
+    def ranks(self) -> List[int]:
+        """`ranks[seat] = 1..4`。出完的按出完顺序 1..k；没出完的按**剩牌少者排前**，
+        同数按座位小者排前（只为可复现）。
+
+        双上局里败方那两个人的 3/4 名是**服务器说了算的**：实测 25 局里 23 局
+        「剩牌少者第 3」、2 局相反（spec §13.5）。**这两种定法对 reward 无影响**
+        —— 双上时败方谁 3 谁 4 不改变形态，所以不为此加规则。
+        """
+        if not self.is_over():
+            raise IllegalPlay("局还没终，名次还没定 —— 不要中途算名次")
+        rest = [s for s in SEATS if s not in self.order]
+        rest.sort(key=lambda s: (len(self.hands[s]), s))
+        ranks = [0] * 4
+        for i, s in enumerate(list(self.order) + rest, 1):
+            ranks[s] = i
+        return ranks
+
+
+# ---------------------------------------------------------------- 结算与奖励
+
+#: 赢家那一队**较差的名次** -> 升级点。双上 = 前两名都被包 = 较差名次是 2。
+#:
+#: ⚠️ 「双上 -> 3」只在数据上对了 13/24 局，另 11 局实测是 **4**（spec §13.4）。
+#:    同一 `Rank`、同一战前 `trump` 都能出 3 和 4，说明还依赖升级/过A 的字段 ——
+#:    按 §13.1 不在 Plan 2 内。这里取 3（用户口述 + spec §5.4），
+#:    **由 `tools/accept_sim.py` 把 3/4 的分布单独报出来**，不当成验收失败。
+POINTS_BY_WORST_RANK = {2: 3, 3: 2, 4: 1}
+
+#: reward 的倍数开关。**默认 1.0，即不带倍数。**
+#:
+#: spec §5.4 说「倍数必须带上 —— 打炸弹会抬倍数」，但 54 局实测**不支持这个前提**：
+#: `TotalBombRatio` 在 49/54 局是 1（其中 36 局手上有 5~16 个炸弹/同花顺），
+#: 真正的倍数是 `FinalDoubleRatio ∈ {1, 1.5, 2, 2.5}`，那是**发牌前选的加倍**，
+#: 一手之内不变 ⇒ 对最优策略零影响（只有一手内变化的倍数才会改变打法）。
+#: 详见 spec §13.4。Plan 3 想按 `FinalDoubleRatio` 分布采样时改这一个值即可。
+MULTIPLIER = 1.0
+
+
+def winner_team(ranks) -> int:
+    """赢家队：两名队员里**较好的名次**更靠前的那一队。"""
+    a = min(ranks[0], ranks[2])
+    b = min(ranks[1], ranks[3])
+    if a == b:
+        raise IllegalPlay(f"两队最好名次相同（ranks={list(ranks)}），不可能是合法结算")
+    return 0 if a < b else 1
+
+
+def points(ranks) -> int:
+    """赢家这一手的升级点：双上 3 / 1、3 名 2 / 1、4 名 1。"""
+    t = winner_team(ranks)
+    worst = max(ranks[0], ranks[2]) if t == 0 else max(ranks[1], ranks[3])
+    return POINTS_BY_WORST_RANK[worst]
+
+
+def reward(ranks, seat: int, multiplier: float = None) -> float:
+    """**从 `seat` 视角**的零点五奖励 —— 四个座位共享一套策略，必须零和。
+
+    ⚠️ 视角是**出牌人**，不是「我方固定座位」。喂给网络的状态必须先相对化
+    （自己 / 下家 / 对家 / 上家），否则这一条会被悄悄用错。
+    """
+    m = MULTIPLIER if multiplier is None else multiplier
+    p = points(ranks) * m
+    return p if TEAM[seat] == winner_team(ranks) else -p
