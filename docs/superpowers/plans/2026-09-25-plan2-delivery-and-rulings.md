@@ -39,7 +39,7 @@ cd C:\Users\17837\PycharmProjects\yolo
 
 ## 三、实测数字
 
-### 吞吐（`tools.bench_sim.py` 20 秒，随机策略，**不含网络前向**；原始输出在 sdd 工作区 `bench-output.txt`）
+### 吞吐（`tools.bench_sim.py` 20 秒，随机策略，**不含网络前向**；原始输出见同目录 `2026-09-25-plan2-bench-output.txt`）
 
 ```
 31.9 局/秒 · 4,207.7 决策点/秒 · 131.8 决策点/局
@@ -80,7 +80,7 @@ cd C:\Users\17837\PycharmProjects\yolo
 `accept_sim` 顺带报出「我们算的升级点 vs 日志 Upgrade」的分布：**40/53 一致**，
 其中 `我们3/日志4` 有 **11 局** —— 正是 spec §13.4 记的那个双上偏差。
 
-**冒烟曲线**（1800 秒 / 16,608 局，`bench-output.txt` 同目录的 `smoke-output.txt`）：
+**冒烟曲线**（1800 秒 / 16,608 局，原始输出见同目录 `2026-09-25-plan2-smoke-output.txt`）：
 ```
 42% 78% 83% 82% 88% 86% 92% 92% 91% 94% 92% 91% 96%
 89% 94% 93% 92% 93% 92% 95% 92% 91% 93% 95% 92% 92%
