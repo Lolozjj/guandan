@@ -391,6 +391,23 @@ def _melds_wild(g: dict, level, wilds: Sequence[int]) -> list:
                                 _with_wild(tuple(g[t][:3]) + tuple(g[p][:2]),
                                            wilds, d),
                                 wild_used=d))
+            # **逢人配也可以顶掉一张自然牌** —— 上面那条自然牌是**贪婪占位**的
+            #（三张那一半直接取 `g[t][:3]`），所以手里 `t` 有 3 张以上时
+            #「t,t + 逢人配」这条产不出来，而它用掉的是**不同的一组牌**
+            #（少一张 t、多一张逢人配）。
+            # 实测 2026-09-25（最终评审）：`A♠A♥2♠2♥` + 第三张 A，面对 rank=5
+            # 的三带二，`actions()` 一个候选都不给 —— 而游戏读成「三个 A 带一对 2」
+            #（rank 13）压得过。换成第三张 2 就没这个问题，也就是说
+            # **能不能出这手牌取决于一张根本没出过的牌**。
+            # 只补「逢人配进三张那一半」：进对子那一半的已由上面的 `d` 覆盖。
+            for k in range(1, min(n_wild, 2) + 1):
+                mm = max(0, 2 - len(g[p]))
+                if k + mm <= n_wild and 3 - k <= len(g[t]):
+                    out.append(Meld(TRIPLE_PAIR, 5, point_value(t, level),
+                                    _with_wild(
+                                        tuple(g[t][:3 - k]) + tuple(g[p][:2 - mm]),
+                                        wilds, k + mm),
+                                    wild_used=k + mm))
 
     for top in range(_SEQ_LEN, _NAT_MAX + 1):
         nats = list(range(top - _SEQ_LEN + 1, top + 1))
@@ -490,13 +507,23 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
         out += _melds_wild(_by_idx(rest), level, wilds)
     # 收口去重。键带 kind：同一组牌可以同时是顺子与同花顺（含天然那两条），
     # 那是两种解释，都要留下 —— tools/accept_meld.py 的 as_meld() 靠它取最强解释。
-    seen, uniq = set(), []
+    #
+    # ⚠️ **同一个 `(kind, 牌组)` 只留一条，留的是 rank 最大的那条**，
+    # 不是最先产出的那条。理由：游戏读的是**最强**读法 —— 本模块
+    # `_melds_wild` 的注释里那手真实数据（`10♥10♣+♥J + 2♠2♦` 压在
+    # 「三个 9 带一对 4」上，只有三张是 10 才压得过）就是这条的证据。
+    # 留「先产出的」会让同一组牌的 rank 随**生成顺序**漂，而生成顺序又受
+    # 手里别的牌影响 —— 实测 `A♠A♥2♠2♥` + 第三张 A/2 会让同一组牌
+    # 分别读成 rank 1 / 13。留最强读法把这条不定性收掉。
+    seen, uniq = {}, []
     for m in out:
         key = (m.kind, tuple(sorted(m.cards)))
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(m)
+        i = seen.get(key)
+        if i is None:
+            seen[key] = len(uniq)
+            uniq.append(m)
+        elif m.rank > uniq[i].rank:
+            uniq[i] = m          # 同一组牌有更强的读法 -> 换掉那条
     return uniq
 
 

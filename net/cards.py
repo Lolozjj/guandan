@@ -108,3 +108,26 @@ def sort_ids(ids, level: int = None) -> list:
 def names_sorted(ids, level: int = None) -> list:
     """按掼蛋大小排好并转成牌面名。"""
     return [decode(c) for c in sort_ids(ids, level)]
+
+
+# ---------------------------------------------------------------- 编码位
+#
+# 给「把一手牌编码成定长向量」用的：两副牌 108 张 -> 0..107。
+# 布局：每副 54 张 = ♠A..♠K(0..12) + ♥(13..25) + ♣(26..38) + ♦(39..51) + 小王(52) + 大王(53)，
+# 第二副整体 +54。**花色是第一档分组**，这样同花色的牌落在连续区间里。
+
+_SUIT_ORDER_4 = ("♠", "♥", "♣", "♦")
+SLOTS = 108
+
+
+def slot(cid: int) -> int:
+    """牌 ID -> 0..107 的编码位。非法的牌 ID **直接炸**（不静默给个默认位）。"""
+    if cid in _JOKER:
+        name, deck = _JOKER[cid]
+        return (deck - 1) * 54 + (52 if name == "小王" else 53)
+    if not is_card(cid):
+        raise ValueError(f"不是合法牌 ID：{cid}")
+    deck = cid // 256
+    low = cid % 256
+    base = low // 16 * 16
+    return deck * 54 + _SUIT_ORDER_4.index(_SUIT[base]) * 13 + (low - base - 1)
