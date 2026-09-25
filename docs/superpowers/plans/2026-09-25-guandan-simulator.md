@@ -2076,8 +2076,8 @@ def _obs_with_opponent_hand(opp_cards):
 
 
 def test_two_games_differing_only_in_opponent_hands_encode_identically():
+    a = _obs_with_opponent_hand({A("S9"), A("ST")})
     b = _obs_with_opponent_hand({A("HJ"), A("HQ")})   # 同样 2 张，只换具体牌
-    b = _obs_with_opponent_hand({A("HJ"), A("HQ"), A("HK")})
     assert np.array_equal(env.encode_state(a), env.encode_state(b)), (
         "两个只差「对手手牌」的局面编出了不同的状态向量 —— **明牌泄漏**。\n"
         "最可能的原因：`encode_state` 或 `observe` 摸了 `Hand.hands` 里不属于自己的那几家。"
@@ -2132,7 +2132,6 @@ def test_a_randomized_policy_scores_identically_on_paired_opponent_hands(seed):
     # 两边都是 **2 张**，只有具体是哪两张不同
     x = score({free[picks[0]], free[picks[1]]})
     y = score({free[picks[2]], free[picks[3]]})
-    y = score({deck[picks[2]], deck[picks[3]], deck[picks[4]], deck[picks[5]]})
     assert x == y, f"网络给两个只差对手手牌的局面打出了不同的分：{x} vs {y} —— 泄漏"
 ```
 
