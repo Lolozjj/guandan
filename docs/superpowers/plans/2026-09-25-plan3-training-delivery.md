@@ -25,6 +25,8 @@
 ```
 
 50,656 局 / 3,653 秒 / 1,583 步 / 13.5 局/秒。
+**原始输出**（那份日志是 gitignore 的，所以收了一份进仓库）：
+`docs/superpowers/plans/2026-09-25-plan3-selfplay-output.txt`
 
 ## 二、怎么跑
 
