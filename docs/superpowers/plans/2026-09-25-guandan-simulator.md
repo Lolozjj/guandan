@@ -1125,10 +1125,10 @@ def _one_settled_game():
 def test_shape_ignores_which_copy_of_a_card_was_used():
     """`melds_from` 的契约是「每个形状一条代表」—— 所以比对口径必须是**形状**，
     不是牌张集合。真人打出的可能是 ♥5♥5，而枚举给的是 ♠5♠5 那条代表。"""
-    a = meld.as_meld([meld.cid_from_name("5♠"), meld.cid_from_name("5♠", deck=2)], 2)
-    b = meld.as_meld([meld.cid_from_name("5♥"), meld.cid_from_name("5♥", deck=2)], 2)
+    a = meld.as_meld([meld.cid_from_name("S5"), meld.cid_from_name("S5", deck=2)], 2)
+    b = meld.as_meld([meld.cid_from_name("H5"), meld.cid_from_name("H5", deck=2)], 2)
     assert a.cards != b.cards
-    assert accept_sim.shape(a) == accept_sim.shape(b) == (meld.PAIR, 2, 5)
+    assert accept_sim.shape(a) == accept_sim.shape(b) == (meld.PAIR, 2, 4)   # rank 是 meld.point_value(5,2)=4，不是 5
 
 
 def test_replay_walks_a_real_game_to_the_end_without_raising():
@@ -1191,7 +1191,9 @@ import sys
 from dataclasses import dataclass, field
 
 from net.sim import meld, rules
-from tools.accept_meld import Result
+# `_utf8_stdout` 直接复用 accept_meld 那份，**不复制** —— 它就是为「GBK 控制台下
+# 打不出 ✓ 会让全绿的脚本返回 1」写的（Plan 1 踩过这个坑）。
+from tools.accept_meld import Result, _utf8_stdout
 from tools.decision_points import initial_hands
 from tools.game_log import load_corpus
 
@@ -1296,6 +1298,7 @@ def check_replay(games) -> Result:
 
 
 def main(argv=None) -> int:
+    _utf8_stdout()          # ← 见下方说明，漏了这行 GBK 控制台下会抛 UnicodeEncodeError
     games = load_corpus()
     print(f"载入对局 {len(games)} 局，其中有结算的 "
           f"{sum(1 for g in games if g.settle)} 局\n")
