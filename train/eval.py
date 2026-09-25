@@ -18,26 +18,55 @@ def match(policy_a, policy_b, games: int = 200, seed: int = 0,
           level: int = None) -> float:
     """a 队对 b 队的胜率（`games` 局，座位对调）。
 
+    **所有局同步推进**（各走一步、攒成一批再问网络），理由与自对弈那边一样：
+    一次前向只算一个局面时 GPU 的批处理完全浪费（spec §14.3）。
+    带 `batch_choose` 的策略（`train/policies.py` 的 `batch_net_policy`）会被批量调用；
+    随机 / 贪心这类便宜的策略仍然逐决策点调用。
+
     `level=None` 时每局随机 1..13（与训练时的分布一致）。
     """
     rng = random.Random(seed)
-    wins = 0
+    envs, a_on_team0 = [], []
     for i in range(games):
         e = env.GuandanEnv(seed=rng.randrange(1 << 30))
         e.reset(level=level)
-        a_on_team0 = (i % 2 == 0)
-        obs = e.observe()
-        while not e.done:
-            seat = e.hand.turn
-            acts = e.legal()
-            # hist 由这里算（策略自己拿不到明牌，见 train/policies.py 的说明）
-            hist = env.encode_history(e.hand, seat)
-            on_a = (rules.TEAM[seat] == 0) == a_on_team0
-            i_act = (policy_a if on_a else policy_b)(obs, acts, hist)
-            obs, _r, _d, _info = e.step(i_act)
-        winner = rules.winner_team(e.ranks)
-        if (winner == 0) == a_on_team0:
-            wins += 1
+        envs.append(e)
+        a_on_team0.append(i % 2 == 0)          # 座位对调
+
+    alive = list(range(games))
+    while alive:
+        pending = []
+        for k in alive:
+            e = envs[k]
+            pending.append((e.observe(), e.legal(),
+                            env.encode_history(e.hand, e.hand.turn)))
+
+        groups = {}
+        for j, (obs, acts, hist) in enumerate(pending):
+            seat = envs[alive[j]].hand.turn
+            on_a = (rules.TEAM[seat] == 0) == a_on_team0[alive[j]]
+            groups.setdefault(on_a, []).append(j)
+
+        picks = [None] * len(pending)
+        for on_a, js in groups.items():
+            pol = policy_a if on_a else policy_b
+            bc = getattr(pol, "batch_choose", None)
+            if bc is not None:
+                got = bc([pending[j] for j in js])
+            else:
+                got = [pol(*pending[j]) for j in js]
+            for j, idx in zip(js, got):
+                picks[j] = idx
+
+        nxt = []
+        for k, idx in zip(alive, picks):
+            envs[k].step(idx)
+            if not envs[k].done:
+                nxt.append(k)
+        alive = nxt
+
+    wins = sum(1 for k in range(games)
+               if (rules.winner_team(envs[k].ranks) == 0) == a_on_team0[k])
     return wins / games
 
 

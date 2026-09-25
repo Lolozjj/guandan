@@ -60,3 +60,23 @@ def net_policy(score_candidates):
         return int(score_candidates(obs, acts, hist).argmax())
 
     return policy
+
+
+def batch_net_policy(q_argmax_batch, net):
+    """网络策略，**额外带一个 `batch_choose`** —— 评测器/训练循环可以一次把
+    同一时刻的所有决策点送进网络（见 `train/net.py` 的 `q_argmax_batch`）。
+
+    带这个属性的策略会被批量调用；不带的（随机 / 贪心）就逐决策点调用 ——
+    它们便宜，没必要批。
+    """
+    from train.net import q_values
+
+    def policy(obs, acts, hist=None) -> int:
+        return int(q_values(net, obs, acts, hist).argmax())
+
+    def batch_choose(pending):
+        """`pending = [(obs, acts, hist), ...]` -> 每个决策点的选中下标。"""
+        return q_argmax_batch(net, pending)
+
+    policy.batch_choose = batch_choose
+    return policy

@@ -94,3 +94,20 @@ def test_greedy_vs_itself_is_even():
     """同一个策略对打应当 ≈ 50%（座位对调的对称性自检）。实测 49.3%。"""
     wr = match(greedy_policy, greedy_policy, games=200, seed=13)
     assert 0.42 <= wr <= 0.58, f"贪心对自己只有 {wr:.1%}，座位对调或胜负判定有偏"
+
+
+def test_batched_net_policy_matches_the_per_decision_one():
+    """评测器的批量路径必须与逐个路径给出**同样的胜率** ——
+    不然「胜率」这个数就取决于走哪条代码路径了（而且不报错）。"""
+    import torch
+    from train.net import QNet
+    from train.policies import batch_net_policy, net_policy
+    from train.net import q_argmax_batch, q_values
+
+    torch.manual_seed(0)
+    net = QNet()
+    one = net_policy(lambda o, a, h: q_values(net, o, a, h))
+    batched = batch_net_policy(q_argmax_batch, net)
+    wr_one = match(one, greedy_policy, games=100, seed=55)
+    wr_bat = match(batched, greedy_policy, games=100, seed=55)
+    assert wr_one == wr_bat, f"批量 {wr_bat:.0%} 与逐个 {wr_one:.0%} 不一致"

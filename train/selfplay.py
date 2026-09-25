@@ -125,9 +125,11 @@ def _tensors(samples):
 
 
 def net_play(net):
-    """把网络包成策略（`hist` 由评测器算好递进来）。"""
-    from train.net import q_values
-    return lambda obs, acts, hist: int(q_values(net, obs, acts, hist).argmax())
+    """把网络包成策略。**带 `batch_choose`** —— 评测器会一次把同一时刻的
+    所有决策点送进网络（`train/eval.py` 的 `match` 认这个属性）。"""
+    from train.policies import batch_net_policy
+    from train.net import q_argmax_batch
+    return batch_net_policy(q_argmax_batch, net)
 
 
 def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAMES,
