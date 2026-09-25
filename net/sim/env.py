@@ -291,3 +291,33 @@ class GuandanEnv:
             out.append((obs, acts, i, self.hand.turn))
             obs, _r, _done, _info = self.step(i)
         return out
+
+
+# ---------------------------------------------------------------- 动作历史
+
+#: spec §4.1「最近 15 手的动作序列 → LSTM」。
+HISTORY_LEN = 15
+
+#: 每一行 = `encode_action(m)` ⊕ **出牌人的相对座位** one-hot(4)。
+#:
+#: ⚠️ 那 4 维是**在 spec §4.2 的动作编码之外加的**（§4.2 只说了动作怎么编）。
+#: 加的理由：同一个 9♠ 是下家出的还是对家出的，对判断局面完全不同 ——
+#: 不记「谁出的」，这 15 行能提供的信息会少一大半。动作编码本身仍严格按 §4.2（143 维）。
+HISTORY_DIM = ACTION_DIM + 4
+assert HISTORY_DIM == 147
+
+
+def encode_history(hand: "rules.Hand", seat: int) -> np.ndarray:
+    """最近 `HISTORY_LEN` 步，**右对齐**（最近的落在最后一行），新局前面补 0。
+
+    历史里全是**公开信息**（谁出了什么、谁过了）—— 不构成明牌泄漏。
+    传进来的虽然是明牌的 `Hand`，但这里**只读 `hand.steps` 与 `hand.level`**
+    （`tests/test_env_history.py` 里有一条对照测试钉住这一点）。
+    """
+    v = np.zeros((HISTORY_LEN, HISTORY_DIM), dtype=np.float32)
+    steps = hand.steps[-HISTORY_LEN:]
+    for i, st in enumerate(steps):
+        row = v[HISTORY_LEN - len(steps) + i]
+        row[:ACTION_DIM] = encode_action(st.meld, hand.level)   # 过 = 全 0
+        row[ACTION_DIM + (st.seat - seat) % 4] = 1.0
+    return v

@@ -2281,7 +2281,8 @@ A = meld.cid_from_name
 
 
 def test_history_shape_and_zero_padding_at_the_front():
-    h = rules.Hand(hands=[{A("S3")}] * 4, level=2, turn=0)
+    # 别写 `[{A("S3")}] * 4` —— 那是**同一个 set 对象**出现四次，改一家会改四家
+    h = rules.Hand(hands=[{A("S3")} for _ in range(4)], level=2, turn=0)
     v = env.encode_history(h, 0)
     assert v.shape == (env.HISTORY_LEN, env.HISTORY_DIM)
     assert v.sum() == 0, "还没出过牌，历史必须全 0"
@@ -2311,7 +2312,8 @@ def test_history_is_truncated_to_the_last_15_steps():
             break
         s = h.turn
         acts = [a for a in h.actions(s) if a is not None]
-        h.play(s, acts[0])
+        # 走不动时就过 —— 轮到座位 2（只有一张 8♠）面对 9♠ 时，候选只有「过」
+        h.play(s, acts[0] if acts else None)
     v = env.encode_history(h, 0)
     assert v.shape == (env.HISTORY_LEN, env.HISTORY_DIM)
 ```
