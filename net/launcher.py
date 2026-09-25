@@ -28,6 +28,7 @@ import winreg
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDON = os.path.join(PROJ, "net", "addon.py")
+RAWDUMP = os.path.join(PROJ, "net", "rawdump.py")
 
 VENV_MITM = r"C:\Users\17837\mitmtool\Scripts\mitmdump.exe"
 CONFDIR = r"C:\Users\17837\.mitmproxy"
@@ -161,7 +162,10 @@ class Session:
                    encoding="utf-8", buffering=1)
         self.proc = subprocess.Popen(
             [mitm, "-q", "--mode", f"upstream:http://{self.orig[0]}",
-             "-s", ADDON, "-p", str(PORT)],
+             "-s", ADDON, "-p", str(PORT)]
+            # 原始帧全量转储：默认关闭。开它只为做全量普查（比如「网络里有没有级别」），
+            # 平时不需要 —— 文件会大不少，而且 addon 已经把语义事件存下来了。
+            + (["-s", RAWDUMP] if os.environ.get("GUANDAN_RAW") else []),
             stdout=log, stderr=subprocess.STDOUT)
         for _ in range(60):
             if self.proc.poll() is not None:
