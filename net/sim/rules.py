@@ -298,3 +298,104 @@ def new_hand(rng, level=None, hands=None, first=None) -> "Hand":
         h = Hand(hands=[set(x) for x in hands], level=level,
                  turn=rng.randrange(4) if first is None else first)
     return h
+
+
+# ---------------------------------------------------------------- 进贡 / 还贡
+#
+# 证据分级（**不许把「基线」当成「已验证」**）：
+#
+#   [硬证据 25/25]  还贡 ≤ 10 —— 25 条 `NotifyReturnTribute` / `TributeSectionEndService`
+#                   记录里 `card=` 解码后点数**全部落在 2..10**（跨 4 花色、2 副牌）。spec §13.6
+#   [证据 9 条]     抗贡判**队**不判人 —— `TributeSectionStatrt seatId:N|大王|` 出现 9 次，
+#                   总是同队两个座位各一张大王，单贡时也只报这两个座位
+#   [基线，待验收]  贡「最大的牌」、双贡怎么配对、进贡后谁先出 —— 只有 5 条直接记录，
+#                   且我的对齐脚本不可靠（spec §13.6）。按通行规则实现，
+#                   **由 `tools/accept_tribute.py` 逐条报差分**。
+
+#: 还贡允许的点数区间（闭区间）。**A=1 不在里面** —— 25/25 条硬证据。
+RETURN_MIN_RANK, RETURN_MAX_RANK = 2, 10
+
+
+@dataclass
+class Tribute:
+    kind: str                  # "none" / "single" / "double" / "resist"
+    gave: dict                 # {进贡方座位: 牌}
+    returned: dict             # {受贡方座位: 牌}
+    leader: int                # 进贡阶段结束后先出的座位
+
+
+def tributers(prev_ranks) -> List[int]:
+    """谁要进贡：上一手的第 4 名；若第 3、4 名**同队**则两人都要（双贡）。"""
+    last = [s for s in SEATS if prev_ranks[s] == 4]
+    third = [s for s in SEATS if prev_ranks[s] == 3]
+    if len(last) != 1 or len(third) != 1:
+        raise IllegalPlay(f"上一手名次不合法：{list(prev_ranks)}")
+    if TEAM[last[0]] == TEAM[third[0]]:
+        return sorted([last[0], third[0]])
+    return [last[0]]
+
+
+def _value(cid: int, level) -> int:
+    """这张牌的掼蛋大小（越大越强）。
+
+    **必须走 `meld.point_value`**：打 2 的时候 2 是级牌、比 A 大，
+    自己拿 `cards.parts(...)[0]` 比大小会在这里栽跟头（而且不报错）。
+    """
+    return meld.point_value(cards.parts(cid)[0], level)
+
+
+def _biggest(hand, level) -> int:
+    return max(sorted(hand), key=lambda c: (_value(c, level), c))
+
+
+def _smallest_returnable(hand, level) -> int:
+    """还贡：**2..10 里最小的那张**（硬证据只钉住「≤10」；给哪一张是受贡方的选择，
+    25 条里不唯一 —— 这里定死成最小的，图可复现）。
+
+    万一一张 2..10 都没有（27 张全是 J/Q/K/A/王，理论上可能），退化成「手上最小的」
+    并**留下痕迹**，不静默。
+    """
+    pool = [c for c in hand if RETURN_MIN_RANK <= cards.parts(c)[0] <= RETURN_MAX_RANK]
+    if not pool:
+        pool = list(hand)
+    return min(sorted(pool), key=lambda c: (_value(c, level), c))
+
+
+def apply_tribute(hand: "Hand", prev_ranks=None) -> Tribute:
+    """就地执行进贡阶段，并把 `hand.turn` 设成先出者。`prev_ranks=None`（第一手）则不动。
+
+    **「先出者 = 头游」是基线**（无硬证据）—— `tools/accept_tribute.py` 会拿发牌报文里的
+    `nWhoIsFirstOut` 逐局对，对不上就在那里暴露出来。
+    """
+    if prev_ranks is None:
+        return Tribute("none", {}, {}, hand.turn)
+    level = hand.level
+    givers = tributers(prev_ranks)
+    leader = next(s for s in SEATS if prev_ranks[s] == 1)
+
+    losing_team = TEAM[givers[0]]
+    teammates = [s for s in SEATS if TEAM[s] == losing_team]
+    if sum(1 for s in teammates for c in hand.hands[s]
+           if cards.parts(c)[0] == 15) >= 2:
+        hand.turn = leader
+        return Tribute("resist", {}, {}, leader)
+
+    # 双贡时：**贡牌大的那家给头游**，另一家给二游（基线）。
+    receivers = sorted([s for s in SEATS if prev_ranks[s] in (1, 2)],
+                       key=lambda s: prev_ranks[s])          # 头游在前
+    ranked = sorted(givers,
+                    key=lambda s: (_value(_biggest(hand.hands[s], level), level),
+                                   _biggest(hand.hands[s], level)),
+                    reverse=True)
+    gave, returned = {}, {}
+    for giver, receiver in zip(ranked, receivers):
+        c = _biggest(hand.hands[giver], level)
+        gave[giver] = c
+        hand.hands[giver].discard(c)
+        hand.hands[receiver].add(c)
+        b = _smallest_returnable(hand.hands[receiver], level)
+        returned[receiver] = b
+        hand.hands[receiver].discard(b)
+        hand.hands[giver].add(b)
+    hand.turn = leader
+    return Tribute("double" if len(givers) == 2 else "single", gave, returned, leader)
