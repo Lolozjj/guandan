@@ -114,24 +114,38 @@ def run_replay(st: GameState, capture: str, delay: float) -> None:
                 frames.append(r)
     frames.sort(key=lambda r: r["t"])
     n, hint = 0, "回放开始"
+    if level:
+        st.level = level
     for r in frames:
         body = bytes.fromhex(r["hex"])
         msg = protocol.parse(body)
+        ev = None
         if msg and msg["msgid"] == 3005:
             p = protocol.decode_play(msg["fields"])
             if p:
+                # `left_cards` 一定要带上：**只有自己的出牌有它**，座位就是靠它认出来的
+                # （不带的话回放里永远不知道该把哪家当我，影子模式会一路跳过）
                 ev = {"type": "play", "seat": p["seat"], "cards": p["cards"],
-                      "names": cards.decode_all(p["cards"]),
                       "card_type": p["card_type"], "next": p["next"],
-                      "left": p["left"]}
-                hint = apply_event(st, ev); n += 1
+                      "left": p["left"], "left_cards": p.get("left_cards")}
+        elif msg and msg["msgid"] == 3006:
+            q = protocol.decode_pass(msg["fields"])
+            if q:
+                ev = {"type": "pass", "seat": q["seat"], "next": q["next"]}
         elif msg and msg["msgid"] == 3019:
             h = protocol.decode_hand(msg["fields"])
             if h:
-                hint = apply_event(st, {"type": "hand", "cards": h["cards"]}); n += 1
+                ev = {"type": "hand", "cards": h["cards"]}
+        if ev is not None:
+            hint = apply_event(st, ev)
+            n += 1
+            if shadow_log is not None:
+                shadow_log.after_event(st, ev)
         if n:
-            draw(st, hint, n, False)
+            draw(st, hint, n, False, shadow_log.last_line if shadow_log else "")
             time.sleep(delay)
+    if shadow_log is not None:
+        shadow_log.close()
     print("\n回放结束。")
 
 
@@ -141,14 +155,25 @@ def main():
     ap.add_argument("--capture", default=r"C:\Users\17837\mitmtool\capture.jsonl")
     ap.add_argument("--delay", type=float, default=0.35, help="回放时每步停多久")
     ap.add_argument("--events", default=EVENTS)
+    ap.add_argument("--level", type=int, default=None,
+                    help="回放/离线时直接给级别（网络里没有本局级别）")
+    ap.add_argument("--no-advice", action="store_true", help="关掉影子模式")
     args = ap.parse_args()
 
     st = GameState()
+    sh = None
+    if not args.no_advice:
+        from net import advise, shadow
+        net, err = advise.load_net()
+        sh = shadow.ShadowLog(net=net, weights=advise.newest_weights() or "",
+                              weights_note=err)
+        print(sh.last_line)
     try:
         if args.replay:
-            run_replay(st, args.capture, args.delay)
+            run_replay(st, args.capture, args.delay, level=args.level,
+                       shadow_log=sh)
         else:
-            run_live(st, args.events)
+            run_live(st, args.events, level=args.level, shadow_log=sh)
     except KeyboardInterrupt:
         print("\n面板已退出。")
 

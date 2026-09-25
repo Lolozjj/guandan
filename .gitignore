@@ -27,3 +27,4 @@ net/mitm.log
 live/panel.log
 .superpowers/
 net/raw.jsonl
+net/shadow.jsonl

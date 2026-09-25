@@ -22,6 +22,7 @@
 
 import argparse
 import json
+import os
 import sys
 
 from . import cards, protocol
@@ -157,7 +158,7 @@ class TableWindow:
 
     # ------------------------------------------------------------ 主绘制
 
-    def draw(self, st, hint, n_ev):
+    def draw(self, st, hint, n_ev, shadow_line=""):
         cv = self.cv
         cv.delete("all")
         cv.create_rectangle(14, 14, W - 14, H - 14, outline=BG_EDGE, width=3)
@@ -208,6 +209,11 @@ class TableWindow:
                        text=f"我的手牌（{len(st.hand)} 张，按大小排序）",
                        font=self.f_small, fill=DIM)
         cv.create_text(W / 2, H - 24, text=hint, font=self.f_small, fill=DIM)
+        # 影子模式的那一行（**只报进度，不显示建议** —— 用户 2026-09-25 定：
+        # 建议一旦上屏，人就会被它影响，「模型与人的分歧」这份数据就废了）
+        if shadow_line:
+            cv.create_text(W / 2, H - 66, text=shadow_line,
+                           font=self.f_small, fill=DIM)
 
         if st.passes:
             cv.create_text(600, 496, text="要不起：" + "、".join(
@@ -218,6 +224,11 @@ class TableWindow:
 # ------------------------------------------------------------------ 跑起来
 
 def _replay_frames(capture):
+    """读出可回放的帧。
+
+    两种记录格式都收：老抓包 `capture*.jsonl` 是 `k="ws_msg"`（带 host 字段），
+    全量转储 `raw.jsonl` 是 `k="frame"`（写进去之前已经按游戏服过滤过）。
+    """
     out = []
     with open(capture, encoding="utf-8") as f:
         for line in f:
@@ -225,20 +236,24 @@ def _replay_frames(capture):
             if not line:
                 continue
             r = json.loads(line)
-            if r.get("k") == "ws_msg" and "hlxyxws" in str(r.get("host")) \
-                    and r.get("dir") == "S→C":
+            if r.get("dir") != "S→C":
+                continue
+            if r.get("k") == "frame" or (r.get("k") == "ws_msg"
+                                         and "hlxyxws" in str(r.get("host"))):
                 out.append(r)
     out.sort(key=lambda r: r["t"])
     return out
 
 
-def run_live(st, events_path=EVENTS, seconds=0):
+def run_live(st, events_path=EVENTS, seconds=0, level=None, shadow_log=None):
     import tkinter as tk
     from .panel import Tailer, apply_event
     root = tk.Tk()
     win = TableWindow(root)
     tail, lvl = Tailer(events_path), LevelWatcher()
     box = {"n": 0, "hint": "等游戏数据…（打开掼蛋打一局）"}
+    if level:
+        st.level = level
 
     def tick():
         for ev in tail.read():
@@ -246,46 +261,71 @@ def run_live(st, events_path=EVENTS, seconds=0):
             if h:
                 box["hint"] = h
             box["n"] += 1
+            if shadow_log is not None:
+                shadow_log.after_event(st, ev)
         lv = lvl.poll()
         if lv is not None:
             st.level = lv
             box["hint"] = f"级别更新：打{st.level_name()}"
-        win.draw(st, box["hint"], box["n"])
+            if shadow_log is not None:
+                shadow_log.note_level()
+        win.draw(st, box["hint"], box["n"],
+                 shadow_log.last_line if shadow_log else "")
         root.after(150, tick)
 
     if seconds:
         root.after(int(seconds * 1000), root.destroy)
-    tick()
-    root.mainloop()
+    try:
+        tick()
+        root.mainloop()
+    finally:
+        # Ctrl-C / 关窗口都要收尾：没回填的决策点不落盘的话，统计会有偏
+        if shadow_log is not None:
+            shadow_log.close()
 
 
-def run_replay(st, capture, delay_ms=260, seconds=0):
+def run_replay(st, capture, delay_ms=260, seconds=0, level=None, shadow_log=None):
     import tkinter as tk
+    from .panel import apply_event
     root = tk.Tk()
     win = TableWindow(root)
     it = iter(_replay_frames(capture))
     box = {"n": 0, "hint": "回放中…"}
+    if level:
+        st.level = level
 
     def apply(msg):
+        """解出来的帧 -> 事件字典，再交给**生产那份分发**（`panel.apply_event`）。
+
+        这里原来自己调了一套 `st.on_play/on_pass/on_hand`，与 `panel.apply_event`
+        是两份真源（而且漏了 `left_cards` —— 那是「我在哪个座位」的唯一判据）。
+        现在只负责构造事件，分发只有一份。
+        """
+        ev = None
         if msg["msgid"] == 3005:
             p = protocol.decode_play(msg["fields"])
             if p:
-                st.on_play(p["seat"], p["cards"], p["card_type"],
-                           p["next"], p["left"], p.get("left_cards"))
-                box["n"] += 1
+                ev = {"type": "play", "seat": p["seat"], "cards": p["cards"],
+                      "card_type": p["card_type"], "next": p["next"],
+                      "left": p["left"], "left_cards": p.get("left_cards")}
                 box["hint"] = (f"{st.seat_label(p['seat'])} 出 "
                                f"{' '.join(cards.decode_all(p['cards']))}")
         elif msg["msgid"] == 3019:
             h = protocol.decode_hand(msg["fields"])
             if h:
-                st.on_hand(h["cards"])
-                box["n"] += 1
+                ev = {"type": "hand", "cards": h["cards"]}
                 box["hint"] = f"手牌同步 {len(h['cards'])} 张"
         elif msg["msgid"] == 3006:
             q = protocol.decode_pass(msg["fields"])
             if q:
-                st.on_pass(q["seat"], q["next"])
+                ev = {"type": "pass", "seat": q["seat"], "next": q["next"]}
                 box["hint"] = f"{st.seat_label(q['seat'])} 要不起"
+        if ev is None:
+            return
+        apply_event(st, ev)
+        box["n"] += 1
+        if shadow_log is not None:
+            shadow_log.after_event(st, ev)
 
     def tick():
         try:
@@ -295,27 +335,60 @@ def run_replay(st, capture, delay_ms=260, seconds=0):
                     apply(m)
         except StopIteration:
             box["hint"] = "回放结束"
-        win.draw(st, box["hint"], box["n"])
+            if shadow_log is not None:
+                shadow_log.close()
+        win.draw(st, box["hint"], box["n"],
+                 shadow_log.last_line if shadow_log else "")
         root.after(delay_ms, tick)
 
     if seconds:
         root.after(int(seconds * 1000), root.destroy)
-    tick()
-    root.mainloop()
+    try:
+        tick()
+        root.mainloop()
+    finally:
+        if shadow_log is not None:
+            shadow_log.close()
+
+
+#: 回放的默认素材，**按顺序取第一个存在的**。抓包文件名换过两次
+#: （只存 256 字节的那份叫 `capture.jsonl`、后来全量转储叫 `raw.jsonl`），
+#: 写死一个名字必然过期 —— 而这条命令是「离线看面板长什么样」的主入口。
+_CAPTURES = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "raw.jsonl"),
+             r"C:\Users\17837\mitmtool\capture_truncated_20260924.jsonl",
+             r"C:\Users\17837\mitmtool\capture.jsonl")
+
+
+def default_capture() -> str:
+    for p in _CAPTURES:
+        if os.path.exists(p):
+            return p
+    return _CAPTURES[0]
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--replay", action="store_true")
-    ap.add_argument("--capture", default=r"C:\Users\17837\mitmtool\capture.jsonl")
+    ap.add_argument("--capture", default=None)
     ap.add_argument("--seconds", type=float, default=0,
                     help="N 秒后自动关闭（自测用）")
+    ap.add_argument("--level", type=int, default=None,
+                    help="回放/离线时直接给级别（网络里没有本局级别）")
+    ap.add_argument("--no-advice", action="store_true", help="关掉影子模式")
     args = ap.parse_args()
     st = GameState()
+    sh = None
+    if not args.no_advice:
+        from . import advise, shadow
+        net, err = advise.load_net()
+        sh = shadow.ShadowLog(net=net, weights=advise.newest_weights() or "",
+                              weights_note=err)
+        print(sh.last_line)
     if args.replay:
-        run_replay(st, args.capture, seconds=args.seconds)
+        run_replay(st, args.capture or default_capture(), seconds=args.seconds,
+                   level=args.level, shadow_log=sh)
     else:
-        run_live(st, seconds=args.seconds)
+        run_live(st, seconds=args.seconds, level=args.level, shadow_log=sh)
 
 
 if __name__ == "__main__":
