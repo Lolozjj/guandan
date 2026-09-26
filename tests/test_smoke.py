@@ -42,3 +42,18 @@ def test_opp_mix_zero_is_still_pure_selfplay():
                                   opp_mix=0.0)
     seats = {s for _rec, caps, _y in out for (_o, _a, _i, s, _h) in caps}
     assert {0, 2} & seats and {1, 3} & seats, f"两队都该出现在训练目标里：{sorted(seats)}"
+
+
+def test_eps_anneals_by_games_not_by_time():
+    """ε 要按**局数**退火（2026-09-26 用户实测后定的）。
+
+    按时间退火的毛病：9 小时预算下跑到第 25 分钟 ε 还是 0.96 —— 大半时间在做
+    近乎随机的探索，真正的学习挤在最后。上一轮「加时长收益越来越小」不是撞墙，
+    是探索没退下去。按局数退，出数快的机器自然学得快。
+    """
+    from train.selfplay import EPS_START, EPS_END, EPS_GAMES, eps_for
+    assert eps_for(0) == EPS_START
+    assert abs(eps_for(EPS_GAMES) - EPS_END) < 1e-9, "退完该正好到底（浮点近似）"
+    assert eps_for(EPS_GAMES * 10) <= EPS_END + 1e-9, "退完就到底，不许反弹"
+    assert eps_for(EPS_GAMES // 2) < EPS_START, "中途要真的在退"
+    assert eps_for(0) > eps_for(1000) > eps_for(EPS_GAMES)

@@ -21,7 +21,7 @@ _JOKER = {14: ("小王", 1), 15: ("大王", 1), 270: ("小王", 2), 271: ("大�
 MAX_ID = 271 + 62          # 第二副最大的牌（第二副 K♦ = 333）
 
 
-def is_card(cid: int) -> bool:
+def _is_card_slow(cid: int) -> bool:
     """这个整数是不是一个合法牌 ID。
 
     用来把「牌数组」和「别的整数数组」分开 —— 这是解码的关键判据，
@@ -125,8 +125,20 @@ def names_sorted(ids, level: int = None) -> list:
 _SUIT_ORDER_4 = ("♠", "♥", "♣", "♦")
 SLOTS = 108
 
+def is_card(cid: int) -> bool:
+    """这个整数是不是一个合法牌 ID（查表，见上面的说明）。"""
+    return 0 < cid <= MAX_ID and _IS_CARD[cid]
+
 
 def slot(cid: int) -> int:
+    """牌 ID -> 0..107 的编码位。非法的牌 ID **直接炸**（不静默给个默认位）。"""
+    v = _SLOT[cid] if 0 < cid <= MAX_ID else -1
+    if v < 0:
+        raise ValueError(f"不是合法牌 ID：{cid}")
+    return v
+
+
+def _slot_slow(cid: int) -> int:
     """牌 ID -> 0..107 的编码位。非法的牌 ID **直接炸**（不静默给个默认位）。"""
     if cid in _JOKER:
         name, deck = _JOKER[cid]
@@ -137,3 +149,15 @@ def slot(cid: int) -> int:
     low = cid % 256
     base = low // 16 * 16
     return deck * 54 + _SUIT_ORDER_4.index(_SUIT[base]) * 13 + (low - base - 1)
+
+
+#: `is_card` / `slot` 是**整个系统最热的两条路径**：剖面（2026-09-26，25 秒训练）
+#: 显示它们各被调用 **560 万次**，tottime 排第一与第五。所以查表，不算 ——
+#: 合法牌 ID 只落在 1..MAX_ID（两副牌最大 333，大小王 270/271 也在范围内），
+#: 一张 334 项的布尔表 + 一张槽位表就够，行为与原来逐字一致（含非法值要炸）。
+_IS_CARD = [False] * (MAX_ID + 1)
+_SLOT = [-1] * (MAX_ID + 1)
+for _cid in range(1, MAX_ID + 1):
+    if _is_card_slow(_cid):
+        _IS_CARD[_cid] = True
+        _SLOT[_cid] = _slot_slow(_cid)

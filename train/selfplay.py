@@ -44,7 +44,7 @@ from train.eval import match
 from train.net import DEVICE, QNet, q_argmax_batch
 from train.policies import greedy_policy, random_policy
 
-BATCH_GAMES = 32              # spec §5.3
+BATCH_GAMES = 32              # spec §5.3（同步推进的局数；`--batch` 可调大）
 LR = 1e-4                     # spec §5.3
 EPS_START, EPS_END = 1.0, 0.1
 #: buffer 容量（局）。**spec §5.3 写的是 50 万局** —— 按紧凑记录算是 923 MB
@@ -53,6 +53,20 @@ EPS_START, EPS_END = 1.0, 0.1
 #: 先别默认占掉近 1 GB。要按 spec 的原数跑就传 `--buffer 500000`。
 BUFFER_GAMES = 50_000
 EVAL_EVERY_GAMES = 10_000     # spec §5.3「每 N 局存一次权重 + 跑一次基线评测」
+#: ε 退火到 `EPS_END` 所需的**局数**（不是秒）。
+#:
+#: 按**时间**退火的毛病（2026-09-26 用户实测后改的）：9 小时的预算下跑到第 25 分钟
+#: ε 还是 **0.96** —— 大半时间在做近乎随机的探索，真正的学习挤在最后两三小时。
+#: 上一轮「加时长收益越来越小」**不是撞墙，是探索没退下去**（老的一小时跑法
+#: ε 一小时就退完，所以 5 万局就到 80%）。按局数退，出数快的机器自然学得快。
+#: 25 万局 ≈ 9 小时跑到 70% 处退完，最后一段留给纯利用。
+EPS_GAMES = 250_000
+
+
+def eps_for(games: int, eps_games: int = EPS_GAMES) -> float:
+    """第 `games` 局时的 ε（线性退火，退到底就不再变）。"""
+    frac = min(1.0, games / max(1, eps_games))
+    return EPS_START + (EPS_END - EPS_START) * frac
 #: 评测局数。**别往下调**：实测同一个网络换 6 个种子各测 200 局，
 #: 结果是 4.8% ± 1.4%（二项理论值 ≈1.5%）—— 也就是 200 局时噪声约 ±2%，
 #: 判据「≥55%」不会被噪声骗过。100 局时会飘到 ±5%，不够用。
@@ -171,7 +185,8 @@ def net_play(net):
 def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAMES,
           eval_games: int = EVAL_GAMES, eval_every: int = EVAL_EVERY_GAMES,
           out_dir: str = None, log=print, opp_mix: float = 0.5,
-          greedy_share: float = 0.8):
+          greedy_share: float = 0.8, batch_games: int = BATCH_GAMES,
+          eps_games: int = EPS_GAMES):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -184,8 +199,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     out_dir = out_dir or os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M"))
     os.makedirs(out_dir, exist_ok=True)
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
-        f"batch={BATCH_GAMES} 局（同步推进）  buffer={buffer_games:,} 局  "
-        f"评测每 {eval_every:,} 局  对手混合 {opp_mix:.0%}"
+        f"batch={batch_games} 局（同步推进）  buffer={buffer_games:,} 局  "
+        f"评测每 {eval_every:,} 局  ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
         f"（其中贪心 {greedy_share:.0%}）\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
@@ -194,12 +209,11 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     best_greedy = -1.0
 
     while time.perf_counter() - t0 < seconds:
-        frac = min(1.0, (time.perf_counter() - t0) / seconds)
-        eps = EPS_START + (EPS_END - EPS_START) * frac
+        eps = eps_for(games, eps_games)          # **按局数退火**，不按时间（见 EPS_GAMES）
 
         # 1) 同步打一批，记进 buffer（现场抓好决策点，省一次重放）
         fresh = {}
-        for rec, pts, y in generate_batch(net, rng, eps, BATCH_GAMES,
+        for rec, pts, y in generate_batch(net, rng, eps, batch_games,
                                           opp_mix=opp_mix,
                                           greedy_share=greedy_share):
             buf.add(rec)
@@ -208,7 +222,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
 
         # 2) 从 buffer 采一批（spec §5.2：整局的终局 reward 当回归目标）
         samples, targets = [], []
-        for rec in buf.sample(BATCH_GAMES, rng):
+        for rec in buf.sample(batch_games, rng):
             pts, y = fresh.get(id(rec)) or replay.expand(rec)
             samples += pts
             targets += y
@@ -228,7 +242,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
                 f"{games / el:.1f} 局/秒  buffer {len(buf):,}")
 
         # 4) 每 N 局：存权重 + 评测（spec §5.3）
-        if games % eval_every < BATCH_GAMES:
+        if games % eval_every < batch_games:
             wr_r = match(net_play(net), random_policy(random.Random(101)),
                          games=eval_games, seed=1001)
             wr_g = match(net_play(net), greedy_policy, games=eval_games, seed=1002)
@@ -280,7 +294,12 @@ def main(argv=None) -> int:
     opp = 0.5
     if "--opp-mix" in argv:
         opp = float(argv[argv.index("--opp-mix") + 1])
-    r = train(seconds=seconds, buffer_games=buf, opp_mix=opp)
+    kw = {}
+    if "--batch" in argv:
+        kw["batch_games"] = int(argv[argv.index("--batch") + 1])
+    if "--eps-games" in argv:
+        kw["eps_games"] = int(argv[argv.index("--eps-games") + 1])
+    r = train(seconds=seconds, buffer_games=buf, opp_mix=opp, **kw)
     print(f"\n权重：{r['out_dir']}")
     # spec §7 的分水岭：**明确打过**贪心。50% 只是「五五开」，不算打过。
     ok = r["wr_greedy"] >= 0.55
