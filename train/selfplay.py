@@ -182,6 +182,55 @@ def net_play(net):
     return batch_net_policy(q_argmax_batch, net)
 
 
+WEIGHT_SYNC_GAMES = 1000     # 多进程：每这么多局把权重广播给 worker
+
+
+def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
+                batch_games, out_dir, log):
+    """每 `eval_every` 局评测一次并（可能）存 `best.pt`。**两条训练路线共用这一份。**"""
+    if games % eval_every < batch_games:
+        wr_r = match(net_play(net), random_policy(random.Random(101)),
+                     games=eval_games, seed=1001)
+        wr_g = match(net_play(net), greedy_policy, games=eval_games, seed=1002)
+        curve.append((games, wr_r, wr_g))
+        log(f"     >> 评测 @ {games:7d} 局：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g:.1%}")
+        if wr_g > best_greedy:
+            best_greedy = wr_g
+            torch.save({"net": net.state_dict(), "games": games,
+                        "winrate_random": wr_r, "winrate_greedy": wr_g},
+                       os.path.join(out_dir, "best.pt"))
+    return best_greedy
+
+
+def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log):
+    """收尾：两次评测看方差 + 报告 + 存 last.pt + 返回结果。**两条路线共用。**"""
+    wr_g1 = match(net_play(net), greedy_policy, games=eval_games, seed=2001)
+    wr_g2 = match(net_play(net), greedy_policy, games=eval_games, seed=2002)
+    wr_r = match(net_play(net), random_policy(random.Random(202)),
+                 games=eval_games, seed=2003)
+    log("")
+    log(f"总共 {games:,} 局 / {steps:,} 步 / {time.perf_counter() - t0:.0f} 秒")
+    log(f"末次：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g1:.1%} / {wr_g2:.1%}"
+        f"（两次，差 {abs(wr_g1 - wr_g2):.1%} —— 200 局的噪声约 ±2%）")
+    if curve:
+        log("曲线（局数:vs随机/vs贪心）：" + "  ".join(
+            f"{g // 1000}k:{r:.0%}/{k:.0%}" for g, r, k in curve))
+    # 炸弹浪费率（用户 2026-09-26 报的毛病）——**只报告，不当判据**：
+    # 判据仍是「vs 贪心 ≥55%」（与老几次跑可比），这个数是给你看「有没有变好」的。
+    try:
+        from train.eval import bomb_waste
+        w, c = bomb_waste(net_play(net), games=25, seed=3001)
+        log(f"  炸弹浪费率（能用普通牌压却出炸）：{w}/{c} = {w / max(1, c):.1%}"
+            f"   [对照：贪心恒为 0%]")
+    except Exception as exc:                      # noqa: BLE001 - 报告失败不该带崩训练
+        log(f"  炸弹浪费率：没量成（{type(exc).__name__}: {exc}）")
+    torch.save({"net": net.state_dict(), "games": games,
+                "winrate_random": wr_r, "winrate_greedy": wr_g1},
+               os.path.join(out_dir, "last.pt"))
+    return {"games": games, "curve": curve, "best_greedy": best_greedy,
+            "wr_random": wr_r, "wr_greedy": (wr_g1 + wr_g2) / 2, "out_dir": out_dir}
+
+
 def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAMES,
           eval_games: int = EVAL_GAMES, eval_every: int = EVAL_EVERY_GAMES,
           out_dir: str = None, log=print, opp_mix: float = 0.5,
@@ -241,46 +290,120 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
             log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps:.2f}  loss={loss.item():.3f}  "
                 f"{games / el:.1f} 局/秒  buffer {len(buf):,}")
 
-        # 4) 每 N 局：存权重 + 评测（spec §5.3）
-        if games % eval_every < batch_games:
-            wr_r = match(net_play(net), random_policy(random.Random(101)),
-                         games=eval_games, seed=1001)
-            wr_g = match(net_play(net), greedy_policy, games=eval_games, seed=1002)
-            curve.append((games, wr_r, wr_g))
-            log(f"     >> 评测 @ {games:7d} 局：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g:.1%}")
-            if wr_g > best_greedy:
-                best_greedy = wr_g
-                torch.save({"net": net.state_dict(), "games": games,
-                            "winrate_random": wr_r, "winrate_greedy": wr_g},
-                           os.path.join(out_dir, "best.pt"))
+        # 4) 每 N 局：存权重 + 评测（spec §5.3）—— 公共件，两条训练路线共用
+        best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
+                                  eval_every, batch_games, out_dir, log)
 
-    # 收尾：两次评测看方差（spec §7 最后一行）
-    wr_g1 = match(net_play(net), greedy_policy, games=eval_games, seed=2001)
-    wr_g2 = match(net_play(net), greedy_policy, games=eval_games, seed=2002)
-    wr_r = match(net_play(net), random_policy(random.Random(202)),
-                 games=eval_games, seed=2003)
-    log("")
-    log(f"总共 {games:,} 局 / {steps:,} 步 / {time.perf_counter() - t0:.0f} 秒")
-    log(f"末次：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g1:.1%} / {wr_g2:.1%}"
-        f"（两次，差 {abs(wr_g1 - wr_g2):.1%} —— 200 局的噪声约 ±2%）")
-    # 炸弹浪费率（用户 2026-09-26 报的毛病）——**只报告，不当判据**：
-    # 判据仍是「vs 贪心 ≥55%」（与老几次跑可比），这个数是给你看「有没有变好」的。
+    return _finish(net, games, steps, t0, curve, best_greedy, eval_games,
+                   out_dir, log)
+
+
+def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
+                   buffer_games: int = BUFFER_GAMES, eval_games: int = EVAL_GAMES,
+                   eval_every: int = EVAL_EVERY_GAMES, out_dir: str = None,
+                   log=print, opp_mix: float = 0.5, greedy_share: float = 0.8,
+                   batch_games: int = BATCH_GAMES, eps_games: int = EPS_GAMES,
+                   _kill_worker_after: float = None):
+    """多进程：`workers` 个进程打牌、本进程学习。
+
+    设计见 `docs/superpowers/specs/2026-09-26-multiprocess-selfplay-design.md`。
+    三条纪律（都在测试里钉着）：worker 死了**必须炸**；队列**有界**（背压）；
+    ε 由本进程按**全局局数**算完广播下去（各 worker 自己算会「每个都以为自己是全部」）。
+
+    `_kill_worker_after` **只给测试用**（到点杀一个 worker，验死亡检测）。
+    """
+    import multiprocessing as mp
+
+    from train import worker as worker_mod
+
+    ctx = mp.get_context("spawn")           # Windows 只有 spawn；入口必须是模块级函数
+    out_dir = out_dir or os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M"))
+    os.makedirs(out_dir, exist_ok=True)
+    torch.manual_seed(seed)
+    rng = random.Random(seed)
+    net = QNet().to(DEVICE)
+    opt = torch.optim.Adam(net.parameters(), lr=LR)
+    buf = replay.ReplayBuffer(capacity_games=buffer_games)
+    send_q = ctx.Queue(maxsize=max(2, workers * 2))   # 有界 = 背压（不堆内存）
+    ctrls = [ctx.Queue() for _ in range(workers)]
+    procs = [ctx.Process(target=worker_mod.run_worker, daemon=True,
+                         args=(send_q, ctrls[k],
+                               worker_mod.worker_cfg(seed + 1 + k, EPS_START,
+                                                     opp_mix, greedy_share,
+                                                     batch_games)))
+             for k in range(workers)]
+    log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
+        f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
+        f"buffer={buffer_games:,} 局  评测每 {eval_every:,} 局  "
+        f"ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
+        f"（其中贪心 {greedy_share:.0%}）\n权重 -> {out_dir}")
+
+    t0 = time.perf_counter()
+    games = steps = 0
+    curve = []
+    best_greedy = -1.0
+    last_sync = 0
+    t_kill = (time.perf_counter() + _kill_worker_after) if _kill_worker_after else None
     try:
-        from train.eval import bomb_waste
-        w, c = bomb_waste(net_play(net), games=25, seed=3001)
-        log(f"  炸弹浪费率（能用普通牌压却出炸）：{w}/{c} = {w / max(1, c):.1%}"
-            f"   [对照：贪心恒为 0%]")
-    except Exception as exc:                      # noqa: BLE001 - 报告失败不该带崩训练
-        log(f"  炸弹浪费率：没量成（{type(exc).__name__}: {exc}）")
-
-    if curve:
-        log("曲线（局数:vs随机/vs贪心）：" + "  ".join(
-            f"{g // 1000}k:{r:.0%}/{k:.0%}" for g, r, k in curve))
-    torch.save({"net": net.state_dict(), "games": games,
-                "winrate_random": wr_r, "winrate_greedy": wr_g1},
-               os.path.join(out_dir, "last.pt"))
-    return {"games": games, "curve": curve, "best_greedy": best_greedy,
-            "wr_random": wr_r, "wr_greedy": (wr_g1 + wr_g2) / 2, "out_dir": out_dir}
+        for p in procs:
+            p.start()
+        sd0 = {k: v.cpu() for k, v in net.state_dict().items()}
+        for q in ctrls:                     # 开局先广播一次（worker 种子相同，但更稳）
+            q.put(("weights", (sd0, EPS_START)))
+        while time.perf_counter() - t0 < seconds:
+            dead = [k for k, p in enumerate(procs) if not p.is_alive()]
+            if dead:
+                raise RuntimeError(
+                    f"worker {dead} 挂了（exitcode="
+                    f"{[procs[k].exitcode for k in dead]}）—— 不许静默变慢")
+            if t_kill is not None and time.perf_counter() >= t_kill:
+                procs[0].terminate()
+                t_kill = None
+            try:
+                recs = send_q.get(timeout=300)
+            except Exception as exc:        # noqa: BLE001
+                raise RuntimeError(
+                    f"等 worker 的记录超时（{type(exc).__name__}）—— 它可能卡住了") from exc
+            for rec in recs:
+                buf.add(rec)
+                games += 1
+            # 采样 + 训一步（与单进程那条路逐字相同）
+            samples, targets = [], []
+            for rec in buf.sample(batch_games, rng):
+                pts, y = replay.expand(rec)
+                samples += pts
+                targets += y
+            st, ac, hi = _tensors(samples)
+            dev = next(net.parameters()).device
+            y = torch.tensor(targets, dtype=torch.float32).to(dev)
+            loss = torch.nn.functional.mse_loss(
+                net(st.to(dev), ac.to(dev), hi.to(dev)), y)
+            opt.zero_grad(); loss.backward(); opt.step()
+            steps += 1
+            el = time.perf_counter() - t0
+            if steps % 10 == 0:
+                log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps_for(games, eps_games):.2f}  "
+                    f"loss={loss.item():.3f}  {games / el:.1f} 局/秒  "
+                    f"buffer {len(buf):,}")
+            if games - last_sync >= WEIGHT_SYNC_GAMES:
+                sd = {k: v.cpu() for k, v in net.state_dict().items()}
+                for q in ctrls:
+                    q.put(("weights", (sd, eps_for(games, eps_games))))
+                last_sync = games
+            best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
+                                      eval_every, batch_games, out_dir, log)
+    finally:
+        for q in ctrls:                     # worker 不许变成孤儿（review focus 5）
+            try:
+                q.put(("stop", None))
+            except Exception:               # noqa: BLE001
+                pass
+        for p in procs:
+            p.join(timeout=10)
+            if p.is_alive():
+                p.terminate()
+    return _finish(net, games, steps, t0, curve, best_greedy, eval_games,
+                   out_dir, log)
 
 
 def main(argv=None) -> int:
@@ -299,7 +422,12 @@ def main(argv=None) -> int:
         kw["batch_games"] = int(argv[argv.index("--batch") + 1])
     if "--eps-games" in argv:
         kw["eps_games"] = int(argv[argv.index("--eps-games") + 1])
-    r = train(seconds=seconds, buffer_games=buf, opp_mix=opp, **kw)
+    workers = int(argv[argv.index("--workers") + 1]) if "--workers" in argv else 1
+    if workers > 1:
+        r = train_parallel(seconds=seconds, workers=workers, buffer_games=buf,
+                           opp_mix=opp, **kw)
+    else:
+        r = train(seconds=seconds, buffer_games=buf, opp_mix=opp, **kw)
     print(f"\n权重：{r['out_dir']}")
     # spec §7 的分水岭：**明确打过**贪心。50% 只是「五五开」，不算打过。
     ok = r["wr_greedy"] >= 0.55
