@@ -220,8 +220,8 @@ def run(capture=None, log_dir=None) -> list:
                     f"抓包是累积的（不同场次的帧混在一起），这次只验了能配上的那些")
     for deal, g in zip(deals, games):
         lme, hit = my_log_seat(g)
-        r1.total += 1
         if lme is None or hit < 25:
+            r1.total += 1
             r1.bad.append(f"局 {g.t0:%H:%M}：认不出日志里我在哪个座位（最大重合 {hit}/27）"
                           f"—— 语料不足，不是代码问题")
             continue
@@ -308,6 +308,11 @@ def run(capture=None, log_dir=None) -> list:
     # ---- ③ 实际着法 ----
     for rec in decs:
         if not rec.get("resolved"):
+            continue
+        if rec.get("deal") not in per_deal:
+            # **配不上真值的局不验 ③。** 抓包是累积的（不同场次的帧混在一起），
+            # 配不上的那些局拿不到级别 -> 状态本来就是错的 -> 报出来的是噪声。
+            # ②④⑥ 一直是这么过滤的，③ 原来漏了（于是报告里 ③ 的项数比 ② 还多）。
             continue
         r3.total += 1
         if rec["actual_is_me"] is not True:
