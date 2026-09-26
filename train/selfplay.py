@@ -202,14 +202,21 @@ def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
     return best_greedy
 
 
-def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log):
-    """收尾：两次评测看方差 + 报告 + 存 last.pt + 返回结果。**两条路线共用。**"""
+def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log,
+            bomb_games: int = 25):
+    """收尾：两次评测看方差 + 报告 + 存 last.pt + 返回结果。**两条路线共用。**
+
+    `elapsed` 是**训练阶段**的秒数（在收尾评测之前取）—— 吞吐要用它算，
+    别把固定的评测开销算进去（否则 bench 的短跑会被评测淹没）。
+    `bomb_games=0` 跳过炸弹浪费率那一步（bench 用，省 30 秒）。
+    """
+    elapsed = time.perf_counter() - t0
     wr_g1 = match(net_play(net), greedy_policy, games=eval_games, seed=2001)
     wr_g2 = match(net_play(net), greedy_policy, games=eval_games, seed=2002)
     wr_r = match(net_play(net), random_policy(random.Random(202)),
                  games=eval_games, seed=2003)
     log("")
-    log(f"总共 {games:,} 局 / {steps:,} 步 / {time.perf_counter() - t0:.0f} 秒")
+    log(f"总共 {games:,} 局 / {steps:,} 步 / {elapsed:.0f} 秒")
     log(f"末次：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g1:.1%} / {wr_g2:.1%}"
         f"（两次，差 {abs(wr_g1 - wr_g2):.1%} —— 200 局的噪声约 ±2%）")
     if curve:
@@ -217,18 +224,20 @@ def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log)
             f"{g // 1000}k:{r:.0%}/{k:.0%}" for g, r, k in curve))
     # 炸弹浪费率（用户 2026-09-26 报的毛病）——**只报告，不当判据**：
     # 判据仍是「vs 贪心 ≥55%」（与老几次跑可比），这个数是给你看「有没有变好」的。
-    try:
-        from train.eval import bomb_waste
-        w, c = bomb_waste(net_play(net), games=25, seed=3001)
-        log(f"  炸弹浪费率（能用普通牌压却出炸）：{w}/{c} = {w / max(1, c):.1%}"
-            f"   [对照：贪心恒为 0%]")
-    except Exception as exc:                      # noqa: BLE001 - 报告失败不该带崩训练
-        log(f"  炸弹浪费率：没量成（{type(exc).__name__}: {exc}）")
+    if bomb_games:
+        try:
+            from train.eval import bomb_waste
+            w, c = bomb_waste(net_play(net), games=bomb_games, seed=3001)
+            log(f"  炸弹浪费率（能用普通牌压却出炸）：{w}/{c} = {w / max(1, c):.1%}"
+                f"   [对照：贪心恒为 0%]")
+        except Exception as exc:                  # noqa: BLE001 - 报告失败不该带崩训练
+            log(f"  炸弹浪费率：没量成（{type(exc).__name__}: {exc}）")
     torch.save({"net": net.state_dict(), "games": games,
                 "winrate_random": wr_r, "winrate_greedy": wr_g1},
                os.path.join(out_dir, "last.pt"))
     return {"games": games, "curve": curve, "best_greedy": best_greedy,
-            "wr_random": wr_r, "wr_greedy": (wr_g1 + wr_g2) / 2, "out_dir": out_dir}
+            "wr_random": wr_r, "wr_greedy": (wr_g1 + wr_g2) / 2,
+            "out_dir": out_dir, "elapsed": elapsed}
 
 
 def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAMES,
@@ -343,6 +352,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     curve = []
     best_greedy = -1.0
     last_sync = 0
+    qmax = 0                                # 队列积压峰值（背压有没有生效，看这个）
     t_kill = (time.perf_counter() + _kill_worker_after) if _kill_worker_after else None
     try:
         for p in procs:
@@ -364,6 +374,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             except Exception as exc:        # noqa: BLE001
                 raise RuntimeError(
                     f"等 worker 的记录超时（{type(exc).__name__}）—— 它可能卡住了") from exc
+            qmax = max(qmax, send_q.qsize())
             for rec in recs:
                 buf.add(rec)
                 games += 1
@@ -402,8 +413,10 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             p.join(timeout=10)
             if p.is_alive():
                 p.terminate()
-    return _finish(net, games, steps, t0, curve, best_greedy, eval_games,
-                   out_dir, log)
+    r = _finish(net, games, steps, t0, curve, best_greedy, eval_games,
+                out_dir, log)
+    r["qmax"] = qmax
+    return r
 
 
 def main(argv=None) -> int:
