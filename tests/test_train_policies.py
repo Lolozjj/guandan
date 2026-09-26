@@ -111,3 +111,40 @@ def test_batched_net_policy_matches_the_per_decision_one():
     wr_one = match(one, greedy_policy, games=100, seed=55)
     wr_bat = match(batched, greedy_policy, games=100, seed=55)
     assert wr_one == wr_bat, f"批量 {wr_bat:.0%} 与逐个 {wr_one:.0%} 不一致"
+
+
+# ---------------------------------------------------------------- 炸弹浪费率
+# 用户 2026-09-26 实测：模型「有普通牌可压却出炸」。这个指标就是那把尺子 ——
+# 「vs 贪心」看不见它（贪心从不主动炸，不会惩罚浪费）。
+
+def test_greedy_never_wastes_a_bomb():
+    """对照：贪心基线在「能出普通牌」时**永远不炸**，所以它的浪费率必须是 0。
+
+    这是这个指标的自检 —— 分母（能用普通牌压的局面）得真的出现过。
+    """
+    from train.eval import bomb_waste
+    from train.policies import greedy_policy
+    waste, chance = bomb_waste(greedy_policy, games=6, seed=0)
+    assert chance > 0, "这些局里一次「能用普通牌压」的局面都没出现，指标没意义"
+    assert waste == 0, f"贪心不该有浪费，实际 {waste}/{chance}"
+
+
+def test_a_bomb_happy_policy_wastes_more_than_greedy():
+    """反向对照：「能炸就炸」的浪费率**高于**贪心（贪心恒为 0）。
+
+    ⚠️ 别断言它「很高」：炸弹很快就被打光，所以「能用普通牌压、且手里还有炸」
+    的局面天然不多 —— 桩自己也只有 4%（2026-09-26 实测），模型 5~6%。
+    这个指标是**相对**的尺子（同一批种子下比大小），不是「理想值接近 0」那种。
+    """
+    from train.eval import bomb_waste
+
+    def bombs_first(obs, acts, hist=None):
+        bombs = [(i, m) for i, m in enumerate(acts) if m is not None and m.is_bomb]
+        if bombs:
+            return bombs[0][0]
+        return 0
+
+    waste, chance = bomb_waste(bombs_first, games=6, seed=0)
+    assert chance > 0 and waste > 0, f"能炸就炸该有浪费，实际 {waste}/{chance}"
+    w_g, c_g = bomb_waste(greedy_policy, games=6, seed=0)
+    assert c_g > 0 and w_g == 0, "对照：贪心一次都不该浪费"

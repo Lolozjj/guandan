@@ -70,6 +70,47 @@ def match(policy_a, policy_b, games: int = 200, seed: int = 0,
     return wins / games
 
 
+def bomb_waste(policy, games: int = 40, seed: int = 0, opponent=None):
+    """**炸弹浪费率**：在「能用普通牌压过桌面」的局面里，策略却选了炸弹的比例。
+
+    返回 `(浪费次数, 能用普通牌压的总次数)`。
+
+    `opponent=None` 时**四家都用 `policy`**（自己打自己）；给了就只让 `policy`
+    打一队（逐局换边），另一队交给它。
+
+    ⚠️ 这两个数**不一样，而且都要看**（实测 2026-09-26）：同一版权重自己打自己
+    是 6%，而面对贪心是 17% —— 人不爱炸，模型对不爱炸的对手更爱用炸，
+    **用户看到的是后一个数**。别只量前一个就下结论。
+
+    为什么要有这个尺子：`vs 贪心` 看不见它 —— **贪心从不主动炸**，
+    所以「有普通牌却出炸」在胜率上几乎不受惩罚。用户 2026-09-26 实机发现
+    这个毛病（88 个级别正确的决策点里 13 次），根因是**只跟自己打**：
+    自对弈里对手也爱炸，「不炸就被炸」成了均衡，于是浪费从来没被罚过。
+    """
+    waste = chance = 0
+    rng = random.Random(seed)
+    for game in range(games):
+        e = env.GuandanEnv(seed=rng.randrange(1 << 30))
+        e.reset()
+        while not e.done:
+            obs, acts = e.observe(), e.legal()
+            hist = env.encode_history(e.hand, e.hand.turn)
+            seat = e.hand.turn
+            mine = opponent is None or (seat % 2) == (0 if game % 2 == 0 else 1)
+            pol = policy if mine else opponent
+            i = pol(obs, acts, hist)
+            m = acts[i]
+            if mine and obs.table:
+                # `acts` 已经按 `beats` 过滤过，所以「非炸弹候选」就是能压的普通牌
+                plain = [x for x in acts if x is not None and not x.is_bomb]
+                if plain:
+                    chance += 1
+                    if m is not None and m.is_bomb:
+                        waste += 1
+            e.step(i)
+    return waste, chance
+
+
 def win_rate_vs(policy, opponent, games: int = 200, seed: int = 0,
                 level: int = None) -> float:
     """`policy` 对 `opponent` 的胜率 —— 名字更直白的包装，判据那几行读起来顺。"""

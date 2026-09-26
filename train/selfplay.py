@@ -61,13 +61,29 @@ RUNS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
                         "runs", "rl")
 
 
-def generate_batch(net, rng, eps, n_games, capture=True):
+def _fixed_pick(kind, pending, rng):
+    """固定对手出一手。`kind = ("greedy"|"random", 队号)`。"""
+    obs, acts, hist = pending
+    if kind[0] == "random":
+        return rng.randrange(len(acts))
+    return greedy_policy(obs, acts, hist)      # 复用评测那套贪心，不另写一份
+
+
+def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
+                   greedy_share=0.8):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
     刚打完的这批**马上要拿来训练**，所以现场抓住，免得再从记录重放一遍（重放一局约 27 ms）。
+
+    **`opp_mix`：混入固定对手的比例**（用户 2026-09-26 定，治「有普通牌可压却出炸」）。
+    纯自对弈里对手也爱炸，「不炸就被炸」成了均衡，而 `vs 贪心` 那把尺子看不见浪费
+    （贪心从不主动炸）。所以每局以 `opp_mix` 的概率把**一个队**换成固定策略
+    （`greedy_share` 的比例用贪心、其余用随机），学习那一队照旧打网络。
+    ⚠️ 固定对手的决策点**不进训练目标**（那不是网络选的，记进去等于拿它当老师）。
     """
     envs, hands0, log, caps = [], [], [], []
+    learn, fixed = [], []          # 每局：学习那一队的座位 / 固定对手（None = 纯自对弈）
     for _ in range(n_games):
         e = env.GuandanEnv(seed=rng.randrange(1 << 30))
         e.reset()
@@ -75,6 +91,14 @@ def generate_batch(net, rng, eps, n_games, capture=True):
         hands0.append([set(e.hand.hands[s]) for s in rules.SEATS])   # 发牌快照
         log.append([])
         caps.append([])
+        if rng.random() < opp_mix:
+            opp = rng.randrange(2)      # 哪一队当固定对手
+            kind = "greedy" if rng.random() < greedy_share else "random"
+            fixed.append((kind, opp))
+            learn.append(tuple(s for s in rules.SEATS if rules.TEAM[s] != opp))
+        else:
+            fixed.append(None)
+            learn.append(tuple(rules.SEATS))
 
     alive = list(range(n_games))
     while alive:
@@ -83,19 +107,31 @@ def generate_batch(net, rng, eps, n_games, capture=True):
             e = envs[k]
             pending.append((e.observe(), e.legal(),
                             env.encode_history(e.hand, e.hand.turn)))
-        if eps >= 1.0:
-            # 纯随机阶段不必前向 —— 早期是 ε=1.0，省掉这一大截
-            picks = [rng.randrange(len(a)) for _o, a, _h in pending]
-        else:
-            picks = q_argmax_batch(net, pending)
-            picks = [rng.randrange(len(a)) if rng.random() < eps else p
-                     for p, (_o, a, _h) in zip(picks, pending)]
+        # 只有「学习那一队」问网络；固定对手按自己的策略出手
+        picks = [None] * len(pending)
+        net_j = []
+        for j, k in enumerate(alive):
+            if envs[k].hand.turn in learn[k]:
+                net_j.append(j)
+            else:
+                picks[j] = _fixed_pick(fixed[k], pending[j], rng)
+        if net_j:
+            if eps >= 1.0:
+                # 纯随机阶段不必前向 —— 早期是 ε=1.0，省掉这一大截
+                for j in net_j:
+                    picks[j] = rng.randrange(len(pending[j][1]))
+            else:
+                got = q_argmax_batch(net, [pending[j] for j in net_j])
+                for j, p in zip(net_j, got):
+                    picks[j] = (rng.randrange(len(pending[j][1]))
+                                if rng.random() < eps else p)
 
         nxt = []
         for k, (obs, acts, hist), i in zip(alive, pending, picks):
             e = envs[k]
             log[k].append(i)
-            if capture:
+            if capture and e.hand.turn in learn[k]:
+                # 固定对手的着法**不进训练目标**（不是网络选的）
                 caps[k].append((obs, acts, i, e.hand.turn, hist))
             e.step(i)
             if not e.done:
@@ -134,7 +170,8 @@ def net_play(net):
 
 def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAMES,
           eval_games: int = EVAL_GAMES, eval_every: int = EVAL_EVERY_GAMES,
-          out_dir: str = None, log=print):
+          out_dir: str = None, log=print, opp_mix: float = 0.5,
+          greedy_share: float = 0.8):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -148,7 +185,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     os.makedirs(out_dir, exist_ok=True)
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"batch={BATCH_GAMES} 局（同步推进）  buffer={buffer_games:,} 局  "
-        f"评测每 {eval_every:,} 局\n权重 -> {out_dir}")
+        f"评测每 {eval_every:,} 局  对手混合 {opp_mix:.0%}"
+        f"（其中贪心 {greedy_share:.0%}）\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
     games = steps = 0
@@ -161,7 +199,9 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
 
         # 1) 同步打一批，记进 buffer（现场抓好决策点，省一次重放）
         fresh = {}
-        for rec, pts, y in generate_batch(net, rng, eps, BATCH_GAMES):
+        for rec, pts, y in generate_batch(net, rng, eps, BATCH_GAMES,
+                                          opp_mix=opp_mix,
+                                          greedy_share=greedy_share):
             buf.add(rec)
             fresh[id(rec)] = (pts, y)
             games += 1
@@ -209,6 +249,16 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     log(f"总共 {games:,} 局 / {steps:,} 步 / {time.perf_counter() - t0:.0f} 秒")
     log(f"末次：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g1:.1%} / {wr_g2:.1%}"
         f"（两次，差 {abs(wr_g1 - wr_g2):.1%} —— 200 局的噪声约 ±2%）")
+    # 炸弹浪费率（用户 2026-09-26 报的毛病）——**只报告，不当判据**：
+    # 判据仍是「vs 贪心 ≥55%」（与老几次跑可比），这个数是给你看「有没有变好」的。
+    try:
+        from train.eval import bomb_waste
+        w, c = bomb_waste(net_play(net), games=25, seed=3001)
+        log(f"  炸弹浪费率（能用普通牌压却出炸）：{w}/{c} = {w / max(1, c):.1%}"
+            f"   [对照：贪心恒为 0%]")
+    except Exception as exc:                      # noqa: BLE001 - 报告失败不该带崩训练
+        log(f"  炸弹浪费率：没量成（{type(exc).__name__}: {exc}）")
+
     if curve:
         log("曲线（局数:vs随机/vs贪心）：" + "  ".join(
             f"{g // 1000}k:{r:.0%}/{k:.0%}" for g, r, k in curve))
@@ -227,7 +277,10 @@ def main(argv=None) -> int:
     buf = BUFFER_GAMES
     if "--buffer" in argv:
         buf = int(argv[argv.index("--buffer") + 1])
-    r = train(seconds=seconds, buffer_games=buf)
+    opp = 0.5
+    if "--opp-mix" in argv:
+        opp = float(argv[argv.index("--opp-mix") + 1])
+    r = train(seconds=seconds, buffer_games=buf, opp_mix=opp)
     print(f"\n权重：{r['out_dir']}")
     # spec §7 的分水岭：**明确打过**贪心。50% 只是「五五开」，不算打过。
     ok = r["wr_greedy"] >= 0.55
