@@ -103,7 +103,7 @@ def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0) -> list:
             if keep is None or seat in keep]
 
 
-def expand(rec: GameRecord):
+def expand(rec: GameRecord, bomb_cost: float = 0.0):
     """把记录重放成 `(决策点, 终局 reward)`。
 
     决策点是 `(obs, acts, 选中下标, 出牌人, hist)` —— 与 `env.rollout` 同形状，
@@ -116,22 +116,22 @@ def expand(rec: GameRecord):
     e = env.GuandanEnv(seed=0)
     e.reset(level=rec.level, hands=[set(h) for h in rec.hands], first=rec.first)
     learn = set(rec.learn) if rec.learn else None
-    points = []
+    seq, points = [], []
     obs = e.observe()
     for i in rec.actions:
         acts = e.legal()
         seat = e.hand.turn
+        seq.append((seat, acts[i]))       # **全量步骤**：B_t 要沿着一局往后数
         # 历史必须**在这一步当时**取 —— 整局打完再取会把后面的牌塞进历史
         # （那是另一种泄漏：未来信息）。selfplay 那边也是这么取的。
         if learn is None or seat in learn:
             points.append((obs, acts, i, seat, env.encode_history(e.hand, seat)))
         obs, _r, _done, _info = e.step(i)
-    ranks = e.ranks
-    y = [rules.reward(ranks, seat) for (_o, _a, _i, seat, _h) in points]
-    return points, y
+    # 标签**只有一个产地**（`mc_targets`）—— 过滤也在它里面做
+    return points, mc_targets(seq, e.ranks, learn=rec.learn, bomb_cost=bomb_cost)
 
 
-def play_capturing(policy, rng, level=None, capture=False):
+def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.0):
     """打一局。返回 `(记录, 决策点, 终局 reward)`；`capture=False` 时决策点是空表。
 
     **为什么要 `capture`**：刚打完的一批局，每一步的决策点在生成时**本来就算过**了
@@ -143,13 +143,14 @@ def play_capturing(policy, rng, level=None, capture=False):
     e = env.GuandanEnv(seed=rng.randrange(1 << 30))
     e.reset(level=level)
     hands0 = [set(e.hand.hands[s]) for s in rules.SEATS]   # 发牌快照（见 GameRecord.of）
-    actions, points = [], []
+    actions, points, seq = [], [], []
     obs = e.observe()
     while not e.done:
         acts = e.legal()
         seat = e.hand.turn
         hist = env.encode_history(e.hand, seat)
         i = policy(obs, acts, hist)
+        seq.append((seat, acts[i]))
         if capture:
             points.append((obs, acts, i, seat, hist))
         actions.append(i)
@@ -157,8 +158,8 @@ def play_capturing(policy, rng, level=None, capture=False):
     rec = GameRecord.of(e, actions, hands0)
     if not capture:
         return rec, [], []
-    ranks = e.ranks
-    return rec, points, [rules.reward(ranks, s) for (_o, _a, _i, s, _h) in points]
+    # 标签走**同一个产地**（`mc_targets`）—— 三条路都收在一处，改一处就是改三处
+    return rec, points, mc_targets(seq, e.ranks, bomb_cost=bomb_cost)
 
 
 def play_and_record(policy, rng, level=None):

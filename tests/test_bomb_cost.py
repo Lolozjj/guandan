@@ -63,3 +63,44 @@ def test_learn_filters_inside_the_function():
 def test_a_negative_cost_is_rejected():
     with pytest.raises(ValueError):
         replay.mc_targets([(0, _m(PLAIN))], RANKS, bomb_cost=-0.1)
+
+
+def test_the_two_label_producers_agree_bit_for_bit():
+    """现场抓取与 buffer 重放**必须逐点给出同一个标签**（λ=0 与 λ>0 都要）。
+
+    两条路各写一份标签算法就是「副本会漂」—— 漂了的后果是「刚打的那批」与
+    「从 buffer 里取的」学到两个不同的目标，且**静默**（这个仓库为此反复吃过亏）。
+    """
+    import random
+
+    import torch
+
+    from train import selfplay
+    from train.net import QNet
+
+    torch.manual_seed(0)
+    for lam in (0.0, 0.2):
+        out = selfplay.generate_batch(QNet().eval(), random.Random(0), eps=0.0,
+                                      n_games=8, capture=True, opp_mix=1.0,
+                                      greedy_share=1.0, bomb_cost=lam)
+        for rec, caps, y_live in out:
+            pts, y_replay = replay.expand(rec, bomb_cost=lam)
+            assert y_live == y_replay, f"λ={lam}：现场与重放的标签不一致"
+            assert len(pts) == len(caps) == len(y_live), "条数对不上"
+
+
+def test_play_capturing_also_uses_the_single_label_source():
+    """**第三个产地**（`play_capturing`）也要收进 `mc_targets`。
+
+    它今天只有测试在调，但形状和另外两条路一模一样 —— 留着就是「副本会漂」的地基：
+    改了一处忘了另一处，而漂了是**静默**的。
+    """
+    import random
+
+    from train.policies import greedy_policy
+
+    rec, _pts, y = replay.play_capturing(greedy_policy, random.Random(0), level=5,
+                                         capture=True, bomb_cost=0.2)
+    _pts2, y_expand = replay.expand(rec, bomb_cost=0.2)
+    assert y == y_expand, "第三个产地与重放的标签不一致"
+    assert all(isinstance(v, float) for v in y)
