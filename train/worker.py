@@ -63,6 +63,9 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
     # 与 learner 同一个种子 -> 初始权重一致；之后靠广播保持同步
     torch.manual_seed(cfg["seed"])
     net = QNet().to(worker_device()).eval()
+    # worker 开局自己那一份也得是热启动的那份 —— 否则 learner 的第一次广播到达之前，
+    # 第一批是用**随机**权重打的（那个窗口在老代码里就有，热启动让它更刺眼）
+    selfplay.load_init(net, cfg.get("init"))
     rng = random.Random(cfg["seed"])
     eps = cfg["eps"]
     while True:
@@ -76,7 +79,7 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
 
 
 def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
-               learn_all_seats=False) -> dict:
+               learn_all_seats=False, init=None) -> dict:
     return {"seed": seed, "eps": eps, "opp_mix": opp_mix,
             "greedy_share": greedy_share, "batch_games": batch_games,
-            "learn_all_seats": learn_all_seats}
+            "learn_all_seats": learn_all_seats, "init": init}

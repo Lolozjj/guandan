@@ -83,6 +83,19 @@ def _fixed_pick(kind, pending, rng):
     return greedy_policy(obs, acts, hist)      # 复用评测那套贪心，不另写一份
 
 
+def load_init(net, path: str = None) -> None:
+    """把 checkpoint 装进 `net`。`path=None` 时什么都不做（默认行为不变）。
+
+    只认 `{"net": state_dict}` 这一种（与 `best.pt` / `last.pt` 同格式）。
+    装不上**必须炸** —— 静默从随机开始会让「热启动」变成假的，
+    而这件事在日志和曲线上一概看不出来（`tests/test_train_init.py` 钉着）。
+    """
+    if not path:
+        return
+    ck = torch.load(path, map_location="cpu")
+    net.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
+
+
 def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                    greedy_share=0.8, learn_all_seats=False):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
@@ -253,7 +266,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           eval_games: int = EVAL_GAMES, eval_every: int = EVAL_EVERY_GAMES,
           out_dir: str = None, log=print, opp_mix: float = 0.5,
           greedy_share: float = 0.8, batch_games: int = BATCH_GAMES,
-          eps_games: int = EPS_GAMES, learn_all_seats: bool = False):
+          eps_games: int = EPS_GAMES, learn_all_seats: bool = False,
+          init: str = None):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -261,6 +275,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     # （GPU 从没被用上）。训练步的瓶颈就是网络前向（spec §14.3）。
     # `tests/test_train_device.py` 用 1 秒预算真跑一次钉住这件事。
     net = QNet().to(DEVICE)
+    load_init(net, init)
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     out_dir = out_dir or os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M"))
@@ -268,7 +283,9 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"batch={batch_games} 局（同步推进）  buffer={buffer_games:,} 局  "
         f"评测每 {eval_every:,} 局  ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
-        f"（其中贪心 {greedy_share:.0%}）\n权重 -> {out_dir}")
+        f"（其中贪心 {greedy_share:.0%}）"
+        + (f"  热启动 {init}" if init else "")
+        + f"\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
     games = steps = 0
@@ -322,7 +339,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    eval_every: int = EVAL_EVERY_GAMES, out_dir: str = None,
                    log=print, opp_mix: float = 0.5, greedy_share: float = 0.8,
                    batch_games: int = BATCH_GAMES, eps_games: int = EPS_GAMES,
-                   learn_all_seats: bool = False,
+                   learn_all_seats: bool = False, init: str = None,
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -342,6 +359,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     torch.manual_seed(seed)
     rng = random.Random(seed)
     net = QNet().to(DEVICE)
+    load_init(net, init)
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     send_q = ctx.Queue(maxsize=max(2, workers * 2))   # 有界 = 背压（不堆内存）
@@ -351,13 +369,16 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                worker_mod.worker_cfg(seed + 1 + k, EPS_START,
                                                      opp_mix, greedy_share,
                                                      batch_games,
-                                                     learn_all_seats=learn_all_seats)))
+                                                     learn_all_seats=learn_all_seats,
+                                                     init=init)))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
         f"buffer={buffer_games:,} 局  评测每 {eval_every:,} 局  "
         f"ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
-        f"（其中贪心 {greedy_share:.0%}）\n权重 -> {out_dir}")
+        f"（其中贪心 {greedy_share:.0%}）"
+        + (f"  热启动 {init}" if init else "")
+        + f"\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
     games = steps = 0
@@ -450,6 +471,12 @@ def main(argv=None) -> int:
     if "--learn-all-seats" in argv:
         # A/B 的对照臂：恢复改动前的行为（固定对手的着法也进训练目标）
         kw["learn_all_seats"] = True
+    if "--init" in argv:
+        kw["init"] = argv[argv.index("--init") + 1]
+    if "--out-dir" in argv:
+        # 两臂必须落在不同目录，否则后跑的会覆盖 best.pt / last.pt ——
+        # 而面板按修改时间挑权重（net/advise.py::newest_weights），会**静默换源**
+        kw["out_dir"] = argv[argv.index("--out-dir") + 1]
     workers = int(argv[argv.index("--workers") + 1]) if "--workers" in argv else 1
     if workers > 1:
         r = train_parallel(seconds=seconds, workers=workers, buffer_games=buf,
