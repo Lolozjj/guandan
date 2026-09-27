@@ -96,8 +96,29 @@ def load_init(net, path: str = None) -> None:
     net.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
 
 
+def plan_step(learn_seats, turn, fixed) -> tuple:
+    """这一步由谁出手 → `("learner", None)` / `("member", mid)` / `("fixed", kind)`。
+
+    **纯函数**，故意抽出来 —— 分组错了会**静默用错权重**（池子里全变成一个模型），
+    而那种错在日志上完全看不出来。
+
+    「不属学习队、又没有固定对手」是不该出现的状态（`learn` 与 `fixed` 是一起定的），
+    所以**炸掉**而不是猜一个 —— 猜的后果是静默退回贪心（本仓库纪律：失败必须响）。
+    """
+    if turn in learn_seats:
+        return ("learner", None)
+    if fixed is None:
+        raise ValueError(
+            f"座位{turn} 不属于学习队 {tuple(learn_seats)}、又没有固定对手 —— "
+            f"分组的前提被破坏了")
+    if fixed[0] == "member":
+        return ("member", fixed[1])
+    return ("fixed", fixed[0])
+
+
 def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
-                   greedy_share=0.8, learn_all_seats=False):
+                   greedy_share=0.8, learn_all_seats=False, members=None,
+                   pick_fixed=None):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
@@ -113,9 +134,15 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
 
     `learn_all_seats`：**A/B 的对照臂**。开了之后对手照旧换，但四家照旧都学 ——
     也就是改动前的行为（连固定对手的着法也进训练目标）。量「修 `expand` 值多少」用。
+
+    `members`：`{mid: 网络}` —— 池子成员（spec §3.3）。
+    `pick_fixed(rng) -> ("greedy",) | ("random",) | ("member", mid)`：这一局的固定
+    对手是谁，由调用方给（PFSP 在 learner 侧算）。不给就沿用老的 `greedy_share` 二分。
+    **哪一队当固定对手统一在这里抽**（池成员也一样）—— `learn` 由它推出来。
     """
     envs, hands0, log, caps = [], [], [], []
     learn, fixed = [], []          # 每局：学习那一队的座位 / 固定对手（None = 纯自对弈）
+    members = members if members is not None else {}
     for _ in range(n_games):
         e = env.GuandanEnv(seed=rng.randrange(1 << 30))
         e.reset()
@@ -124,9 +151,15 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
         log.append([])
         caps.append([])
         if rng.random() < opp_mix:
-            opp = rng.randrange(2)      # 哪一队当固定对手
-            kind = "greedy" if rng.random() < greedy_share else "random"
-            fixed.append((kind, opp))
+            opp = rng.randrange(2)      # 哪一队当固定对手 —— **统一在这里抽**（池成员也一样）
+            if pick_fixed is not None:
+                kind = pick_fixed(rng)  # ("greedy",) | ("random",) | ("member", mid)
+                # 形状统一成 (kind, x)：member 的 x 是**成员 id**，其余是**队号**
+                fixed.append(("member", kind[1]) if kind[0] == "member"
+                             else (kind[0], opp))
+            else:
+                kind = "greedy" if rng.random() < greedy_share else "random"
+                fixed.append((kind, opp))
             learn.append(tuple(s for s in rules.SEATS if rules.TEAM[s] != opp))
         else:
             fixed.append(None)
@@ -143,24 +176,46 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
             e = envs[k]
             pending.append((e.observe(), e.legal(),
                             env.encode_history(e.hand, e.hand.turn)))
-        # 只有「学习那一队」问网络；固定对手按自己的策略出手
+        # 按「这一步谁在出手」分组，**每组各做一次批量前向**（spec §3.3）——
+        # 「当前权重」只是众多组里的一组。
+        # 顺序显式定死（fixed → learner → 成员按 id）：rng 的消费顺序别随 dict 插入序漂，
+        # 否则同一个种子在不同局面下打出来的东西会变。
         picks = [None] * len(pending)
-        net_j = []
+        groups = {}
         for j, k in enumerate(alive):
-            if envs[k].hand.turn in learn[k]:
-                net_j.append(j)
+            who = plan_step(learn[k], envs[k].hand.turn, fixed[k])
+            groups.setdefault(who, []).append(j)
+
+        def _order(item):
+            (who, x), _js = item
+            rank = 0 if who == "fixed" else (1 if who == "learner" else 2)
+            return (rank, x if isinstance(x, int) else 0)
+
+        for (who, mid), js in sorted(groups.items(), key=_order):
+            if who == "fixed":
+                # 贪心 / 随机：便宜的 Python 路径，**不占前向**（占混合局的 20%）
+                for j in js:
+                    picks[j] = _fixed_pick(fixed[alive[j]], pending[j], rng)
+                continue
+            if who == "member":
+                if mid not in members:
+                    raise KeyError(
+                        f"对手池里没有成员 {mid}（有 {sorted(members)}）—— "
+                        f"不许静默换个对手，那会让池子悄悄少一个成员")
+                neti = members[mid]
             else:
-                picks[j] = _fixed_pick(fixed[k], pending[j], rng)
-        if net_j:
-            if eps >= 1.0:
+                neti = net
+            if who == "learner" and eps >= 1.0:
                 # 纯随机阶段不必前向 —— 早期是 ε=1.0，省掉这一大截
-                for j in net_j:
+                for j in js:
                     picks[j] = rng.randrange(len(pending[j][1]))
-            else:
-                got = q_argmax_batch(net, [pending[j] for j in net_j])
-                for j, p in zip(net_j, got):
-                    picks[j] = (rng.randrange(len(pending[j][1]))
-                                if rng.random() < eps else p)
+                continue
+            got = q_argmax_batch(neti, [pending[j] for j in js])
+            for j, p in zip(js, got):
+                # ⚠️ ε **只属于学习者**；对手一律 argmax（spec §4）——
+                # 手滑把 ε 也施加到池成员上，池子就成了一群会随机出牌的对手
+                picks[j] = (rng.randrange(len(pending[j][1]))
+                            if who == "learner" and rng.random() < eps else p)
 
         nxt = []
         for k, (obs, acts, hist), i in zip(alive, pending, picks):

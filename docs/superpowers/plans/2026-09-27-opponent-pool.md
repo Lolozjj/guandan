@@ -873,11 +873,16 @@ def test_members_actually_play_with_their_own_weights():
     各打一批，比它们的着法分布。用真实的 `q_values` 太间接，这里用桩网络：
     `q_argmax_batch` 只要求 `net(state, action, hist)` 返回每行一个标量。
     """
-    class First(torch.nn.Module):
+    class _Stub(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dummy = torch.nn.Parameter(torch.zeros(1))   # ⚠️ 必须有：见下
+
+    class First(_Stub):
         def forward(self, state, action, hist):
             return torch.zeros(state.shape[0])
 
-    class Last(torch.nn.Module):
+    class Last(_Stub):
         def forward(self, state, action, hist):
             return torch.arange(state.shape[0], dtype=torch.float32)
 
@@ -891,6 +896,9 @@ def test_members_actually_play_with_their_own_weights():
 
     assert run(First()) != run(Last()), "两个极端成员打出了一模一样的东西"
 ```
+
+> ⚠️ **桩必须带一个哑参数**：`q_argmax_batch` 第一行就取
+> `next(net.parameters()).device`，没有参数的 `nn.Module` 会抛 `StopIteration`。
 
 - [ ] **Step 2: 跑测试，确认失败**
 
@@ -912,9 +920,15 @@ def plan_step(learn_seats, turn, fixed) -> tuple:
     """
     if turn in learn_seats:
         return ("learner", None)
-    if fixed and fixed[0] == "member":
+    if fixed is None:
+        # 「不属学习队、又没有固定对手」是不该出现的状态（learn 与 fixed 一起定的）
+        # -> **炸掉**，别猜一个。猜的后果是静默退回贪心，日志上看不出来
+        raise ValueError(
+            f"座位{turn} 不属于学习队 {tuple(learn_seats)}、又没有固定对手 —— "
+            f"分组的前提被破坏了")
+    if fixed[0] == "member":
         return ("member", fixed[1])
-    return ("fixed", fixed[0] if fixed else "random")
+    return ("fixed", fixed[0])
 ```
 
 `generate_batch` 的内层循环（替换原来那段二分）：
@@ -967,15 +981,21 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
 
 ```python
         if rng.random() < opp_mix:
+            opp = rng.randrange(2)      # 哪一队当固定对手 —— **统一在这里抽**（池成员也一样）
             if pick_fixed is not None:
-                kind = pick_fixed(rng)
-                opp = kind[1] if kind[0] == "member" else rng.randrange(2)
+                kind = pick_fixed(rng)  # ("greedy",) | ("random",) | ("member", mid)
+                # 形状统一成 (kind, x)：member 的 x 是**成员 id**，其余是**队号**
+                fixed.append(("member", kind[1]) if kind[0] == "member"
+                             else (kind[0], opp))
             else:
-                opp = rng.randrange(2)
-                kind = ("greedy" if rng.random() < greedy_share else "random",)
-            fixed.append(kind if kind[0] == "member" else (kind[0], opp))
+                kind = "greedy" if rng.random() < greedy_share else "random"
+                fixed.append((kind, opp))
             learn.append(tuple(s for s in rules.SEATS if rules.TEAM[s] != opp))
 ```
+
+> ⚠️ **队号必须对所有对手都抽**（包括池成员）。原计划里 member 那一路没抽队号，
+> 于是 `learn` 会变成「四家都学」→ `plan_step` 永远返回 learner →
+> `test_a_missing_member_raises_loudly` 根本不会触发（池子少一个成员会**静默**）。
 
 > ⚠️ `fixed` 的形状要**统一**成 `(kind, …)`：`("greedy", opp)` / `("random", opp)` /
 > `("member", mid)`。`plan_step` 只看 `fixed[0]`；`("member", mid)` 的第二个元素是
