@@ -104,6 +104,10 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
         return pool.pick_opponent(r, list(members), state["pfsp"],
                                   cfg["greedy_share"])
 
+    # ⚠️ 池子关的时候要传 **`None` 这个参数**（让 generate_batch 走老的 greedy_share 二分），
+    # 而不是让 `pick_fixed` 返回 None —— 函数照旧会被调用，`kind[0]` 会炸。
+    picker = pick_fixed if (cfg.get("use_pool") or cfg.get("pick_all")) else None
+
     while True:
         # ⚠️ **先收控制消息，再打牌。** 反过来的话新装的成员要等下一批才生效，
         # 而「成员还没到就先抽到它」会直接 KeyError 把 worker 打死。
@@ -112,14 +116,17 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
         recs = worker_batch(net, rng, state["eps"], cfg["batch_games"],
                             opp_mix=cfg["opp_mix"], greedy_share=cfg["greedy_share"],
                             learn_all_seats=cfg.get("learn_all_seats", False),
-                            members=members, pick_fixed=pick_fixed)
+                            members=members, pick_fixed=picker)
         send_q.put(recs)                        # 队满则阻塞 = 天然背压（spec §6）
 
 
 def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
                learn_all_seats=False, init=None, members=None,
-               pick_all=None, member_id=None) -> dict:
+               pick_all=None, member_id=None, use_pool=False) -> dict:
     """`members`：`{mid: state_dict}` 的**初始**池。
+
+    `use_pool=False` 时**不抽池成员**，走老的 `greedy_share` 二分 ——
+    A/B 的对照臂就靠它（两臂只能差「有没有池子」这一个变量）。
 
     `pick_all` / `member_id` **只给测试用**：强制所有混合局都用 `member_id` 当对手
     （生产上对手由 learner 侧的 PFSP 权重决定，worker 按 `pfsp` 抽）。
@@ -128,4 +135,4 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
             "greedy_share": greedy_share, "batch_games": batch_games,
             "learn_all_seats": learn_all_seats, "init": init,
             "members": dict(members or {}),
-            "pick_all": pick_all, "member_id": member_id}
+            "pick_all": pick_all, "member_id": member_id, "use_pool": use_pool}
