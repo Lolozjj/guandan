@@ -64,10 +64,39 @@ EVAL_EVERY_GAMES = 10_000     # spec §5.3「每 N 局存一次权重 + 跑一�
 EPS_GAMES = 250_000
 
 
-def eps_for(games: int, eps_games: int = EPS_GAMES) -> float:
-    """第 `games` 局时的 ε（线性退火，退到底就不再变）。"""
+def eps_for(games: int, eps_games: int = EPS_GAMES,
+            start: float = EPS_START) -> float:
+    """第 `games` 局时的 ε（线性退火，退到底就不再变）。
+
+    `start` 是**这一轮的起点** —— 热启动时它不是 1.0（见 `EPS_START_WARM`）。
+    """
     frac = min(1.0, games / max(1, eps_games))
-    return EPS_START + (EPS_END - EPS_START) * frac
+    return start + (EPS_END - start) * frac
+
+
+#: 热启动时的 ε 起点（初值，**按实测调**）。
+#:
+#: 为什么不是 `EPS_START`（1.0）：2026-09-27 的三臂 A/B/C 里**每一臂**都比起点差
+#: （1407 的 95.2% → 90~94.5%），共同原因就是热启动之后 ε 仍从 1.0 起 ——
+#: 头一万多局近乎随机，把热启动整个冲掉了。**不修它，任何「从某个存档出发」的
+#: 实验都会被这个效应盖住**（池子那一轮就是这么被盖住的）。
+#: 为什么不是 `EPS_END`（0.1）：那样就完全没有退火，探索只剩一成，也学不动。
+#: 0.3 = 保留三成探索、又不至于把已有策略冲散。**要动就动这一个数。**
+EPS_START_WARM = 0.3
+
+
+def resolve_eps_start(init: str = None, explicit: float = None) -> float:
+    """这一轮的 ε 起点。
+
+    显式给了就用显式的；**热启动**用 `EPS_START_WARM`（低起点）；否则 1.0（老行为）。
+    起点会打进日志头 —— 上一轮三臂实验花了 3 小时才看出「热启动被冲掉了」，
+    就是因为这件事在日志上查不到。
+    """
+    if explicit is not None:
+        return explicit
+    return EPS_START_WARM if init else EPS_START
+
+
 #: 评测局数。**别往下调**：实测同一个网络换 6 个种子各测 200 局，
 #: 结果是 4.8% ± 1.4%（二项理论值 ≈1.5%）—— 也就是 200 局时噪声约 ±2%，
 #: 判据「≥55%」不会被噪声骗过。100 局时会飘到 ±5%，不够用。
@@ -385,7 +414,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           greedy_share: float = 0.8, batch_games: int = BATCH_GAMES,
           eps_games: int = EPS_GAMES, learn_all_seats: bool = False,
           init: str = None, snap_every: int = pool.SNAP_EVERY_GAMES,
-          pool_size: int = pool.POOL_SIZE):
+          pool_size: int = pool.POOL_SIZE, eps_start: float = None):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -394,13 +423,15 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     # `tests/test_train_device.py` 用 1 秒预算真跑一次钉住这件事。
     net = QNet().to(DEVICE)
     load_init(net, init)
+    eps_start = resolve_eps_start(init, eps_start)   # 热启动 -> 低起点（EPS_START_WARM）
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     out_dir = out_dir or os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M"))
     os.makedirs(out_dir, exist_ok=True)
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"batch={batch_games} 局（同步推进）  buffer={buffer_games:,} 局  "
-        f"评测每 {eval_every:,} 局  ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
+        f"评测每 {eval_every:,} 局  ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  "
+        f"对手混合 {opp_mix:.0%}"
         f"（其中贪心 {greedy_share:.0%}）"
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
@@ -411,7 +442,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     best_greedy = -1.0
 
     while time.perf_counter() - t0 < seconds:
-        eps = eps_for(games, eps_games)          # **按局数退火**，不按时间（见 EPS_GAMES）
+        # **按局数退火**，不按时间（见 EPS_GAMES）；起点见 eps_start（热启动会压低）
+        eps = eps_for(games, eps_games, start=eps_start)
 
         # 1) 同步打一批，记进 buffer（现场抓好决策点，省一次重放）
         fresh = {}
@@ -462,7 +494,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    snap_every: int = pool.SNAP_EVERY_GAMES,
                    pool_size: int = pool.POOL_SIZE, pfsp: bool = False,
                    pool_greedy_share: float = pool.GREEDY_SHARE,
-                   _kill_worker_after: float = None):
+                   eps_start: float = None, _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
     设计见 `docs/superpowers/specs/2026-09-26-multiprocess-selfplay-design.md`。
@@ -482,6 +514,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     rng = random.Random(seed)
     net = QNet().to(DEVICE)
     load_init(net, init)
+    eps_start = resolve_eps_start(init, eps_start)   # 热启动 -> 低起点（EPS_START_WARM）
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     send_q = ctx.Queue(maxsize=max(2, workers * 2))   # 有界 = 背压（不堆内存）
@@ -513,7 +546,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                  {i: wr.games(i) for i in pool_sds})
     procs = [ctx.Process(target=worker_mod.run_worker, daemon=True,
                          args=(send_q, ctrls[k],
-                               worker_mod.worker_cfg(seed + 1 + k, EPS_START,
+                               worker_mod.worker_cfg(seed + 1 + k, eps_start,
                                                      opp_mix, greedy_share,
                                                      batch_games,
                                                      learn_all_seats=learn_all_seats,
@@ -523,7 +556,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
         f"buffer={buffer_games:,} 局  评测每 {eval_every:,} 局  "
-        f"ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
+        f"ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
         f"（其中贪心 {greedy_share:.0%}）"
         + (f"  池子 {len(pool_sds)} 个种子成员（PFSP 开，"
            f"池份额 {1 - pool_greedy_share:.0%}）" if pfsp
@@ -545,7 +578,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
         for q in ctrls:                     # 开局先广播一次（worker 种子相同，但更稳）
             for mid in sorted(pool_sds):
                 q.put(("member", (mid, pool_sds[mid])))
-            q.put(("weights", (sd0, EPS_START, current_pfsp())))
+            q.put(("weights", (sd0, eps_start, current_pfsp())))
         while time.perf_counter() - t0 < seconds:
             dead = [k for k, p in enumerate(procs) if not p.is_alive()]
             if dead:
@@ -583,14 +616,14 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             steps += 1
             el = time.perf_counter() - t0
             if steps % 10 == 0:
-                log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps_for(games, eps_games):.2f}  "
+                log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps_for(games, eps_games, start=eps_start):.2f}  "
                     f"loss={loss.item():.3f}  {games / el:.1f} 局/秒  "
                     f"buffer {len(buf):,}")
             if games - last_sync >= WEIGHT_SYNC_GAMES:
                 sd = {k: v.cpu() for k, v in net.state_dict().items()}
                 w = current_pfsp()
                 for q in ctrls:
-                    q.put(("weights", (sd, eps_for(games, eps_games), w)))
+                    q.put(("weights", (sd, eps_for(games, eps_games, start=eps_start), w)))
                 last_sync = games
             best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
                                       eval_every, batch_games, out_dir, log,
@@ -643,6 +676,10 @@ def main(argv=None) -> int:
         kw["batch_games"] = int(argv[argv.index("--batch") + 1])
     if "--eps-games" in argv:
         kw["eps_games"] = int(argv[argv.index("--eps-games") + 1])
+    if "--eps-start" in argv:
+        # ε 的**起点**。默认：热启动 -> 0.3（EPS_START_WARM），否则 1.0。
+        # 想强制一个值（比如确认「起点低到底有多重要」）就传它。
+        kw["eps_start"] = float(argv[argv.index("--eps-start") + 1])
     if "--learn-all-seats" in argv:
         # A/B 的对照臂：恢复改动前的行为（固定对手的着法也进训练目标）
         kw["learn_all_seats"] = True
