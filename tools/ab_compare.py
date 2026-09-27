@@ -20,7 +20,7 @@ import sys
 
 import torch
 
-from train.eval import bomb_waste, match
+from train.eval import bomb_rate, bomb_waste, match
 from train.net import QNet
 from train.policies import greedy_policy
 from train.selfplay import net_play
@@ -51,6 +51,16 @@ def waste(pol, opp):
     return w, c, (w / c if c else float("nan"))
 
 
+def rate(pol, opp):
+    """**用炸率** —— 必须和炸弹浪费率一起看（spec §5.3）。
+
+    挂代价最典型的失败**不是没效果，是「从此一刀切不炸」**：那不比乱炸好，
+    而且用户在面板上会觉得建议变蠢。`bomb_waste` 回答不了这个问题。
+    """
+    b, g = bomb_rate(pol, games=GAMES_WASTE, seed=3001, opponent=opp)
+    return b, g, (b / g if g else float("nan"))
+
+
 def main(arm, ckpt="last.pt"):
     path = os.path.join(arm, ckpt)
     if not os.path.exists(path):
@@ -64,17 +74,22 @@ def main(arm, ckpt="last.pt"):
     print(f"   vs 贪心（400 局，同种子）    {wr:6.1%}")
 
     w, c, r = waste(pol, None)
+    b, g, br = rate(pol, None)
     print(f"   炸弹浪费 · 自对弈          {w:3d}/{c:4d} = {r:5.1%}")
+    print(f"   用炸率   · 自对弈          {b:3d}/{g:3d} = {br:5.2f} 手/局")
 
-    rs = []
+    rs, brs = [], []
     for mp in MEMBERS:
         mp_pol, _ = load(mp)
         w, c, r = waste(pol, mp_pol)
+        b, g, br = rate(pol, mp_pol)
         rs.append(r)
+        brs.append(br)
         tag = os.path.basename(os.path.dirname(mp))
         print(f"   炸弹浪费 · vs {tag:16s}  {w:3d}/{c:4d} = {r:5.1%}")
-    med = statistics.median(rs)
-    print(f"   >>> 对池中位 {med:5.1%}    vs 贪心 {wr:5.1%}")
+        print(f"   用炸率   · vs {tag:16s}  {b:3d}/{g:3d} = {br:5.2f} 手/局")
+    med, bmed = statistics.median(rs), statistics.median(brs)
+    print(f"   >>> 对池中位 {med:5.1%}   用炸中位 {bmed:5.2f} 手/局   vs 贪心 {wr:5.1%}")
     return wr, med
 
 
