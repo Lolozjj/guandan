@@ -1289,19 +1289,25 @@ git commit -m "feat(pool): worker 常驻池子 + 增量广播 + 健康度上报"
 - Modify: `docs/superpowers/specs/2026-09-27-current-scheme.md`（§四.7 的对手配置、§十一 的下一步）
 - Modify: `HANDOFF.md`（训练命令加新开关）
 
-- [ ] **Step 1: 量基线（对照臂 = 老行为）**
+- [ ] **Step 1: 三臂同时跑**（执行时把计划的两臂改成了三臂，见下）
 
 ```powershell
 $env:GUANDAN_DEVICE="cpu"
-.venv/Scripts/python.exe -m train.selfplay 3600 --workers 2 --init runs/rl/20260926-1407/best.pt --learn-all-seats --eps-games 60000 --out-dir runs/ab/A_old
+$C = "--workers 2 --opp-mix 0.5 --init runs/rl/20260926-1407/best.pt --eps-games 60000 --snap-every 5000"
+.venv/Scripts/python.exe -m train.selfplay 3600 $C --learn-all-seats --out-dir runs/ab/A_old   # 老行为
+.venv/Scripts/python.exe -m train.selfplay 3600 $C                      --out-dir runs/ab/C_fix   # 只修 expand
+.venv/Scripts/python.exe -m train.selfplay 3600 $C --pfsp               --out-dir runs/ab/B_pool  # 修 + 池子
 ```
-- [ ] **Step 2: 量处理臂（池子）**
 
-```powershell
-.venv/Scripts/python.exe -m train.selfplay 3600 --workers 2 --init runs/rl/20260926-1407/best.pt --eps-games 60000 --out-dir runs/ab/B_pool
-```
-⚠️ **两臂的 `--eps-games` 必须相同且调小**，否则都在近乎随机地探索，测不出差别
-（这个坑本仓库踩过：默认 25 万局，跑 1 小时 ε 还有 0.86）。
+> ⚠️ **为什么是三条臂而不是计划里的两条**（执行时的裁定）：
+> 原计划 A = 老行为、B = 修 expand + 池子 —— 两臂差了**两件事**，
+> 赢了也不知道是谁的功劳。而规格 §1.5 的杀停条件问的偏偏是**池子本身**。
+> 加一条 C（只修 expand、不开池子）之后：
+> **B − C = 池子的净效果**，**C − A = 修 expand 的效果**，一次拿到两个干净答案。
+> 三条 learner + 六条 worker 在 20 核上不打架（bench 显示 6 worker 才开始积压）。
+>
+> ⚠️ **三臂的 `--eps-games` / `--snap-every` / 种子必须完全相同**，否则不可比。
+> `--eps-games` 必须调小（默认 25 万局，1 小时才跑 14 万局，ε 会停在 0.5）。
 
 - [ ] **Step 3: 同一把尺子上比**
 
