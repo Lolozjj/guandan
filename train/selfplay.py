@@ -4,7 +4,7 @@
     .venv/Scripts/python.exe -m train.selfplay               # 默认 3600 秒（1 小时）
     .venv/Scripts/python.exe -m train.selfplay 600           # 10 分钟
 
-与 `train/smoke.py` 的区别（冒烟只证明「env 能训」）：
+**为什么长这样**（对照那个已删的最小冒烟脚本 —— 它只证明「env 能训」）：
 
 | | smoke | selfplay |
 |---|---|---|
