@@ -706,10 +706,11 @@ def test_prune_keeps_the_newest_and_reports_what_it_dropped(tmp_path):
         open(p, "wb").close()
         os.utime(p, (g, g))                       # 让修改时间有先后
     dropped = pool.prune_snapshots(str(tmp_path), keep=3)
-    left = sorted(os.path.basename(p)
-                  for p in glob.glob(os.path.join(str(tmp_path), "pool", "snap_*.pt")))
-    assert len(left) == 3
-    assert left[-1].endswith("100000.pt"), "该留最新的"
+    left = {os.path.basename(p)
+            for p in glob.glob(os.path.join(str(tmp_path), "pool", "snap_*.pt"))}
+    # ⚠️ 别用 sorted(...)[-1] 判「留了最新的」—— basename 是**字典序**，
+    # `snap_100000.pt` 排在 `snap_80000.pt` 前面。用集合比。
+    assert left == {"snap_80000.pt", "snap_90000.pt", "snap_100000.pt"}
     assert len(dropped) == 7
 
 

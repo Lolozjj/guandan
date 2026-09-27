@@ -20,6 +20,8 @@
 """
 from __future__ import annotations
 
+import glob
+import os
 from collections import deque
 from dataclasses import dataclass
 
@@ -35,6 +37,12 @@ GREEDY_SHARE = 0.2
 PRIOR = 2.0
 #: 有效成员数低于这个值就报「池子塌了」。
 COLLAPSE_BELOW = 2.0
+
+#: 每这么多局存一个池子快照。**与「有没有刷新最好」解耦** ——
+#: 只存 `best.pt` 的话 144 万局只落几个点，池子原料不够（spec §3.1）。
+SNAP_EVERY_GAMES = 20_000
+#: 池子留多少个成员（约 156 MB/worker）。
+POOL_SIZE = 20
 
 
 @dataclass(frozen=True)
@@ -123,3 +131,30 @@ def effective_members(weights: dict) -> float:
     """有效成员数 `1 / Σw²` —— 池子塌成一个成员时会趋近 1（spec §1.4）。"""
     s = sum(w * w for w in weights.values())
     return 1.0 / s if s > 0 else 0.0
+
+
+# ---------------------------------------------------------------- 快照与装载
+
+def snapshot_path(out_dir: str, games: int) -> str:
+    """快照路径：`<out_dir>/pool/snap_<games>.pt`。
+
+    ⚠️ **故意嵌套一层、且不叫 `best.pt`** —— `net/advise.py::newest_weights()`
+    glob 的是 `runs/rl/*/best.pt`，两层都命不中。命中就等于**静默换源**：
+    用户面板上的建议会换成另一个模型，而日志上一概看不出来。
+    """
+    return os.path.join(out_dir, "pool", f"snap_{games}.pt")
+
+
+def prune_snapshots(out_dir: str, keep: int = POOL_SIZE) -> list:
+    """只留**最新**的 `keep` 个（按修改时间），返回被删掉的路径。"""
+    found = sorted(glob.glob(os.path.join(out_dir, "pool", "snap_*.pt")),
+                   key=os.path.getmtime)
+    gone = found[:-keep] if keep > 0 else found
+    for p in gone:
+        os.remove(p)
+    return gone
+
+
+def load_members(paths) -> list:
+    """磁盘上的一批权重文件 -> `PoolMember`（`mid` 按路径排序，稳定可复现）。"""
+    return [PoolMember(mid=i, path=p) for i, p in enumerate(sorted(paths))]

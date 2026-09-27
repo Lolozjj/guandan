@@ -39,7 +39,7 @@ import numpy as np
 import torch
 
 from net.sim import env, rules
-from train import replay
+from train import pool, replay
 from train.eval import match
 from train.net import DEVICE, QNet, q_argmax_batch
 from train.policies import greedy_policy, random_policy
@@ -209,8 +209,13 @@ WEIGHT_SYNC_GAMES = 1000     # 多进程：每这么多局把权重广播给 wor
 
 
 def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
-                batch_games, out_dir, log):
-    """每 `eval_every` 局评测一次并（可能）存 `best.pt`。**两条训练路线共用这一份。**"""
+                batch_games, out_dir, log, snap_every=pool.SNAP_EVERY_GAMES,
+                pool_size=pool.POOL_SIZE):
+    """每 `eval_every` 局评测一次并（可能）存 `best.pt`。**两条训练路线共用这一份。**
+
+    顺带按 `snap_every` 存池子快照 —— **与「有没有刷新最好」无关**：
+    只存 `best.pt` 的话池子原料不够（144 万局只落几个点）。
+    """
     if games % eval_every < batch_games:
         wr_r = match(net_play(net), random_policy(random.Random(101)),
                      games=eval_games, seed=1001)
@@ -222,6 +227,13 @@ def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
             torch.save({"net": net.state_dict(), "games": games,
                         "winrate_random": wr_r, "winrate_greedy": wr_g},
                        os.path.join(out_dir, "best.pt"))
+    if snap_every and games and games % snap_every < batch_games:
+        p = pool.snapshot_path(out_dir, games)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        torch.save({"net": net.state_dict(), "games": games}, p)
+        gone = pool.prune_snapshots(out_dir, pool_size)
+        log(f"     >> 池子快照 {os.path.basename(p)}"
+            + (f"（挤掉 {len(gone)} 个）" if gone else ""))
     return best_greedy
 
 
@@ -268,7 +280,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           out_dir: str = None, log=print, opp_mix: float = 0.5,
           greedy_share: float = 0.8, batch_games: int = BATCH_GAMES,
           eps_games: int = EPS_GAMES, learn_all_seats: bool = False,
-          init: str = None):
+          init: str = None, snap_every: int = pool.SNAP_EVERY_GAMES,
+          pool_size: int = pool.POOL_SIZE):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -329,7 +342,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
 
         # 4) 每 N 局：存权重 + 评测（spec §5.3）—— 公共件，两条训练路线共用
         best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
-                                  eval_every, batch_games, out_dir, log)
+                                  eval_every, batch_games, out_dir, log,
+                                  snap_every=snap_every, pool_size=pool_size)
 
     return _finish(net, games, steps, t0, curve, best_greedy, eval_games,
                    out_dir, log)
@@ -341,6 +355,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    log=print, opp_mix: float = 0.5, greedy_share: float = 0.8,
                    batch_games: int = BATCH_GAMES, eps_games: int = EPS_GAMES,
                    learn_all_seats: bool = False, init: str = None,
+                   snap_every: int = pool.SNAP_EVERY_GAMES,
+                   pool_size: int = pool.POOL_SIZE,
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -436,7 +452,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                     q.put(("weights", (sd, eps_for(games, eps_games))))
                 last_sync = games
             best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
-                                      eval_every, batch_games, out_dir, log)
+                                      eval_every, batch_games, out_dir, log,
+                                      snap_every=snap_every, pool_size=pool_size)
     finally:
         for q in ctrls:                     # worker 不许变成孤儿（review focus 5）
             try:
@@ -478,6 +495,11 @@ def main(argv=None) -> int:
         # 两臂必须落在不同目录，否则后跑的会覆盖 best.pt / last.pt ——
         # 而面板按修改时间挑权重（net/advise.py::newest_weights），会**静默换源**
         kw["out_dir"] = argv[argv.index("--out-dir") + 1]
+    if "--snap-every" in argv:
+        # 1 小时的 A/B 默认只会长出 8 个成员；调小才有「有强度谱」的池子
+        kw["snap_every"] = int(argv[argv.index("--snap-every") + 1])
+    if "--pool-size" in argv:
+        kw["pool_size"] = int(argv[argv.index("--pool-size") + 1])
     workers = int(argv[argv.index("--workers") + 1]) if "--workers" in argv else 1
     if workers > 1:
         r = train_parallel(seconds=seconds, workers=workers, buffer_games=buf,
