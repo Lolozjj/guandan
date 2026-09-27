@@ -76,6 +76,33 @@ class GameRecord:
                           won=won)
 
 
+def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0) -> list:
+    """被保留的那些决策点的 DMC 标签 —— **现场与重放共用的唯一实现**。
+
+    `y_t = R − λ · B_t`，其中 `B_t` = **从第 t 步起、该步座位自己**用掉的炸弹数
+    （**含第 t 步本身** —— reward-to-go 的口径：逐步代价 `−λ·[a 是炸弹]` 求和，
+    标签 = 未来所有代价之和 + 终局回报）。
+
+    `seq` 必须是**一局全部步骤**：`B_t` 要沿着一局往后数，少一步就数错。
+    过滤（`learn`）**在函数里面做** —— 让两个调用方各写一份过滤，就是
+    「副本会漂」的入口（本仓库为此反复吃过亏）。
+
+    ⚠️ **只数该座位自己的炸弹**：奖励本来就是「出牌人视角」的零和量，
+    代价用同一视角才自洽。`is_bomb` 也把**同花顺**算作炸（掼蛋里它本来就是）。
+    """
+    if bomb_cost < 0:
+        raise ValueError(f"bomb_cost 不能为负：{bomb_cost}")
+    keep = set(learn) if learn else None
+    tail, suffix = {}, [0] * len(seq)
+    for i in range(len(seq) - 1, -1, -1):     # 倒着扫一遍就得到全部后缀计数
+        seat, m = seq[i]
+        tail[seat] = tail.get(seat, 0) + (1 if (m is not None and m.is_bomb) else 0)
+        suffix[i] = tail[seat]
+    return [rules.reward(ranks, seat) - bomb_cost * suffix[i]
+            for i, (seat, _m) in enumerate(seq)
+            if keep is None or seat in keep]
+
+
 def expand(rec: GameRecord):
     """把记录重放成 `(决策点, 终局 reward)`。
 
