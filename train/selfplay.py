@@ -84,7 +84,7 @@ def _fixed_pick(kind, pending, rng):
 
 
 def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
-                   greedy_share=0.8):
+                   greedy_share=0.8, learn_all_seats=False):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
@@ -95,6 +95,11 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     （贪心从不主动炸）。所以每局以 `opp_mix` 的概率把**一个队**换成固定策略
     （`greedy_share` 的比例用贪心、其余用随机），学习那一队照旧打网络。
     ⚠️ 固定对手的决策点**不进训练目标**（那不是网络选的，记进去等于拿它当老师）。
+    这件事靠 `learn` 这一个变量承载 —— 现场抓取与写进记录都用它，
+    所以不存在「只改了一半」的可能（`tests/test_expand_learn.py` 两条路都钉着）。
+
+    `learn_all_seats`：**A/B 的对照臂**。开了之后对手照旧换，但四家照旧都学 ——
+    也就是改动前的行为（连固定对手的着法也进训练目标）。量「修 `expand` 值多少」用。
     """
     envs, hands0, log, caps = [], [], [], []
     learn, fixed = [], []          # 每局：学习那一队的座位 / 固定对手（None = 纯自对弈）
@@ -113,6 +118,10 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
         else:
             fixed.append(None)
             learn.append(tuple(rules.SEATS))
+        if learn_all_seats:
+            # 对照臂：**一处改**，现场抓取（caps）与写进记录（GameRecord.learn）一起跟 ——
+            # 只改一处的话两臂差的就不止「expand 有没有过滤」这一个变量了
+            learn[-1] = tuple(rules.SEATS)
 
     alive = list(range(n_games))
     while alive:
@@ -155,7 +164,7 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     out = []
     for k in range(n_games):
         e = envs[k]
-        rec = replay.GameRecord.of(e, log[k], hands0[k])
+        rec = replay.GameRecord.of(e, log[k], hands0[k], learn=learn[k])
         if capture:
             ranks = e.ranks
             out.append((rec, caps[k],
@@ -244,7 +253,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           eval_games: int = EVAL_GAMES, eval_every: int = EVAL_EVERY_GAMES,
           out_dir: str = None, log=print, opp_mix: float = 0.5,
           greedy_share: float = 0.8, batch_games: int = BATCH_GAMES,
-          eps_games: int = EPS_GAMES):
+          eps_games: int = EPS_GAMES, learn_all_seats: bool = False):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -273,7 +282,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         fresh = {}
         for rec, pts, y in generate_batch(net, rng, eps, batch_games,
                                           opp_mix=opp_mix,
-                                          greedy_share=greedy_share):
+                                          greedy_share=greedy_share,
+                                          learn_all_seats=learn_all_seats):
             buf.add(rec)
             fresh[id(rec)] = (pts, y)
             games += 1
@@ -312,6 +322,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    eval_every: int = EVAL_EVERY_GAMES, out_dir: str = None,
                    log=print, opp_mix: float = 0.5, greedy_share: float = 0.8,
                    batch_games: int = BATCH_GAMES, eps_games: int = EPS_GAMES,
+                   learn_all_seats: bool = False,
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -339,7 +350,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                          args=(send_q, ctrls[k],
                                worker_mod.worker_cfg(seed + 1 + k, EPS_START,
                                                      opp_mix, greedy_share,
-                                                     batch_games)))
+                                                     batch_games,
+                                                     learn_all_seats=learn_all_seats)))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
@@ -435,6 +447,9 @@ def main(argv=None) -> int:
         kw["batch_games"] = int(argv[argv.index("--batch") + 1])
     if "--eps-games" in argv:
         kw["eps_games"] = int(argv[argv.index("--eps-games") + 1])
+    if "--learn-all-seats" in argv:
+        # A/B 的对照臂：恢复改动前的行为（固定对手的着法也进训练目标）
+        kw["learn_all_seats"] = True
     workers = int(argv[argv.index("--workers") + 1]) if "--workers" in argv else 1
     if workers > 1:
         r = train_parallel(seconds=seconds, workers=workers, buffer_games=buf,

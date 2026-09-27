@@ -26,11 +26,17 @@ def worker_device() -> str:
     return "cpu"
 
 
-def worker_batch(net, rng, eps, n_games, opp_mix=0.5, greedy_share=0.8):
-    """打一批局，只取紧凑记录（张量与奖励都由 learner 侧重放出来）。"""
+def worker_batch(net, rng, eps, n_games, opp_mix=0.5, greedy_share=0.8,
+                 learn_all_seats=False):
+    """打一批局，只取紧凑记录（张量与奖励都由 learner 侧重放出来）。
+
+    ⚠️ 新参数**必须带默认值** —— `tests/test_worker.py` 直接调这个函数，
+    它是「worker 的打法与进程内逐局一致」那条硬保证的载体，别删掉另写一份。
+    """
     return [rec for rec, _pts, _y in selfplay.generate_batch(
         net, rng, eps, n_games, capture=False,
-        opp_mix=opp_mix, greedy_share=greedy_share)]
+        opp_mix=opp_mix, greedy_share=greedy_share,
+        learn_all_seats=learn_all_seats)]
 
 
 def _drain_ctrl(ctrl_q, net):
@@ -61,13 +67,16 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
     eps = cfg["eps"]
     while True:
         recs = worker_batch(net, rng, eps, cfg["batch_games"],
-                            opp_mix=cfg["opp_mix"], greedy_share=cfg["greedy_share"])
+                            opp_mix=cfg["opp_mix"], greedy_share=cfg["greedy_share"],
+                            learn_all_seats=cfg.get("learn_all_seats", False))
         send_q.put(recs)                        # 队满则阻塞 = 天然背压（spec §6）
         got = _drain_ctrl(ctrl_q, net)
         if got is not None:
             eps = got
 
 
-def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games) -> dict:
+def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
+               learn_all_seats=False) -> dict:
     return {"seed": seed, "eps": eps, "opp_mix": opp_mix,
-            "greedy_share": greedy_share, "batch_games": batch_games}
+            "greedy_share": greedy_share, "batch_games": batch_games,
+            "learn_all_seats": learn_all_seats}

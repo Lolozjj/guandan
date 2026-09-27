@@ -38,14 +38,19 @@ class GameRecord:
 
     `actions` 是每一步在 `env.legal()` 候选里的**下标**（含「过」那条），
     不是牌张 —— 重放时会重新枚举，下标对得上就行。
+
+    `learn`：**哪几个座位是学习的**。`None` = 四家都学（纯自对弈 / 老记录）。
+    混入固定对手时，对手那一队不该进训练目标（记进去等于拿它当老师），
+    而重放侧**没有别的办法**知道这件事 —— 所以它必须跟记录一起走。
     """
     level: int
     first: int
     hands: tuple                    # 4 个 tuple（排序后的牌 ID）
     actions: tuple                  # 每一步选中的候选下标
+    learn: tuple = None             # 学习座位；None = 四家都学
 
     @staticmethod
-    def of(e: "env.GuandanEnv", actions, hands0) -> "GameRecord":
+    def of(e: "env.GuandanEnv", actions, hands0, learn=None) -> "GameRecord":
         """`hands0` 必须是**发牌时**的四家手牌。
 
         ⚠️ **不能在局末从 `e.hand.hands` 里取** —— 那时手里只剩「没出完的那几家
@@ -54,7 +59,8 @@ class GameRecord:
         """
         return GameRecord(level=e.hand.level, first=e.hand.steps[0].seat,
                           hands=tuple(tuple(sorted(h)) for h in hands0),
-                          actions=tuple(actions))
+                          actions=tuple(actions),
+                          learn=tuple(learn) if learn is not None else None)
 
 
 def expand(rec: GameRecord):
@@ -62,9 +68,14 @@ def expand(rec: GameRecord):
 
     决策点是 `(obs, acts, 选中下标, 出牌人, hist)` —— 与 `env.rollout` 同形状，
     训练循环因此**不需要区分**「刚打的」和「从 buffer 里取的」。
+
+    `rec.learn` 里的座位才产出决策点（`None` = 四家都产出，老行为）。
+    ⚠️ **局面必须每一步都往前走** —— 过滤只发生在 `points.append` 那一行。
+    提前 `continue` 会让重放错位（这是这个函数最容易被写错的地方）。
     """
     e = env.GuandanEnv(seed=0)
     e.reset(level=rec.level, hands=[set(h) for h in rec.hands], first=rec.first)
+    learn = set(rec.learn) if rec.learn else None
     points = []
     obs = e.observe()
     for i in rec.actions:
@@ -72,7 +83,8 @@ def expand(rec: GameRecord):
         seat = e.hand.turn
         # 历史必须**在这一步当时**取 —— 整局打完再取会把后面的牌塞进历史
         # （那是另一种泄漏：未来信息）。selfplay 那边也是这么取的。
-        points.append((obs, acts, i, seat, env.encode_history(e.hand, seat)))
+        if learn is None or seat in learn:
+            points.append((obs, acts, i, seat, env.encode_history(e.hand, seat)))
         obs, _r, _done, _info = e.step(i)
     ranks = e.ranks
     y = [rules.reward(ranks, seat) for (_o, _a, _i, seat, _h) in points]
