@@ -557,10 +557,14 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
         f"buffer={buffer_games:,} 局  评测每 {eval_every:,} 局  "
         f"ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
-        f"（其中贪心 {greedy_share:.0%}）"
-        + (f"  池子 {len(pool_sds)} 个种子成员（PFSP 开，"
-           f"池份额 {1 - pool_greedy_share:.0%}）" if pfsp
-           else "  **池子关（纯贪心）**")
+        # ⚠️ **两个份额要分开展示**：池子开着时，「其中贪心 80%」说的是**老二分**
+        # 那一路（跟池子无关），而池子的份额是 `pool_greedy_share`。
+        # 上一轮就是这一行把人骗过去的：日志写着「其中贪心 80%」，我读着它
+        # 写下了结论，却没看出池子其实只拿到 20%（全局 10%）。别再合并成一句。
+        + (f"（其中池成员 {1 - pool_greedy_share:.0%}、贪心 {pool_greedy_share:.0%}）"
+           f"  池子 {len(pool_sds)} 个种子成员" if pfsp
+           else f"（其中贪心 {greedy_share:.0%}、随机 {1 - greedy_share:.0%}）"
+                f"  **池子关**")
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
