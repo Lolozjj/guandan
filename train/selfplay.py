@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import glob
 import os
 import random
 import sys
@@ -232,8 +233,15 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     out = []
     for k in range(n_games):
         e = envs[k]
+        # 固定对手那一队的胜负 —— PFSP 的归因靠它。
+        # ⚠️ **不重放**：实测重放一局 18.3 ms，每秒几十局池对局就是几十个百分点的开销。
+        # （对照臂 `learn_all_seats` 下 learn 是四家，这里算出来的「我方」没有意义 ——
+        #   但对照臂没有池子，没人看这个字段。）
+        won = None
+        if fixed[k] is not None:
+            won = rules.winner_team(e.ranks) == rules.TEAM[learn[k][0]]
         rec = replay.GameRecord.of(e, log[k], hands0[k], learn=learn[k],
-                                   opp=fixed[k])
+                                   opp=fixed[k], won=won)
         if capture:
             ranks = e.ranks
             out.append((rec, caps[k],
@@ -328,6 +336,24 @@ def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log,
     return {"games": games, "curve": curve, "best_greedy": best_greedy,
             "wr_random": wr_r, "wr_greedy": (wr_g1 + wr_g2) / 2,
             "out_dir": out_dir, "elapsed": elapsed}
+
+
+def pool_report(wr, weights, log) -> bool:
+    """打印池子健康度表，返回**是否塌陷**（spec §1.4）。
+
+    塌了是「失败」，不是一行日志 —— 返回值就是那个「响」，调用方据此报告
+    （本仓库纪律：失败必须响）。
+    """
+    eff = pool.effective_members(weights)
+    log(f"  池子（有效成员数 {eff:.2f}，共 {len(weights)} 个）:")
+    for mid in sorted(weights):
+        log(f"    #{mid:<3d} 打了 {wr.games(mid):5d} 局  "
+            f"学习者胜率 {wr.rate(mid):5.1%}  采样权重 {weights[mid]:5.1%}")
+    if eff < pool.COLLAPSE_BELOW:
+        log(f"  ⚠️ **池子塌了**（有效成员数 {eff:.2f} < {pool.COLLAPSE_BELOW}）"
+            f"—— 对手退化成同一个模型，训练会绕圈")
+        return True
+    return False
 
 
 def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAMES,
@@ -436,6 +462,25 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     send_q = ctx.Queue(maxsize=max(2, workers * 2))   # 有界 = 背压（不堆内存）
     ctrls = [ctx.Queue() for _ in range(workers)]
+
+    # ---- 对手池（spec §3.1）：种子池 = 现有的 best.pt，开局整个广播一次（只发一次）
+    pool_sds, pool_order, next_mid = {}, [], 0
+    wr = pool.WinRates()
+    for p in sorted(glob.glob(os.path.join(RUNS_DIR, "*", "best.pt")),
+                    key=os.path.getmtime, reverse=True)[:5]:
+        try:
+            pool_sds[next_mid] = torch.load(p, map_location="cpu")["net"]
+        except Exception as exc:            # noqa: BLE001
+            # 读不出来**必须响** —— 静默少一个成员，A/B 的结果就没法解释
+            raise RuntimeError(
+                f"种子池成员读不出来：{p}（{type(exc).__name__}: {exc}）") from exc
+        pool_order.append(next_mid)
+        next_mid += 1
+
+    def current_pfsp():
+        """当前该按什么权重抽对手。**只在这里算** —— worker 不自己算（一处口径）。"""
+        return pool.pfsp_weights({i: wr.rate(i) for i in pool_sds},
+                                 {i: wr.games(i) for i in pool_sds})
     procs = [ctx.Process(target=worker_mod.run_worker, daemon=True,
                          args=(send_q, ctrls[k],
                                worker_mod.worker_cfg(seed + 1 + k, EPS_START,
@@ -448,7 +493,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
         f"buffer={buffer_games:,} 局  评测每 {eval_every:,} 局  "
         f"ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
-        f"（其中贪心 {greedy_share:.0%}）"
+        f"（其中贪心 {greedy_share:.0%}）  池子 {len(pool_sds)} 个种子成员"
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
@@ -464,7 +509,9 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             p.start()
         sd0 = {k: v.cpu() for k, v in net.state_dict().items()}
         for q in ctrls:                     # 开局先广播一次（worker 种子相同，但更稳）
-            q.put(("weights", (sd0, EPS_START)))
+            for mid in sorted(pool_sds):
+                q.put(("member", (mid, pool_sds[mid])))
+            q.put(("weights", (sd0, EPS_START, current_pfsp())))
         while time.perf_counter() - t0 < seconds:
             dead = [k for k, p in enumerate(procs) if not p.is_alive()]
             if dead:
@@ -483,6 +530,10 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             for rec in recs:
                 buf.add(rec)
                 games += 1
+                # PFSP 的归因：这一局打的是谁、谁赢了。**不重放** ——
+                # worker 顺手把胜负写在记录里了（实测重放一局 18.3 ms，太贵）
+                if rec.opp and rec.opp[0] == "member" and rec.won is not None:
+                    wr.record(rec.opp[1], rec.won)
             # 采样 + 训一步（与单进程那条路逐字相同）
             samples, targets = [], []
             for rec in buf.sample(batch_games, rng):
@@ -503,12 +554,27 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                     f"buffer {len(buf):,}")
             if games - last_sync >= WEIGHT_SYNC_GAMES:
                 sd = {k: v.cpu() for k, v in net.state_dict().items()}
+                w = current_pfsp()
                 for q in ctrls:
-                    q.put(("weights", (sd, eps_for(games, eps_games))))
+                    q.put(("weights", (sd, eps_for(games, eps_games), w)))
                 last_sync = games
             best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
                                       eval_every, batch_games, out_dir, log,
                                       snap_every=snap_every, pool_size=pool_size)
+            # 新快照进池 + **增量**广播（只发这一个成员，7.8MB，每 snap_every 局一次）。
+            # 用「文件在不在」判、不重算取模 —— 免得与 _maybe_eval 里的条件漂开。
+            if os.path.exists(pool.snapshot_path(out_dir, games)):
+                sd = {k: v.cpu() for k, v in net.state_dict().items()}
+                pool_sds[next_mid] = sd
+                pool_order.append(next_mid)
+                for q in ctrls:
+                    q.put(("member", (next_mid, sd)))
+                log(f"     >> 池子 +1 个成员（#{next_mid}）")
+                next_mid += 1
+                while len(pool_order) > pool_size:
+                    # 挤掉最老的；worker 侧靠下一次 pfsp 广播里少了这个 id 自己删
+                    pool_sds.pop(pool_order.pop(0), None)
+                pool_report(wr, current_pfsp(), log)
     finally:
         for q in ctrls:                     # worker 不许变成孤儿（review focus 5）
             try:
@@ -519,9 +585,11 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             p.join(timeout=10)
             if p.is_alive():
                 p.terminate()
+    collapsed = pool_report(wr, current_pfsp(), log)
     r = _finish(net, games, steps, t0, curve, best_greedy, eval_games,
                 out_dir, log)
     r["qmax"] = qmax
+    r["pool_collapsed"] = collapsed
     return r
 
 

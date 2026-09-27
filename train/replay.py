@@ -53,9 +53,15 @@ class GameRecord:
     #: 对 `("greedy", 队号)` / `("random", 队号)` 是**队号** —— 判类型先看 `[0]`。
     #: PFSP 靠它归因胜负（胜者不用记：`expand` 的 `y` 符号就是哪队赢）。
     opp: tuple = None
+    #: **固定对手那一队输了没有**（`None` = 纯自对弈，无从谈起）。
+    #: PFSP 靠它记分。⚠️ **故意存下来，不用 `expand` 反推**：实测重放一局 **18.3 ms**
+    #: （2026-09-27），而学习进程每秒要处理几十局池对局 —— 光为了读 `y` 的符号就多花
+    #: 几十个百分点。一个 bool 换掉这件事，值。
+    won: bool = None
 
     @staticmethod
-    def of(e: "env.GuandanEnv", actions, hands0, learn=None, opp=None) -> "GameRecord":
+    def of(e: "env.GuandanEnv", actions, hands0, learn=None, opp=None,
+           won=None) -> "GameRecord":
         """`hands0` 必须是**发牌时**的四家手牌。
 
         ⚠️ **不能在局末从 `e.hand.hands` 里取** —— 那时手里只剩「没出完的那几家
@@ -66,7 +72,8 @@ class GameRecord:
                           hands=tuple(tuple(sorted(h)) for h in hands0),
                           actions=tuple(actions),
                           learn=tuple(learn) if learn is not None else None,
-                          opp=tuple(opp) if opp is not None else None)
+                          opp=tuple(opp) if opp is not None else None,
+                          won=won)
 
 
 def expand(rec: GameRecord):

@@ -623,6 +623,8 @@ def effective_members(weights: dict) -> float:
     opp: tuple = None        # 这一局的固定对手：None = 纯自对弈
                              # ("greedy", 队号) / ("random", 队号) / ("member", mid)
                              # ⚠️ 第二个元素对 member 是**成员 id**、其余是**队号**
+                             # ⚠️ 还要加 `won`（固定对手那一队输了没有）—— 见 §3.2 的实测：
+                             #    重放一局 18.3 ms，为了读 y 的符号太贵，存一个 bool
 ```
 
 `of()` 加 `opp=None` 形参并透传。
