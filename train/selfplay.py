@@ -356,6 +356,29 @@ def pool_report(wr, weights, log) -> bool:
     return False
 
 
+def load_seed_pool(paths, pool_size: int = pool.POOL_SIZE):
+    """磁盘上的一批 `best.pt` -> `(pool_sds, pool_order)`。
+
+    **按 `pool_size` 截断**（取修改时间最新的那几个）。⚠️ 不截断的后果：
+    `--pool-size` 就只约束运行时新增的成员，种子那 5 个一路全留 ——
+    想按文档（现用方案 §五「池子留最近 `--pool-size` 个」）调小内存的人调不动。
+
+    读不出来**必须炸** —— 静默少一个成员，A/B 的结果就没法解释。
+    """
+    sds, order = {}, []
+    if pool_size <= 0:
+        return sds, order
+    newest = sorted(paths, key=os.path.getmtime, reverse=True)[:pool_size]
+    for mid, p in enumerate(newest):
+        try:
+            sds[mid] = torch.load(p, map_location="cpu")["net"]
+        except Exception as exc:            # noqa: BLE001
+            raise RuntimeError(
+                f"种子池成员读不出来：{p}（{type(exc).__name__}: {exc}）") from exc
+        order.append(mid)
+    return sds, order
+
+
 def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAMES,
           eval_games: int = EVAL_GAMES, eval_every: int = EVAL_EVERY_GAMES,
           out_dir: str = None, log=print, opp_mix: float = 0.5,
@@ -438,6 +461,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    learn_all_seats: bool = False, init: str = None,
                    snap_every: int = pool.SNAP_EVERY_GAMES,
                    pool_size: int = pool.POOL_SIZE, pfsp: bool = False,
+                   pool_greedy_share: float = pool.GREEDY_SHARE,
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -469,16 +493,17 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     pool_sds, pool_order, next_mid = {}, [], 0
     wr = pool.WinRates()
     if pfsp:
-        for p in sorted(glob.glob(os.path.join(RUNS_DIR, "*", "best.pt")),
-                        key=os.path.getmtime, reverse=True)[:5]:
-            try:
-                pool_sds[next_mid] = torch.load(p, map_location="cpu")["net"]
-            except Exception as exc:        # noqa: BLE001
-                # 读不出来**必须响** —— 静默少一个成员，A/B 的结果就没法解释
-                raise RuntimeError(
-                    f"种子池成员读不出来：{p}（{type(exc).__name__}: {exc}）") from exc
-            pool_order.append(next_mid)
-            next_mid += 1
+        seeds = glob.glob(os.path.join(RUNS_DIR, "*", "best.pt"))
+        pool_sds, pool_order = load_seed_pool(seeds, pool_size)
+        if not pool_sds:
+            # ⚠️ 空种子池**必须炸**：`pick_opponent` 对空池返回 ("greedy",)，
+            # 于是 `--pfsp` 会**静默**退化成一个纯贪心臂（连老二分那 20% 随机都没了），
+            # 而唯一那句话还把「空」误报成「塌陷」—— 一整夜的跑其实是个标错的对照臂。
+            raise RuntimeError(
+                f"种子池是空的（{os.path.join(RUNS_DIR, '*', 'best.pt')} 一个都没有）"
+                f"—— `--pfsp` 会静默退化成纯贪心臂。先跑一次不带 --pfsp 的训练，"
+                f"或把 --pool-size 调大（当前 {pool_size}）。")
+        next_mid = max(pool_order) + 1
 
     def current_pfsp():
         """当前该按什么权重抽对手。**只在这里算** —— worker 不自己算（一处口径）。"""
@@ -492,14 +517,17 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                                      opp_mix, greedy_share,
                                                      batch_games,
                                                      learn_all_seats=learn_all_seats,
-                                                     init=init, use_pool=pfsp)))
+                                                     init=init, use_pool=pfsp,
+                                                     pool_greedy_share=pool_greedy_share)))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
         f"buffer={buffer_games:,} 局  评测每 {eval_every:,} 局  "
         f"ε 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
         f"（其中贪心 {greedy_share:.0%}）"
-        + (f"  池子 {len(pool_sds)} 个种子成员（PFSP 开）" if pfsp else "  **池子关（纯贪心）**")
+        + (f"  池子 {len(pool_sds)} 个种子成员（PFSP 开，"
+           f"池份额 {1 - pool_greedy_share:.0%}）" if pfsp
+           else "  **池子关（纯贪心）**")
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
@@ -631,6 +659,10 @@ def main(argv=None) -> int:
         kw["pool_size"] = int(argv[argv.index("--pool-size") + 1])
     if "--pfsp" in argv:
         kw["pfsp"] = True
+    if "--pool-greedy-share" in argv:
+        # ⚠️ **池子自己的**贪心份额，与老二分的 `greedy_share` 是两回事。
+        # 混用会让池子只拿到设计的 1/4 剂量（2026-09-27 评审抓到过）。
+        kw["pool_greedy_share"] = float(argv[argv.index("--pool-greedy-share") + 1])
     workers = int(argv[argv.index("--workers") + 1]) if "--workers" in argv else 1
     if workers > 1:
         r = train_parallel(seconds=seconds, workers=workers, buffer_games=buf,
@@ -642,6 +674,12 @@ def main(argv=None) -> int:
     ok = r["wr_greedy"] >= 0.55
     print("判据（spec §7 分水岭：明确打得过贪心）：" + (
         "**过了** ✓" if ok else f"**没过** ✗（vs 贪心 {r['wr_greedy']:.1%}，要 ≥55%）"))
+    if r.get("pool_collapsed"):
+        # 池子塌了 = 失败，不是一行日志（spec §1.4 / 本仓库「失败必须响」）。
+        # 原来只写进返回值，退出码照样 0、照样印「判据过了」——
+        # 无人值守的跑会在一个退化成单一对手的池子上烧几个小时。
+        print("⚠️ **池子塌了** —— 这一轮不算数（对手退化成同一个模型，训练会绕圈）")
+        ok = False
     return 0 if ok else 1
 
 

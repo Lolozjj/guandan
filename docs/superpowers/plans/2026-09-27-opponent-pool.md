@@ -574,17 +574,23 @@ def pfsp_weights(rates: dict, games: dict = None, uniform: float = PFSP_UNIFORM,
     if k == 0:
         return {}
     games = games or {}
-    raw = {}
-    for i in ids:
-        # 预热成员**把 p 当中性的 0.5** —— 不能给一个「特殊的大常数」：
-        # p(1-p) 最大只有 0.25，给 1.0 就是让它比健康成员重 4 倍（测试抓到过这个）
-        p = 0.5 if games.get(i, 0) < min_games else rates[i]
-        raw[i] = p * (1.0 - p)
+    warm = [i for i in ids if games.get(i, 0) < min_games]
+    hot = [i for i in ids if games.get(i, 0) >= min_games]
+    out = {i: 1.0 / k for i in warm}       # 预热：**均匀那一份**
+    # ⚠️ 预热成员**不能**拿「PFSP 的最大项」（把 p 当 0.5 → 0.25）——
+    # 那样一个 0 局的新成员会比所有健康成员都重（实测它吃过 38.4% 的采样权重）。
+    # 也不能拿量纲不同的常数（1.0 比 p(1-p) 的最大值大 4 倍）。
+    # 这条改过两次，最终落到「均匀那一份」。
+    if not hot:
+        return out
+    raw = {i: rates[i] * (1.0 - rates[i]) for i in hot}
     tot = sum(raw.values())
-    if tot <= 0:                             # 全塌成 0（理论上不会，防一手）
-        return {i: 1.0 / k for i in ids}
-    # 均匀下限按成员数摊，再与 PFSP 项按 (1-uniform) 混合
-    return {i: (1.0 - uniform) * raw[i] / tot + uniform / k for i in ids}
+    base = ({i: raw[i] / tot for i in hot} if tot > 0
+            else {i: 1.0 / len(hot) for i in hot})
+    hot_share = 1.0 - len(warm) / k        # 预热吃掉的那部分不再参与分配
+    for i in hot:
+        out[i] = (1.0 - uniform) * base[i] * hot_share + uniform / k
+    return out
 
 
 def pick_opponent(rng, member_ids, weights: dict, greedy_share: float = GREEDY_SHARE):

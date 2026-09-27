@@ -101,8 +101,11 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
     def pick_fixed(r):
         if cfg.get("pick_all") == "member":     # 只给测试用
             return ("member", cfg["member_id"])
+        # ⚠️ 用**池子自己的**贪心份额，不是老二分那个 `greedy_share`（0.8）。
+        # 混用过的后果：池子在混合局里只占 20%（全局 10%），而设计是 80%（全局 40%）——
+        # 整轮 A/B 只给了 1/4 剂量，结论也就无从谈起（2026-09-27 评审抓到）。
         return pool.pick_opponent(r, list(members), state["pfsp"],
-                                  cfg["greedy_share"])
+                                  cfg.get("pool_greedy_share", pool.GREEDY_SHARE))
 
     # ⚠️ 池子关的时候要传 **`None` 这个参数**（让 generate_batch 走老的 greedy_share 二分），
     # 而不是让 `pick_fixed` 返回 None —— 函数照旧会被调用，`kind[0]` 会炸。
@@ -122,11 +125,16 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
 
 def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
                learn_all_seats=False, init=None, members=None,
-               pick_all=None, member_id=None, use_pool=False) -> dict:
+               pick_all=None, member_id=None, use_pool=False,
+               pool_greedy_share=pool.GREEDY_SHARE) -> dict:
     """`members`：`{mid: state_dict}` 的**初始**池。
 
     `use_pool=False` 时**不抽池成员**，走老的 `greedy_share` 二分 ——
     A/B 的对照臂就靠它（两臂只能差「有没有池子」这一个变量）。
+
+    ⚠️ **`greedy_share` 与 `pool_greedy_share` 是两个东西**：
+    前者是老二分的（80% 贪心 / 20% 随机），后者是池子的（20% 贪心 / 80% 池成员）。
+    混用会让池子只拿到设计的 1/4 剂量。
 
     `pick_all` / `member_id` **只给测试用**：强制所有混合局都用 `member_id` 当对手
     （生产上对手由 learner 侧的 PFSP 权重决定，worker 按 `pfsp` 抽）。
@@ -135,4 +143,5 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
             "greedy_share": greedy_share, "batch_games": batch_games,
             "learn_all_seats": learn_all_seats, "init": init,
             "members": dict(members or {}),
-            "pick_all": pick_all, "member_id": member_id, "use_pool": use_pool}
+            "pick_all": pick_all, "member_id": member_id, "use_pool": use_pool,
+            "pool_greedy_share": pool_greedy_share}

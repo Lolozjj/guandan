@@ -82,25 +82,30 @@ def pfsp_weights(rates: dict, games: dict = None, uniform: float = PFSP_UNIFORM,
                  min_games: int = PFSP_MIN_GAMES) -> dict:
     """`{mid: p}` -> `{mid: 采样权重}`（已归一化，和恒为 1）。
 
-    局数 < `min_games` 的成员，**把它的 `p` 当成中性的 0.5**（它的胜率还是噪声）。
-
-    ⚠️ **不能给预热成员一个「特殊的大常数」**：`p(1−p)` 的最大值只有 **0.25**，
-    给 `1.0` 就等于让它比健康成员重 4 倍 —— 池子会一直扑向没测过的成员。
-    中性的 0.5 落在 PFSP 量程顶端，语义也对：「不知道，就先当它可能是最合适的那个」。
+    预热成员（局数 < `min_games`）拿**均匀那一份** `1/K`，不参与 PFSP 的分配。
+    ⚠️ **不能给它「PFSP 的最大项」**（也就是把 p 当 0.5）：`p(1−p)` 在 0.5 取最大，
+    那样没测过的成员会比健康成员重 —— 实测一个 0 局的新成员吃掉了 **38.4%**
+    的采样权重（`runs/ab/B_pool.log`），池子会一直扑向刚加进来的那个。
+    剩下的 `1 − 预热份额` 由预热完的成员按 `p(1−p)` 分，再混均匀下限。
     """
     ids = sorted(rates)
     k = len(ids)
     if k == 0:
         return {}
     games = games or {}
-    raw = {}
-    for i in ids:
-        p = 0.5 if games.get(i, 0) < min_games else rates[i]
-        raw[i] = p * (1.0 - p)
+    warm = [i for i in ids if games.get(i, 0) < min_games]
+    hot = [i for i in ids if games.get(i, 0) >= min_games]
+    out = {i: 1.0 / k for i in warm}         # 预热：均匀那一份
+    if not hot:
+        return out
+    raw = {i: rates[i] * (1.0 - rates[i]) for i in hot}
     tot = sum(raw.values())
-    if tot <= 0:                             # 全塌成 0（理论上不会，防一手）
-        return {i: 1.0 / k for i in ids}
-    return {i: (1.0 - uniform) * raw[i] / tot + uniform / k for i in ids}
+    base = ({i: raw[i] / tot for i in hot} if tot > 0
+            else {i: 1.0 / len(hot) for i in hot})
+    hot_share = 1.0 - len(warm) / k          # 预热吃掉的那部分不再参与分配
+    for i in hot:
+        out[i] = (1.0 - uniform) * base[i] * hot_share + uniform / k
+    return out
 
 
 def pick_opponent(rng, member_ids, weights: dict,
