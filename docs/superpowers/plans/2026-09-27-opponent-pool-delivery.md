@@ -233,8 +233,12 @@ A、C 各在 ~2.1 万局死于 `numpy ArrayMemoryError`，worker 挂掉，
   `plan_step` 永不派发到成员 → PFSP 表填的是成员没打过的局的胜率）。
 - **M7** `train_parallel` 的池子记账（`next_mid` / FIFO 剪枝 / 快照触发广播）**没有测试**；
   「无开关时 rng 流与老行为一致」也没人钉。
-- **M8** 台账表的来源脚本 `ab_compare.py` 在 `.gitignore` 里（`.superpowers/`），
-  清理后数字不可复现。
+- **M8** ~~台账表的来源脚本在 `.gitignore` 里~~ ✅ **已修**：搬到 `tools/ab_compare.py`
+  （用法 `python -m tools.ab_compare <臂目录>...`），数字现在可复现。
+  原话留在这里：该脚本原在 `.superpowers/`（gitignore 的临时目录），
+  一清理台账里的数字就不可复现；它的注释还把 0033 写成「87.8%」而 spec §2 写的是
+  「91.0%」—— **两个数口径不同**（前者是我在 400 局同种子上量的，后者是它自报的），
+  搬进 `tools/` 时已把口径写进注释。
 - **M9** HANDOFF 与现用方案推荐的训练命令**没带 `--out-dir`** —— 照它跑，
   新 run 的 `best.pt` 会在几分钟内被面板当作最新权重挑走（静默换源）。
 
