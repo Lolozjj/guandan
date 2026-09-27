@@ -87,7 +87,19 @@ def bomb_waste(policy, games: int = 40, seed: int = 0, opponent=None):
     这个毛病（88 个级别正确的决策点里 13 次），根因是**只跟自己打**：
     自对弈里对手也爱炸，「不炸就被炸」成了均衡，于是浪费从来没被罚过。
     """
-    waste = chance = 0
+    return _bomb_stats(policy, games, seed, opponent)[:2]
+
+
+def _bomb_stats(policy, games: int = 40, seed: int = 0, opponent=None):
+    """跑 N 局，**一次**量出四样：`(浪费数, 能压的普通牌机会数, 用炸手数, 局数)`。
+
+    `bomb_waste` 取前两个、`bomb_rate` 取后两个 —— **一次走局、两个视图**。
+    两处各写一份走局就是「副本会漂」（本仓库为此反复吃过亏）。
+
+    `opponent` 的座位轮换与 `bomb_waste` 的老口径一致（逐局换边）；
+    `mine` 为真时才计数 —— 对手的炸弹不算在策略头上。
+    """
+    waste = chance = bombs = 0
     rng = random.Random(seed)
     for game in range(games):
         e = env.GuandanEnv(seed=rng.randrange(1 << 30))
@@ -100,15 +112,28 @@ def bomb_waste(policy, games: int = 40, seed: int = 0, opponent=None):
             pol = policy if mine else opponent
             i = pol(obs, acts, hist)
             m = acts[i]
-            if mine and obs.table:
-                # `acts` 已经按 `beats` 过滤过，所以「非炸弹候选」就是能压的普通牌
-                plain = [x for x in acts if x is not None and not x.is_bomb]
-                if plain:
-                    chance += 1
-                    if m is not None and m.is_bomb:
-                        waste += 1
+            if mine:
+                if m is not None and m.is_bomb:
+                    bombs += 1
+                if obs.table:
+                    # `acts` 已经按 `beats` 过滤过，所以「非炸弹候选」就是能压的普通牌
+                    plain = [x for x in acts if x is not None and not x.is_bomb]
+                    if plain:
+                        chance += 1
+                        if m is not None and m.is_bomb:
+                            waste += 1
             e.step(i)
-    return waste, chance
+    return waste, chance, bombs, games
+
+
+def bomb_rate(policy, games: int = 40, seed: int = 0, opponent=None):
+    """**用炸率**：策略主动炸了多少手。返回 `(炸的手数, 局数)`。
+
+    ⚠️ 为什么必须和 `bomb_waste` 一起看：挂了炸弹代价最典型的失败**不是没效果，
+    是「从此一刀切不炸」** —— 那不比乱炸好，而且用户看面板会觉得建议变蠢。
+    `bomb_waste` 只回答「有得选的时候选错了吗」，回答不了「还炸不炸」。
+    """
+    return _bomb_stats(policy, games, seed, opponent)[2:]
 
 
 def win_rate_vs(policy, opponent, games: int = 200, seed: int = 0,
