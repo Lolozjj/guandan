@@ -177,7 +177,8 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     out = []
     for k in range(n_games):
         e = envs[k]
-        rec = replay.GameRecord.of(e, log[k], hands0[k], learn=learn[k])
+        rec = replay.GameRecord.of(e, log[k], hands0[k], learn=learn[k],
+                                   opp=fixed[k])
         if capture:
             ranks = e.ranks
             out.append((rec, caps[k],

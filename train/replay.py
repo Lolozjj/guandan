@@ -48,9 +48,14 @@ class GameRecord:
     hands: tuple                    # 4 个 tuple（排序后的牌 ID）
     actions: tuple                  # 每一步选中的候选下标
     learn: tuple = None             # 学习座位；None = 四家都学
+    #: 这一局的固定对手：`None` = 纯自对弈。
+    #: ⚠️ **第二个元素口径不统一**：对 `("member", mid)` 是**成员 id**，
+    #: 对 `("greedy", 队号)` / `("random", 队号)` 是**队号** —— 判类型先看 `[0]`。
+    #: PFSP 靠它归因胜负（胜者不用记：`expand` 的 `y` 符号就是哪队赢）。
+    opp: tuple = None
 
     @staticmethod
-    def of(e: "env.GuandanEnv", actions, hands0, learn=None) -> "GameRecord":
+    def of(e: "env.GuandanEnv", actions, hands0, learn=None, opp=None) -> "GameRecord":
         """`hands0` 必须是**发牌时**的四家手牌。
 
         ⚠️ **不能在局末从 `e.hand.hands` 里取** —— 那时手里只剩「没出完的那几家
@@ -60,7 +65,8 @@ class GameRecord:
         return GameRecord(level=e.hand.level, first=e.hand.steps[0].seat,
                           hands=tuple(tuple(sorted(h)) for h in hands0),
                           actions=tuple(actions),
-                          learn=tuple(learn) if learn is not None else None)
+                          learn=tuple(learn) if learn is not None else None,
+                          opp=tuple(opp) if opp is not None else None)
 
 
 def expand(rec: GameRecord):

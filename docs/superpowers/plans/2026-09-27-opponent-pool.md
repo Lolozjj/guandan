@@ -576,11 +576,10 @@ def pfsp_weights(rates: dict, games: dict = None, uniform: float = PFSP_UNIFORM,
     games = games or {}
     raw = {}
     for i in ids:
-        if games.get(i, 0) < min_games:
-            raw[i] = 1.0                     # 预热：当均匀的一份
-        else:
-            p = rates[i]
-            raw[i] = p * (1.0 - p)
+        # 预热成员**把 p 当中性的 0.5** —— 不能给一个「特殊的大常数」：
+        # p(1-p) 最大只有 0.25，给 1.0 就是让它比健康成员重 4 倍（测试抓到过这个）
+        p = 0.5 if games.get(i, 0) < min_games else rates[i]
+        raw[i] = p * (1.0 - p)
     tot = sum(raw.values())
     if tot <= 0:                             # 全塌成 0（理论上不会，防一手）
         return {i: 1.0 / k for i in ids}
