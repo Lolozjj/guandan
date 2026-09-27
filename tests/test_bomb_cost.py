@@ -104,3 +104,40 @@ def test_play_capturing_also_uses_the_single_label_source():
     _pts2, y_expand = replay.expand(rec, bomb_cost=0.2)
     assert y == y_expand, "第三个产地与重放的标签不一致"
     assert all(isinstance(v, float) for v in y)
+
+
+def test_lambda_zero_generates_the_same_games_bit_for_bit():
+    """`λ=0` 时生成的局必须与**不传 λ** 逐局相等（同种子）。
+
+    「默认行为不变」要用**可测**的口径说 —— 不是「差不多」，是逐局相等。
+    """
+    import random
+
+    import torch
+
+    from train import selfplay
+    from train.net import QNet
+
+    torch.manual_seed(0)
+    net = QNet().eval()          # ⚠️ **同一个**网络：每次新建会取到不同的随机初始化
+    a = selfplay.generate_batch(net, random.Random(0), eps=0.0, n_games=4,
+                                capture=False, opp_mix=0.5)
+    b = selfplay.generate_batch(net, random.Random(0), eps=0.0, n_games=4,
+                                capture=False, opp_mix=0.5, bomb_cost=0.0)
+    keys = [(r.level, r.first, r.hands, r.actions) for r, _p, _y in a]
+    assert keys == [(r.level, r.first, r.hands, r.actions) for r, _p, _y in b]
+
+
+def test_bomb_cost_reaches_both_training_routes(tmp_path):
+    """λ 要接得到**两条**路线 —— 含 worker。
+
+    ⚠️ 池子那一轮的同款坑：开关只接了单进程那条路，`--workers 2` 时**完全不生效**，
+    而 A/B 正好是用 `--workers 2` 跑的。
+    """
+    from train import selfplay
+    from train.worker import worker_cfg
+
+    assert worker_cfg(0, 0.0, 0.5, 0.8, 2)["bomb_cost"] == 0.0
+    # 单进程那条路要能收下这个形参（跑 0 秒，不真训）
+    selfplay.train(seconds=0.0, out_dir=str(tmp_path / "o"), log=lambda *a: None,
+                   eval_games=1, eval_every=10 ** 9, batch_games=2, bomb_cost=0.2)

@@ -148,7 +148,7 @@ def plan_step(learn_seats, turn, fixed) -> tuple:
 
 def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                    greedy_share=0.8, learn_all_seats=False, members=None,
-                   pick_fixed=None):
+                   pick_fixed=None, bomb_cost: float = 0.0):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
@@ -170,7 +170,7 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     对手是谁，由调用方给（PFSP 在 learner 侧算）。不给就沿用老的 `greedy_share` 二分。
     **哪一队当固定对手统一在这里抽**（池成员也一样）—— `learn` 由它推出来。
     """
-    envs, hands0, log, caps = [], [], [], []
+    envs, hands0, log, caps, seq = [], [], [], [], []
     learn, fixed = [], []          # 每局：学习那一队的座位 / 固定对手（None = 纯自对弈）
     members = members if members is not None else {}
     for _ in range(n_games):
@@ -180,6 +180,7 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
         hands0.append([set(e.hand.hands[s]) for s in rules.SEATS])   # 发牌快照
         log.append([])
         caps.append([])
+        seq.append([])          # 每步的 (座位, Meld)：标签的唯一产地 `mc_targets` 要它
         if rng.random() < opp_mix:
             opp = rng.randrange(2)      # 哪一队当固定对手 —— **统一在这里抽**（池成员也一样）
             if pick_fixed is not None:
@@ -251,6 +252,8 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
         for k, (obs, acts, hist), i in zip(alive, pending, picks):
             e = envs[k]
             log[k].append(i)
+            # ⚠️ 座位要取**动手之前**的（`step` 之后就换人了）
+            seq[k].append((e.hand.turn, acts[i]))
             if capture and e.hand.turn in learn[k]:
                 # 固定对手的着法**不进训练目标**（不是网络选的）
                 caps[k].append((obs, acts, i, e.hand.turn, hist))
@@ -272,9 +275,11 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
         rec = replay.GameRecord.of(e, log[k], hands0[k], learn=learn[k],
                                    opp=fixed[k], won=won)
         if capture:
-            ranks = e.ranks
-            out.append((rec, caps[k],
-                        [rules.reward(ranks, s) for (_o, _a, _i, s, _h) in caps[k]]))
+            labels = replay.mc_targets(seq[k], e.ranks, learn=learn[k],
+                                       bomb_cost=bomb_cost)
+            assert len(labels) == len(caps[k]), (
+                f"标签条数 {len(labels)} 与决策点数 {len(caps[k])} 对不上")
+            out.append((rec, caps[k], labels))
         else:
             out.append((rec, [], []))
     return out
@@ -414,7 +419,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           greedy_share: float = 0.8, batch_games: int = BATCH_GAMES,
           eps_games: int = EPS_GAMES, learn_all_seats: bool = False,
           init: str = None, snap_every: int = pool.SNAP_EVERY_GAMES,
-          pool_size: int = pool.POOL_SIZE, eps_start: float = None):
+          pool_size: int = pool.POOL_SIZE, eps_start: float = None,
+          bomb_cost: float = 0.0):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -433,6 +439,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"评测每 {eval_every:,} 局  ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  "
         f"对手混合 {opp_mix:.0%}"
         f"（其中贪心 {greedy_share:.0%}）"
+        + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
@@ -450,7 +457,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         for rec, pts, y in generate_batch(net, rng, eps, batch_games,
                                           opp_mix=opp_mix,
                                           greedy_share=greedy_share,
-                                          learn_all_seats=learn_all_seats):
+                                          learn_all_seats=learn_all_seats,
+                                          bomb_cost=bomb_cost):
             buf.add(rec)
             fresh[id(rec)] = (pts, y)
             games += 1
@@ -494,7 +502,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    snap_every: int = pool.SNAP_EVERY_GAMES,
                    pool_size: int = pool.POOL_SIZE, pfsp: bool = False,
                    pool_greedy_share: float = pool.GREEDY_SHARE,
-                   eps_start: float = None, _kill_worker_after: float = None):
+                   eps_start: float = None, bomb_cost: float = 0.0,
+                   _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
     设计见 `docs/superpowers/specs/2026-09-26-multiprocess-selfplay-design.md`。
@@ -551,7 +560,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                                      batch_games,
                                                      learn_all_seats=learn_all_seats,
                                                      init=init, use_pool=pfsp,
-                                                     pool_greedy_share=pool_greedy_share)))
+                                                     pool_greedy_share=pool_greedy_share,
+                                                     bomb_cost=bomb_cost)))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
@@ -565,6 +575,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
            f"  池子 {len(pool_sds)} 个种子成员" if pfsp
            else f"（其中贪心 {greedy_share:.0%}、随机 {1 - greedy_share:.0%}）"
                 f"  **池子关**")
+        + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
@@ -680,6 +691,10 @@ def main(argv=None) -> int:
         kw["batch_games"] = int(argv[argv.index("--batch") + 1])
     if "--eps-games" in argv:
         kw["eps_games"] = int(argv[argv.index("--eps-games") + 1])
+    if "--bomb-cost" in argv:
+        # λ：每用一手炸弹，从**那一步起**的标签就少这么多（spec §3.3）。
+        # 默认 0 = 老行为；A/B 的处理臂用 0.2。
+        kw["bomb_cost"] = float(argv[argv.index("--bomb-cost") + 1])
     if "--eps-start" in argv:
         # ε 的**起点**。默认：热启动 -> 0.3（EPS_START_WARM），否则 1.0。
         # 想强制一个值（比如确认「起点低到底有多重要」）就传它。
