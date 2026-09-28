@@ -285,6 +285,53 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     return out
 
 
+def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0):
+    """从 buffer 采一批、重放成张量原料。返回 `(samples, y_mc, boot)`，**等长同序**。
+
+    `fresh` 是单进程那条路的「刚打完的这一批」快捷缓存（省一次重放，约 18ms/局）。
+    ⚠️ **要自举时它必须让路**（`n_step > 0`）—— 缓存里没有 `boot`，
+    用它就等于让这一部分样本悄悄退回纯 MC，而 loss 曲线上一概看不出来。
+    （多进程那条路本来就没有这个缓存，不受影响。）
+
+    ⚠️ 长度必须对齐：`samples` / `y_mc` / `boot` 三者错开一格就是
+    「拿别人的未来当自己的标签」，而 `blend` 只能挡住后两者的错位。
+    """
+    if n_step:
+        fresh = None
+    samples, y_mc, boot = [], [], []
+    for rec in buf.sample(batch_games, rng):
+        got = fresh.get(id(rec)) if fresh else None
+        if got is None:
+            pts, y, b = replay.expand(rec, bomb_cost=bomb_cost, n=n_step)
+        else:
+            pts, y = got
+            b = []
+        samples += pts
+        y_mc += y
+        boot += b
+    return samples, y_mc, boot
+
+
+def _learn_step(net, buf, rng, opt, *, batch_games, bomb_cost, fresh=None):
+    """从 buffer 采一批 → 重放 → 拼张量 → 一步 MSE。**两条训练路线共用这一份。**
+
+    ⚠️ **这一步只做重构**：目标仍然逐点等于 `y_mc`（`n_step=0`，不算自举、
+    不建目标网络）。自举在 Task 5 接上 —— 那时签名会变（多 `net_tgt`/`games`/
+    `mc_mix`/`n_step`），`_targets` 也多出来一层。
+    **故意不在这里接受 `mc_mix`**：接受了却算不出自举，就是一个「静默地按 β=1
+    走」的半吊子状态 —— 那正是本仓库最恨的那种错。
+    """
+    samples, y_mc, _boot = build_samples(buf, rng, batch_games, fresh=fresh,
+                                         bomb_cost=bomb_cost, n_step=0)
+    st, ac, hi = _tensors(samples)
+    dev = next(net.parameters()).device
+    y_hat = net(st.to(dev), ac.to(dev), hi.to(dev))
+    y = torch.tensor(y_mc, dtype=torch.float32).to(dev)
+    loss = torch.nn.functional.mse_loss(y_hat, y)
+    opt.zero_grad(); loss.backward(); opt.step()
+    return loss.item()
+
+
 def _tensors(samples):
     """把 `(obs, acts, i, seat, hist)` 铺成张量。"""
     st = torch.from_numpy(np.stack([env.encode_state(o) for o, _a, _i, _s, _h in samples]))
@@ -463,31 +510,15 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
             fresh[id(rec)] = (pts, y)
             games += 1
 
-        # 2) 从 buffer 采一批（spec §5.2：整局的终局 reward 当回归目标）
-        samples, targets = [], []
-        for rec in buf.sample(batch_games, rng):
-            # `or` 会把「缓存里的 2 元组」与「expand 的 3 元组」混在一起 ——
-            # 必须显式判 None（Task 4 会把这一段收进 build_samples）
-            got = fresh.get(id(rec))
-            if got is None:
-                pts, y, _b = replay.expand(rec)
-            else:
-                pts, y = got
-            samples += pts
-            targets += y
-        st, ac, hi = _tensors(samples)
-        dev = next(net.parameters()).device
-        y = torch.tensor(targets, dtype=torch.float32).to(dev)
-
-        # 3) 训一步
-        loss = torch.nn.functional.mse_loss(
-            net(st.to(dev), ac.to(dev), hi.to(dev)), y)
-        opt.zero_grad(); loss.backward(); opt.step()
+        # 2) 从 buffer 采一批 + 训一步（spec §5.2）—— **共享实现**，
+        #    与多进程那条路是同一份（以前两边各写一遍，「副本会漂」）
+        loss = _learn_step(net, buf, rng, opt, batch_games=batch_games,
+                           bomb_cost=bomb_cost, fresh=fresh)
         steps += 1
 
         el = time.perf_counter() - t0
         if steps % 10 == 0:
-            log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps:.2f}  loss={loss.item():.3f}  "
+            log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps:.2f}  loss={loss:.3f}  "
                 f"{games / el:.1f} 局/秒  buffer {len(buf):,}")
 
         # 4) 每 N 局：存权重 + 评测（spec §5.3）—— 公共件，两条训练路线共用
@@ -622,23 +653,14 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 # worker 顺手把胜负写在记录里了（实测重放一局 18.3 ms，太贵）
                 if rec.opp and rec.opp[0] == "member" and rec.won is not None:
                     wr.record(rec.opp[1], rec.won)
-            # 采样 + 训一步（与单进程那条路逐字相同）
-            samples, targets = [], []
-            for rec in buf.sample(batch_games, rng):
-                pts, y, _b = replay.expand(rec)
-                samples += pts
-                targets += y
-            st, ac, hi = _tensors(samples)
-            dev = next(net.parameters()).device
-            y = torch.tensor(targets, dtype=torch.float32).to(dev)
-            loss = torch.nn.functional.mse_loss(
-                net(st.to(dev), ac.to(dev), hi.to(dev)), y)
-            opt.zero_grad(); loss.backward(); opt.step()
+            # 采样 + 训一步（**与单进程那条路同一份实现**）
+            loss = _learn_step(net, buf, rng, opt, batch_games=batch_games,
+                               bomb_cost=bomb_cost)
             steps += 1
             el = time.perf_counter() - t0
             if steps % 10 == 0:
                 log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps_for(games, eps_games, start=eps_start):.2f}  "
-                    f"loss={loss.item():.3f}  {games / el:.1f} 局/秒  "
+                    f"loss={loss:.3f}  {games / el:.1f} 局/秒  "
                     f"buffer {len(buf):,}")
             if games - last_sync >= WEIGHT_SYNC_GAMES:
                 sd = {k: v.cpu() for k, v in net.state_dict().items()}

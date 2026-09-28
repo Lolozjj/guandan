@@ -49,4 +49,22 @@
   RED 看过（`ImportError: cannot import name 'check_q_scale'`）→
   GREEN：`tests/test_q_max.py` **10 passed**；全量 **431 passed / 1 failed**（唯一红是预存的
   `test_tribute_records`）。重构没改老行为由
-  `test_argmax_batch_is_unchanged_by_the_refactor` 钉住。提交 `1e08b2f`（待提交）。
+  `test_argmax_batch_is_unchanged_by_the_refactor` 钉住。提交 `39d9314`。
+- **Task 4 完成**：`build_samples` + `_learn_step`，两条训练路线收成一份。
+  RED 看过（`ImportError: cannot import name '_learn_step'`）→
+  GREEN：`tests/test_learn_step.py` **5 passed**；全量
+  （`--ignore=tests/test_nstep_wiring.py`，那是 T5 故意先写的红文件）
+  **436 passed / 1 failed** = 基线 +5，唯一红是预存的 `test_tribute_records`。
+  - **Ruling**：`tests/test_learn_step.py` 里那条 `test_build_samples_is_aligned`
+    我一开始写成 `len(s)==len(y)==len(b)>0`，**断言错了** —— `n_step=0` 时
+    `boot` 按设计就是空表。改成 `len(s)==len(y)>0` + `b == []`，计划文档同步改。
+    代价若错：无（测试当场就红了，正是「先看它失败」的价值）。
+  - **Ruling**：T5 的接线测试另起 `tests/test_nstep_wiring.py`，不按计划的「追加到
+    `test_learn_step.py`」。理由：两份测的是**不同的单元**（重构 vs 新行为），
+    而且分开才能让 T4 的全量验证干净跑一次。
+    代价若错：多一个测试文件，没有别的。
+  - **Ruling**：`_learn_step` 返回 **float**，所以两条日志行里的 `loss.item()`
+    要改成 `loss`。计划漏了这两处（`train()` 那条只有 `steps%10==0` 才触发，
+    短测试撞不上，是 `test_train_parallel` 抓到的）。
+    代价若错：无（AttributeError 当场就响）。
+  提交 `3f9d1c4`（待提交）。

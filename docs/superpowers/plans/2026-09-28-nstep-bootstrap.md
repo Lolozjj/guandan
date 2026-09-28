@@ -596,7 +596,8 @@ def _buffer(n=8, seed=0):
 
 def test_build_samples_is_aligned():
     s, y, b = build_samples(_buffer(), random.Random(0), 4)
-    assert len(s) == len(y) == len(b) > 0
+    assert len(s) == len(y) > 0
+    assert b == [], "n_step=0 时根本不算自举 —— boot 是空表（与 expand 一致）"
 
 
 def test_build_samples_uses_the_fresh_cache():
