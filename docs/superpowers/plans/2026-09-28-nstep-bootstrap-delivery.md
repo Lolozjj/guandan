@@ -132,3 +132,33 @@
   **下一臂没起**（串行设计里它本来就在后面）。
   结论：**这台机器现在腾不出 5 GB 给一条臂** —— 31.4 GB 里 22 GB 被前台应用占着。
   等用户决定：腾应用 / 降配 / 就这么跑 / 先不跑。
+
+## 4. 收口
+
+**测试**：改动前基线 `407 passed / 1 failed` → 最终 **`446 passed / 2 failed`**
+（净增 39 条）。两条红**都是日志轮转**（`test_tribute_records` 是预存的；
+`test_game_log::test_settled_games_are_conserved` 是本轮中途日志转到只剩 6 局才出现的），
+**都与本次改动无关**（它们只读日志目录 / 语料快照）。
+
+**提交**：`bfb81d4`（计划）→ `cd6d16c` → `c3963ae` → `39d9314` → `8781663` →
+`237e0e1` → `45dc509` → `5768b73` → `a4d02a8` → `e961249`。工作树干净。
+
+**代码交付物**
+
+| 文件 | 内容 |
+|---|---|
+| `train/replay.py` | `blend`（自举进入标签的唯一一处）；`expand(rec, bomb_cost, n)` 三元组 + 定长环产出 `s_{t+n}` |
+| `train/net.py` | `_flat_scores`（批量前向收成一份）；`q_max_batch`（返回 **float**）；`check_q_scale`（NaN 也拦） |
+| `train/selfplay.py` | `build_samples`/`_targets`/`_learn_step`（两条路线共用一份）；`sync_target`；目标网络；发散守门；`--mc-mix/--n-step/--tgt-sync` |
+| `tools/action_margin.py` | 判据 2 的尺子（落进 `tools/`，不再躺临时目录） |
+| `tools/bench_train.py` | `--mc-mix/--n-step/--init` 透传 |
+| `tests/` 新增 7 个文件 | 40 条 |
+
+**没做、明确记着的**（免得被当成遗漏）：
+- **A/B 没跑**（机器内存，用户决定改天）。恢复命令见 `HANDOFF.md` 顶栏。
+- 不做重要性采样（spec §4 的取舍）；γ 固定 1.0 没做成参数。
+- 「只对一部分决策点自举」这个省钱法**没有实现** —— 它只在 Task 8 的第三档里作为
+  「停下来讨论」的选项存在（YAGNI）。实测落在第二档，用不上。
+- **Minor（deferred）**：单进程 `train()` 在 `β<1` 时仍会 `generate_batch(capture=True)`
+  抓一遍决策点然后丢掉（因为 `build_samples` 里 `fresh` 让路）—— 每轮多分配约 38 MB，
+  不是正确性问题；真跑用的是 `--workers 2`（worker 那边 `capture=False`），不受影响。
