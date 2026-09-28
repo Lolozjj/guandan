@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import copy
 import glob
+import math
 import os
 import random
 import sys
@@ -43,8 +44,9 @@ import torch
 from net.sim import env, rules
 from train import pool, replay
 from train.eval import match
-from train.net import (DEVICE, QNet, check_q_scale, q_argmax_batch,
-                       q_max_batch)
+from train.net import (DEVICE, QNet, check_entropy, check_q_scale,
+                       log_prob_and_entropy, policy_sample_batch,
+                       q_argmax_batch, q_max_batch)
 from train.policies import greedy_policy, random_policy
 from train.rule_policy import rule_choose
 
@@ -163,7 +165,7 @@ def plan_step(learn_seats, turn, fixed) -> tuple:
 def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                    greedy_share=0.8, learn_all_seats=False, members=None,
                    pick_fixed=None, bomb_cost: float = 0.0,
-                   opp_kind: str = "greedy"):
+                   opp_kind: str = "greedy", sample: bool = False):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
@@ -253,6 +255,14 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                 neti = members[mid]
             else:
                 neti = net
+            if who == "learner" and sample:
+                # PG 的**行为策略**：从 π 采样，**完全忽略 ε**（spec §3.3）。
+                # 放在 `eps >= 1.0` 那个分支**之前**是故意的 —— ε 在 PG 模式下必须
+                # 一点都不起作用，否则数据不是 π 的，策略梯度就估错了分布。
+                for j, pick in zip(js, policy_sample_batch(
+                        neti, [pending[j] for j in js], rng)):
+                    picks[j] = pick
+                continue
             if who == "learner" and eps >= 1.0:
                 # 纯随机阶段不必前向 —— 早期是 ε=1.0，省掉这一大截
                 for j in js:
@@ -373,6 +383,25 @@ def _check_boot_args(mc_mix, n_step, tgt_sync) -> None:
         raise ValueError(f"tgt_sync 必须为正，给的是 {tgt_sync}（0 = 目标网络永不同步）")
 
 
+def _pg_log(algo: str, beta_ent: float, weight_sync_games: int = None) -> str:
+    """日志头里的算法那一段。**两条路线共用一份**（各写一份就会漂）。
+
+    ⚠️ PG 模式下**必须写清 ε 不适用**：否则日志上写着 `ε 起点 0.30` 而实际没用，
+    就是「换源不可见」（本仓库纪律）。同理要写明不用 buffer。
+
+    `weight_sync_games=None`（单进程那条路）**不打广播那一行** —— 它没有 worker，
+    也就没有广播这件事；打出来就是在日志里说一件不会发生的事（反过来也是骗人）。
+    """
+    if algo != "pg":
+        return ""
+    out = ("\n  算法 pg（REINFORCE）  "
+           f"β_ent {beta_ent:g}  **ε 不适用**（采样本身就是探索）"
+           "\n  **不用 replay buffer**（on-policy，只用刚打完的那一批）")
+    if weight_sync_games:
+        out += f"\n  权重广播每 {weight_sync_games} 局（PG 的 staleness 靠它压小）"
+    return out
+
+
 def _boot_log(mc_mix, n_step, tgt_sync) -> str:
     """日志头里的自举那一段。**两条路线共用一份**（各写一份就会漂）。"""
     if mc_mix >= 1.0:
@@ -380,6 +409,63 @@ def _boot_log(mc_mix, n_step, tgt_sync) -> str:
     odd = ("  ⚠️ n 是**奇数** —— 自举源落在对家、命中率很低"
            "（见 replay._boot_source_ok 的实测表），请用偶数" if n_step % 2 else "")
     return f"  自举 β={mc_mix:g} n={n_step}（目标网络每 {tgt_sync} 局同步）{odd}"
+
+
+#: 熵系数（spec §8 的初值）。**这是 PG 实验里第一个要动的数**：
+#: 太小 ⇒ 策略提前塌成 argmax（有守门会炸）；太大 ⇒ 一直乱出、学不动。
+BETA_ENT = 0.01
+
+
+class _RunningMean:
+    """`R` 的滑动均值 —— PG 的基线。
+
+    为什么不学一个 V 网络（spec §3.2）：现在 95% 的局都赢 ⇒ `R` 的方差本来就小
+    ⇒ 滑动均值够用，而学 V 要多一处能出错的地方。**这是刻意的简化。**
+    """
+
+    def __init__(self, window: int = 1000):
+        if window <= 0:
+            raise ValueError("window 必须为正")
+        self.window, self._buf, self._sum = window, [], 0.0
+
+    def update(self, x: float) -> float:
+        self._buf.append(float(x))
+        self._sum += float(x)
+        while len(self._buf) > self.window:
+            self._sum -= self._buf.pop(0)
+        return self.value
+
+    @property
+    def value(self) -> float:
+        return self._sum / len(self._buf) if self._buf else 0.0
+
+
+def _pg_step(net, opt, samples, rewards, base, games, beta_ent: float = BETA_ENT):
+    """一步策略梯度。**更新只作用在实际出的那一手**上 ——
+    这就是它绕开「一局 132 个决策点共享同一个标签」的全部理由。
+
+        L = − mean_i [ log π(a_i|s_i) · (R_i − b) ] − β_ent · mean_i H(π(·|s_i))
+
+    `rewards` 是每个决策点的 `R`（同一局里每个点都一样 —— 标签仍由 `mc_targets` 产出）。
+    返回 `{"loss", "entropy", "adv"}`（float，给日志用）。
+    """
+    if len(samples) != len(rewards):
+        raise ValueError(f"样本数 {len(samples)} 与标签数 {len(rewards)} 对不上")
+    lp, ent, zmax = log_prob_and_entropy(net, samples)
+    # ⚠️ **设备要跟 `lp` 走**：网络在 `DEVICE`（可能是 cuda）上，而标签是新造的 cpu 张量
+    # ⇒ 不搬就 `Expected all tensors to be on the same device`。
+    # （单测里网络在 cpu，所以只有走 `train()` 的集成路径才会撞上 —— 它抓到了。）
+    adv = torch.tensor(rewards, dtype=torch.float32, device=lp.device) - base.value
+    loss = -(lp * adv).mean() - beta_ent * ent.mean()
+    # 两处守门（「失败必须响」）：logits 发散 / 熵塌
+    check_q_scale(zmax, games, float(loss.detach()), what="logits")
+    log_k = sum(math.log(len(a)) for _o, a, _i, _s, _h in samples) / len(samples)
+    check_entropy(float(ent.mean().detach()), log_k)
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+    return {"loss": float(loss.detach()), "entropy": float(ent.mean().detach()),
+            "adv": float(adv.mean())}
 
 
 def _targets(net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
@@ -564,7 +650,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           pool_size: int = pool.POOL_SIZE, eps_start: float = None,
           bomb_cost: float = 0.0, mc_mix: float = MC_MIX,
           n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES,
-          opp_kind: str = "greedy"):
+          opp_kind: str = "greedy", algo: str = "dmc",
+          beta_ent: float = BETA_ENT):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -593,11 +680,13 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + _boot_log(mc_mix, n_step, tgt_sync)
         + (f"  热启动 {init}" if init else "")
+        + _pg_log(algo, beta_ent)      # 单进程没有权重广播 ⇒ 不打那一行
         + f"\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
     games = steps = 0
     last_tgt = 0                # 目标网络上次同步的局数
+    base = _RunningMean()       # PG 的基线（DMC 用不到，留着不占什么）
     curve = []
     best_greedy = -1.0
 
@@ -605,30 +694,42 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         # **按局数退火**，不按时间（见 EPS_GAMES）；起点见 eps_start（热启动会压低）
         eps = eps_for(games, eps_games, start=eps_start)
 
-        # 1) 同步打一批，记进 buffer（现场抓好决策点，省一次重放）
-        fresh = {}
-        for rec, pts, y in generate_batch(net, rng, eps, batch_games,
-                                          opp_mix=opp_mix,
-                                          greedy_share=greedy_share,
-                                          learn_all_seats=learn_all_seats,
-                                          bomb_cost=bomb_cost,
-                                          opp_kind=opp_kind):
-            buf.add(rec)
-            fresh[id(rec)] = (pts, y)
-            games += 1
+        # 1) 同步打一批（PG 模式下**只吃这一批**；DMC 模式记进 buffer 待采）
+        batch = generate_batch(net, rng, eps, batch_games,
+                               opp_mix=opp_mix, greedy_share=greedy_share,
+                               learn_all_seats=learn_all_seats,
+                               bomb_cost=bomb_cost, opp_kind=opp_kind,
+                               sample=(algo == "pg"))
 
-        # 2) 从 buffer 采一批 + 训一步（spec §5.2）—— **共享实现**，
-        #    与多进程那条路是同一份（以前两边各写一遍，「副本会漂」）
-        loss = _learn_step(net, net_tgt, buf, rng, opt, games,
-                           batch_games=batch_games, bomb_cost=bomb_cost,
-                           mc_mix=mc_mix, n_step=n_step, fresh=fresh)
+        if algo == "pg":
+            # **on-policy：不写 buffer**（写了就是 off-policy，要重要性采样）。
+            # 标签仍由 `mc_targets` 产出 —— `generate_batch` 内部走的就是它。
+            samples = [p for _rec, pts, _y in batch for p in pts]
+            rewards = [r for _rec, _pts, y in batch for r in y]
+            out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
+            loss = out["loss"]
+            games += len(batch)
+        else:
+            fresh = {}
+            for rec, pts, y in batch:
+                buf.add(rec)
+                fresh[id(rec)] = (pts, y)
+                games += 1
+            # 从 buffer 采一批 + 训一步（spec §5.2）—— **共享实现**
+            loss = _learn_step(net, net_tgt, buf, rng, opt, games,
+                               batch_games=batch_games, bomb_cost=bomb_cost,
+                               mc_mix=mc_mix, n_step=n_step, fresh=fresh)
+            last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
         steps += 1
-        last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
 
         el = time.perf_counter() - t0
         if steps % 10 == 0:
-            log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps:.2f}  loss={loss:.3f}  "
-                f"{games / el:.1f} 局/秒  buffer {len(buf):,}")
+            if algo == "pg":
+                log(f"  {el:6.0f}s  局数 {games:7d}  loss={loss:.3f}  "
+                    f"H={out['entropy']:.3f}  {games / el:.1f} 局/秒")
+            else:
+                log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps:.2f}  loss={loss:.3f}  "
+                    f"{games / el:.1f} 局/秒  buffer {len(buf):,}")
 
         # 4) 每 N 局：存权重 + 评测（spec §5.3）—— 公共件，两条训练路线共用
         best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
@@ -651,6 +752,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    eps_start: float = None, bomb_cost: float = 0.0,
                    mc_mix: float = MC_MIX, n_step: int = N_STEP,
                    tgt_sync: int = TGT_SYNC_GAMES, opp_kind: str = "greedy",
+                   algo: str = "dmc", beta_ent: float = BETA_ENT,
+                   weight_sync_games: int = WEIGHT_SYNC_GAMES,
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -717,7 +820,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                                      init=init, use_pool=pfsp,
                                                      pool_greedy_share=pool_greedy_share,
                                                      bomb_cost=bomb_cost,
-                                                     opp_kind=opp_kind)))
+                                                     opp_kind=opp_kind,
+                                                     sample=(algo == "pg"))))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
@@ -735,6 +839,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + _boot_log(mc_mix, n_step, tgt_sync)
         + (f"  热启动 {init}" if init else "")
+        + _pg_log(algo, beta_ent, weight_sync_games)
         + f"\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
@@ -743,6 +848,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     best_greedy = -1.0
     last_sync = 0
     last_tgt = 0                # 目标网络上次同步的局数
+    base = _RunningMean()       # PG 的基线（DMC 用不到）
     qmax = 0                                # 队列积压峰值（背压有没有生效，看这个）
     t_kill = (time.perf_counter() + _kill_worker_after) if _kill_worker_after else None
     try:
@@ -769,23 +875,38 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                     f"等 worker 的记录超时（{type(exc).__name__}）—— 它可能卡住了") from exc
             qmax = max(qmax, send_q.qsize())
             for rec in recs:
-                buf.add(rec)
                 games += 1
                 # PFSP 的归因：这一局打的是谁、谁赢了。**不重放** ——
                 # worker 顺手把胜负写在记录里了（实测重放一局 18.3 ms，太贵）
                 if rec.opp and rec.opp[0] == "member" and rec.won is not None:
                     wr.record(rec.opp[1], rec.won)
-            # 采样 + 训一步（**与单进程那条路同一份实现**）
-            loss = _learn_step(net, net_tgt, buf, rng, opt, games,
-                               batch_games=batch_games, bomb_cost=bomb_cost,
-                               mc_mix=mc_mix, n_step=n_step)
+                if algo != "pg":
+                    buf.add(rec)        # PG 是 on-policy ⇒ **不写 buffer**
+            if algo == "pg":
+                # 数据就是刚收到的这一批（worker 发的是紧凑记录 ⇒ learner 侧重放）
+                samples, rewards = [], []
+                for rec in recs:
+                    pts, y, _b = replay.expand(rec)
+                    samples += pts
+                    rewards += y
+                out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
+                loss = out["loss"]
+            else:
+                # 采样 + 训一步（**与单进程那条路同一份实现**）
+                loss = _learn_step(net, net_tgt, buf, rng, opt, games,
+                                   batch_games=batch_games, bomb_cost=bomb_cost,
+                                   mc_mix=mc_mix, n_step=n_step)
             steps += 1
             el = time.perf_counter() - t0
             if steps % 10 == 0:
-                log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps_for(games, eps_games, start=eps_start):.2f}  "
-                    f"loss={loss:.3f}  {games / el:.1f} 局/秒  "
-                    f"buffer {len(buf):,}")
-            if games - last_sync >= WEIGHT_SYNC_GAMES:
+                if algo == "pg":
+                    log(f"  {el:6.0f}s  局数 {games:7d}  loss={loss:.3f}  "
+                        f"H={out['entropy']:.3f}  {games / el:.1f} 局/秒")
+                else:
+                    log(f"  {el:6.0f}s  局数 {games:7d}  ε={eps_for(games, eps_games, start=eps_start):.2f}  "
+                        f"loss={loss:.3f}  {games / el:.1f} 局/秒  "
+                        f"buffer {len(buf):,}")
+            if games - last_sync >= weight_sync_games:
                 sd = {k: v.cpu() for k, v in net.state_dict().items()}
                 w = current_pfsp()
                 for q in ctrls:
@@ -850,6 +971,13 @@ def main(argv=None) -> int:
         # λ：每用一手炸弹，从**那一步起**的标签就少这么多（spec §3.3）。
         # 默认 0 = 老行为；A/B 的处理臂用 0.2。
         kw["bomb_cost"] = float(argv[argv.index("--bomb-cost") + 1])
+    if "--algo" in argv:
+        # 训练算法：dmc（默认，老行为）或 pg（策略梯度 / REINFORCE）
+        kw["algo"] = argv[argv.index("--algo") + 1]
+    if "--beta-ent" in argv:
+        kw["beta_ent"] = float(argv[argv.index("--beta-ent") + 1])
+    if "--weight-sync-games" in argv:
+        kw["weight_sync_games"] = int(argv[argv.index("--weight-sync-games") + 1])
     if "--opp-kind" in argv:
         # 固定对手用哪种「强」：greedy（默认，老行为）或 rule（规则式，像人）。
         kw["opp_kind"] = argv[argv.index("--opp-kind") + 1]

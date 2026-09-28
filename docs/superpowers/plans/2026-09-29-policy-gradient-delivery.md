@@ -43,3 +43,11 @@
 - **Task 2 完成**：`policy_sample_batch`（从 π 采样，走调用方的 `rng` 逆累积分布）。
   RED 看过（collection error）→ GREEN：`tests/test_pg_sample.py` **4 条**，包含「60 次采样不能只出一个结果」
   （防它其实在 argmax）。
+- **Task 3 完成**：`_pg_step` + `_RunningMean` + 熵/logits 两处守门。RED 看过 → GREEN **6 条**。
+-  ⚠️ **抓到我自己写的测试依赖初始化**：守门那条用 `mlp[-1].weight.mul_(1e4)`，主干输出若接近 0
+   就摊平了、**不会塌** ⇒ 单跑绿、全量红（随机种子不同）。改成 monkeypatch 造极端 logits ⇒ 确定（连跑 4 次一致）。
+- **Task 4 完成**：`--algo pg` 全通（两条路都用 π 采样、不写 buffer、日志说清 ε 不适用）+ `--weight-sync-games`。
+-  ⚠️ **又抓到一个真 bug**：`net` 在 cuda 而 `adv` 是新造的 cpu 张量 ⇒ `loss` 设备不匹配。
+   单测里网络在 cpu 所以没暴露，**只有走 `train()` 的集成路径才撞上**（测试抓到了）⇒ 修 + 把单测也搬到 `DEVICE`。
+-  另外 `train()`（单进程）没有权重广播这件事 ⇒ `_pg_log` 那一行**只在多进程打**（不然日志里说一件不会发生的事）。
+- **Task 4 全量**：`509 passed / 2 failed`（= 494 + 新 15；两条红仍是日志轮转的环境红）✓

@@ -40,17 +40,26 @@ def main(argv=None) -> int:
                     help="beta：MC 与自举的混合比（1.0 = 纯 DMC）。量自举成本用")
     ap.add_argument("--n-step", type=int, default=3, help="自举往后看几步")
     ap.add_argument("--init", default=None, help="热启动权重（默认随机）")
+    ap.add_argument("--algo", default="dmc", help="dmc（默认）或 pg（策略梯度）")
+    ap.add_argument("--beta-ent", type=float, default=None, help="PG 的熵系数")
+    ap.add_argument("--weight-sync-games", type=int, default=None,
+                    help="PG 臂要调小（staleness），默认 1000")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
 
     log = (lambda *a: None) if args.quiet else print
     rows = []
     print(f"每档跑 {args.seconds:.0f} 秒（量的是训练阶段，不含收尾评测）  "
-          f"beta={args.mc_mix:g} n={args.n_step}"
+          f"algo={args.algo} beta={args.mc_mix:g} n={args.n_step}"
           + (f"  热启动 {args.init}" if args.init else "  随机初始化"))
     print(f"{'worker':>7} {'局数':>8} {'秒':>7} {'局/秒':>8} {'队列积压峰值':>12}")
     for w in args.workers:
-        r = bench_run(w, seconds=args.seconds, log=log,
-                      mc_mix=args.mc_mix, n_step=args.n_step, init=args.init)
+        extra = {"mc_mix": args.mc_mix, "n_step": args.n_step, "init": args.init,
+                 "algo": args.algo}
+        if args.beta_ent is not None:
+            extra["beta_ent"] = args.beta_ent
+        if args.weight_sync_games is not None:
+            extra["weight_sync_games"] = args.weight_sync_games
+        r = bench_run(w, seconds=args.seconds, log=log, **extra)
         rows.append(r)
         print(f"{r['workers']:>7} {r['games']:>8} {r['elapsed']:>7.0f} "
               f"{r['games_per_s']:>8.1f} {r['qmax']:>12}")
