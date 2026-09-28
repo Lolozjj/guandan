@@ -36,14 +36,21 @@ def main(argv=None) -> int:
     ap.add_argument("--workers", type=int, nargs="+", default=[1, 2, 3, 4, 6])
     ap.add_argument("--seconds", type=float, default=45.0)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--mc-mix", type=float, default=1.0,
+                    help="beta：MC 与自举的混合比（1.0 = 纯 DMC）。量自举成本用")
+    ap.add_argument("--n-step", type=int, default=3, help="自举往后看几步")
+    ap.add_argument("--init", default=None, help="热启动权重（默认随机）")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
 
     log = (lambda *a: None) if args.quiet else print
     rows = []
-    print(f"每档跑 {args.seconds:.0f} 秒（量的是训练阶段，不含收尾评测）\n")
+    print(f"每档跑 {args.seconds:.0f} 秒（量的是训练阶段，不含收尾评测）  "
+          f"beta={args.mc_mix:g} n={args.n_step}"
+          + (f"  热启动 {args.init}" if args.init else "  随机初始化"))
     print(f"{'worker':>7} {'局数':>8} {'秒':>7} {'局/秒':>8} {'队列积压峰值':>12}")
     for w in args.workers:
-        r = bench_run(w, seconds=args.seconds, log=log)
+        r = bench_run(w, seconds=args.seconds, log=log,
+                      mc_mix=args.mc_mix, n_step=args.n_step, init=args.init)
         rows.append(r)
         print(f"{r['workers']:>7} {r['games']:>8} {r['elapsed']:>7.0f} "
               f"{r['games_per_s']:>8.1f} {r['qmax']:>12}")
