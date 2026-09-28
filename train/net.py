@@ -118,6 +118,31 @@ def q_argmax_batch(net, pending):
     return out
 
 
+def policy_sample_batch(net, pending, rng) -> list:
+    """从 `π = softmax(该局面全部候选的 logits)` **采样**，返回每个决策点的下标。
+
+    这是 PG 的**行为策略** —— on-policy 的定义就落在这一个函数上：
+    数据必须来自 π 自己，否则策略梯度估的是另一个分布的梯度（静默学歪）。
+
+    ⚠️ 用**调用方的 `rng`**（`random.Random`）而不是 torch 的生成器：
+    整条链的可复现性都挂在同一个 `rng` 上（`generate_batch` 连「哪一队当对手」
+    都用它抽）。走逆累积分布，不用 `torch.multinomial`。
+    """
+    q, counts = _flat_scores(net, pending)      # 采样不需要梯度
+    out, off = [], 0
+    for c in counts:
+        p = torch.softmax(q[off:off + c], dim=0)
+        off += c
+        r, acc, pick = rng.random(), 0.0, c - 1     # 兜底取最后一个，防浮点累积误差
+        for j in range(c):
+            acc += float(p[j])
+            if r < acc:
+                pick = j
+                break
+        out.append(pick)
+    return out
+
+
 def q_max_batch(net, pending):
     """`pending = [(obs, acts, hist) | None, ...]` -> `list[float | None]`。
 

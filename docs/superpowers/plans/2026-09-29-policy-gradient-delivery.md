@@ -39,3 +39,7 @@
    3. 计划里那条测试的 reward 列表长度写死 4，而样本是 12 个 ⇒ 会 TypeError（已在台账 §1 预先声明为 Ruling）。
    4. `float(带梯度的张量)` 告警两处 —— 与 `selfplay.py` 里同一个坑，加 `detach()`。
 -  提交 `_TBD_`。
+- **Task 1 全量验证**：`494 passed / 2 failed`（= 基线 484 + 新增 10；两条红仍是日志轮转的环境红）✓
+- **Task 2 完成**：`policy_sample_batch`（从 π 采样，走调用方的 `rng` 逆累积分布）。
+  RED 看过（collection error）→ GREEN：`tests/test_pg_sample.py` **4 条**，包含「60 次采样不能只出一个结果」
+  （防它其实在 argmax）。

@@ -104,7 +104,7 @@ def test_gradient_contrasts_the_chosen_action_against_the_others(monkeypatch):
     assert float(g[0]) > 0 and float(g[1]) > 0, "其余的该为正（更新时被压下去）"
     # 再钉一层：实际更新方向 = −梯度 ⇒ 选中项抬、其余压
     z.data -= 0.1 * g
-    assert float(z[2]) > 2.0 > float(z[0]), "更新后选中的该更大、其余更小"
+    assert float(z[2].detach()) > 2.0 > float(z[0].detach()), "更新后选中的该更大、其余更小"
 
 
 def test_grad_depends_on_which_action_was_taken(monkeypatch):
