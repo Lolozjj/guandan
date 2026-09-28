@@ -43,4 +43,10 @@
   2. `fresh.get(id(rec)) or replay.expand(rec)` 这个老写法**把 2 元组和 3 元组混在
      一起**（`or` 命中缓存时右边不求值），`test_train_device` / `test_train_init`
      当场红。改成显式判 `None` —— Task 4 会把这一段整体收进 `build_samples`。
-  提交 `b68ac7d`（待提交）。
+  提交 `c3963ae`。
+- **Task 3 完成**：`_flat_scores` 重构 + `q_max_batch`（返回 **float**，类型上断掉梯度）
+  + `check_q_scale`（`not (x <= limit)` 写法，NaN 也拦）。
+  RED 看过（`ImportError: cannot import name 'check_q_scale'`）→
+  GREEN：`tests/test_q_max.py` **10 passed**；全量 **431 passed / 1 failed**（唯一红是预存的
+  `test_tribute_records`）。重构没改老行为由
+  `test_argmax_batch_is_unchanged_by_the_refactor` 钉住。提交 `1e08b2f`（待提交）。
