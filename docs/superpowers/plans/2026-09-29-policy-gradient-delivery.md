@@ -31,3 +31,11 @@
   **每局 4 个点 × 3 局 = 12 个** ⇒ 长度对不上、会 `TypeError`。
   **Ruling**：测试里改成 `[2.0] * len(samples)`（语义不变：只要 reward 非零、梯度就能动）。
   代价若错：无（测试当场会红）。
+- **Task 1 完成**：`log_prob_and_entropy`（三元组 `(lp, ent, zmax)`，带梯度）+ `check_entropy` + `_flat_scores(grad=)`。
+-  RED 看过（collection error：`log_prob_and_entropy` 不存在）→ GREEN：`tests/test_pg_logprob.py` **11 条**；连同 `test_q_max.py` 共 **20 passed**，输出干净。
+-  **我自己写错的四处**（都当场被测试抓住，记下来）：
+   1. 机制测试从输出层偏置取梯度 —— **错的**：输出层是 `Linear(d,1)`，偏置只有 1 维，根本没有"每候选一个梯度"。改成直接盯 logits（monkeypatch `_flat_scores`）。
+   2. 符号断反了 —— `loss=−logπ(a)·adv` ⇒ **梯度**对选中项为**负**、其余为正；更新走 `−梯度` 才把选中项抬上去。顺便把"更新方向"也钉了一层。
+   3. 计划里那条测试的 reward 列表长度写死 4，而样本是 12 个 ⇒ 会 TypeError（已在台账 §1 预先声明为 Ruling）。
+   4. `float(带梯度的张量)` 告警两处 —— 与 `selfplay.py` 里同一个坑，加 `detach()`。
+-  提交 `_TBD_`。
