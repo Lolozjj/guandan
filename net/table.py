@@ -93,6 +93,7 @@ class TableWindow:
         self.cv.pack(fill="both", expand=True)
         self.f_big = (FONT, 15, "bold")
         self.f_mid = (FONT, 12, "bold")
+        self.f_med = (FONT, 11, "bold")
         self.f_small = (FONT, 10)
         self.f_rank = (FONT, 13, "bold")
         self.f_sym = (FONT_SYM, 15)
@@ -172,12 +173,16 @@ class TableWindow:
 
     # ------------------------------------------------------------ 建议栏
 
-    def _advice_panel(self, advice):
+    def _advice_panel(self, advice, show_q: bool = False):
         """右侧「模型建议」：**画牌面图片，不写 Q 值/名次这些数字**。
 
         `advice` 是记录器给的 `[{cards, kind, q}, …]`（首选在前，牌 ID）。
         用户 2026-09-26 定的形式：首选大图 + 两个备选小图。
         ⚠️ 上屏会被影响 —— 记录里每条都带 `advice_shown`，离线分析分歧时要排除。
+
+        `show_q=True` **只给自对弈回放器用**（`tools/game_viewer.py`）：那是离线
+        复盘，看的就是「模型当时给每个候选打了多少分」。**实机面板一律不传** ——
+        这条是用户 2026-09-26 定的，理由见上（建议上屏会改变人怎么打）。
         """
         x0, y0, x1, y1 = self.ADVICE
         cv = self.cv
@@ -199,21 +204,38 @@ class TableWindow:
             if not cs:
                 cv.create_text(x0 + 16, y, anchor="nw", text="过（不要这手）",
                                font=self.f_small, fill=TEXT)
+                if show_q:
+                    self._q_text(x1, y, item, big)
                 y += size[1] + 14
                 continue
+            y_top = y
             for row in _wrap(cs, 5):            # 一手最多 5 张一行
                 x = x0 + 16
                 for cid in row:
                     self._card(x, y, size, cards.decode(cid), small=not big)
                     x += step
                 y += size[1] + 6
+            if show_q:
+                self._q_text(x1, y_top, item, big)
             y += 12
-        cv.create_text((x0 + x1) / 2, y1 - 18, text="只记录，不影响你打牌",
+        cv.create_text((x0 + x1) / 2, y1 - 18,
+                       text="（离线回放）" if show_q else "只记录，不影响你打牌",
                        font=self.f_small, fill=DIM)
+
+    def _q_text(self, x1, y, item, big):
+        """把候选的 Q 值写在那一手牌面的右上角（只有回放器会调它）。"""
+        self.cv.create_text(x1 - 10, y + 2, anchor="ne",
+                            text=f"{item.get('q', 0.0):+.3f}",
+                            font=self.f_med if big else self.f_small,
+                            fill=TURN if big else DIM)
 
     # ------------------------------------------------------------ 主绘制
 
-    def draw(self, st, hint, n_ev, shadow_line="", advice=None):
+    def draw(self, st, hint, n_ev, shadow_line="", advice=None,
+             hand_label: str = None, top_right: str = None, show_q: bool = False):
+        """画一帧。后三个参数**只给 `tools/game_viewer.py`（自对弈回放器）用**，
+        默认 None = 实机面板的老行为（`tests/test_table_panel.py` 与
+        `smoke_panel.py` 守着这条）。"""
         cv = self.cv
         cv.delete("all")
         cv.create_rectangle(14, 14, W - 14, H - 14, outline=BG_EDGE, width=3)
@@ -226,7 +248,7 @@ class TableWindow:
                       else "等待发牌"))
         cv.create_text(W / 2, 26, text=f"轮到：{turn}", font=self.f_big,
                        fill=TEXT)
-        cv.create_text(W - 34, 26, text=f"已收 {n_ev} 个事件",
+        cv.create_text(W - 34, 26, text=top_right or f"已收 {n_ev} 个事件",
                        anchor="e", font=self.f_small, fill=DIM)
 
         # 桌子中央：当前待压的牌
@@ -261,7 +283,7 @@ class TableWindow:
         self._flow(st.hand_grouped(), hx0, hy, min(W - 240, self.ADVICE[0] - 20),
                    H - 50, step=MY_STEP, size=MY_CARD)
         cv.create_text(W / 2, H - 108,
-                       text=f"我的手牌（{len(st.hand)} 张，按大小排序）",
+                       text=hand_label or f"我的手牌（{len(st.hand)} 张，按大小排序）",
                        font=self.f_small, fill=DIM)
         cv.create_text(W / 2, H - 24, text=hint, font=self.f_small, fill=DIM)
         # 影子模式的那一行（**只报进度，不显示建议** —— 用户 2026-09-25 定：
@@ -271,7 +293,7 @@ class TableWindow:
                            font=self.f_small, fill=DIM)
 
         # 右侧：模型建议（画牌面）
-        self._advice_panel(advice)
+        self._advice_panel(advice, show_q=show_q)
 
         if st.passes:
             cv.create_text(600, 496, text="要不起：" + "、".join(

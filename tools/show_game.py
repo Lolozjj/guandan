@@ -5,26 +5,30 @@
 模型的建议，这个脚本看的是**自对弈** —— 两者互补。
 
 用法：
-    # 用面板那套口径挑权重（`advise.resolve_weights`：GUANDAN_WEIGHTS 或最新的 best.pt）
-    .venv/Scripts/python.exe -m tools.show_game
-
-    # 指定权重 / 种子 / 少打一点字
-    .venv/Scripts/python.exe -m tools.show_game runs/rl/20260926-1407/best.pt --seed 7
-    .venv/Scripts/python.exe -m tools.show_game --quiet      # 只看出牌，不看打分
+    .venv/Scripts/python.exe -m tools.show_game                       # 挑最新 best.pt
+    .venv/Scripts/python.exe -m tools.show_game --seed 61
+    .venv/Scripts/python.exe -m tools.show_game --quiet               # 只看牌不看分
+    .venv/Scripts/python.exe -m tools.game_viewer --seed 61           # 图形版（可点击）
 
 ⚠️ **权重口径复用 `net/advise.py::resolve_weights`**，不另写一份 ——
 不然「面板用哪个模型」与「这个脚本看哪个模型」会漂。
+
+⚠️ **重放逻辑只此一份**：`replay_game()` 产出 `Frame` 列表，文字版
+（`render_text`）与图形版（`tools/game_viewer.py`）都吃它。两个视图各写一遍
+重放，迟早会漂（本仓库为此吃过亏）。
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass, field
 
 import torch
 
 from net import advise
 from net.cards import names_sorted
 from net.sim import env, meld, rules
+from net.state import Play
 from train.eval import bomb_opportunity, is_wasted_bomb
 from train.net import QNet, q_values
 from tools.accept_meld import _utf8_stdout
@@ -32,18 +36,40 @@ from tools.accept_meld import _utf8_stdout
 TEAM_NAME = {0: "甲", 1: "乙"}
 
 
-def _seat(s: int) -> str:
+def seat_label(s: int) -> str:
+    """自对弈回放用**绝对座位 + 队**（不用「我/上家」那种相对叫法）——
+    复盘时要一直认得出是同一家。"""
     return f"座位{s}({TEAM_NAME[rules.TEAM[s]]})"
 
 
-def _cards(ids, level) -> str:
-    """一手牌 -> 「大王 ♠A ♥K」这样的可读串（按掼蛋大小排）。"""
+def cards_text(ids, level) -> str:
     return " ".join(names_sorted(ids, level))
 
 
-def show(path: str = None, seed: int = 7, level: int = None, top: int = 3,
-         quiet: bool = False, log=print) -> dict:
-    """打一局并打印战报。返回 `{ranks, points, steps, bombs, w, path}`。"""
+@dataclass
+class Frame:
+    """**一步棋的全部现场** —— 文字视图与图形视图共用它（免得两处重放漂）。"""
+    step: int                       # 第几手（1 起）
+    seat: int                       # 谁出手
+    chosen: object                  # 选中的 Meld；None = 过
+    level: int
+    turn: object                    # 出手**之前**轮到谁（= seat；终局帧是 None）
+    table: object                   # 出手**之前**台面上待压的 `Play`；None = 领出
+    hands: dict                     # 出手之前四家手牌 {seat: set}
+    played: dict                    # 出手之前每家已出过的 `Play` 列表
+    passes: set                     # 出手之前谁已经要不起
+    candidates: list = field(default_factory=list)   # [(q, meld|None)] 按 q 降序
+    wasted: bool = False
+    over: bool = False              # 这一步之后是不是终局
+
+
+def replay_game(path: str = None, seed: int = 7, level: int = None,
+                top: int = 3) -> tuple:
+    """打一局自对弈并记下每一步。返回 `(meta, frames)`。
+
+    `frames` 末尾**多一帧「终局」**（`turn=None`、没有候选），用来显示四家的
+    全部出牌与最终名次。
+    """
     p = path or advise.resolve_weights()
     if not p:
         raise SystemExit("找不到权重：设 GUANDAN_WEIGHTS，或先训练出一份 runs/rl/*/best.pt")
@@ -51,23 +77,12 @@ def show(path: str = None, seed: int = 7, level: int = None, top: int = 3,
     net = QNet()
     net.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
     net.eval()
-    games = ck.get("games") if isinstance(ck, dict) else None
-    log(f"=== 自对弈一局 ===")
-    log(f"权重：{p}" + (f"（{games:,} 局）" if games else ""))
     lv = level if level is not None else 8
     e = env.GuandanEnv(seed=seed)
     e.reset(level=lv)
-    log(f"级别：打 {lv}      先手：{_seat(e.hand.turn)}      种子：{seed}")
-    log(f"队伍：甲队 = 座位 0、2      乙队 = 座位 1、3")
 
-    log("")
-    log("--- 发牌 ---")
-    for s in rules.SEATS:
-        h = sorted(e.hand.hands[s])
-        log(f"  {_seat(s)} {len(h):2d} 张：{_cards(h, lv)}")
-
-    log("")
-    log("--- 出牌 ---")
+    played = {s: [] for s in rules.SEATS}
+    frames = []
     obs = e.observe()
     step = bombs = chance = waste = 0
     while not e.done:
@@ -78,38 +93,111 @@ def show(path: str = None, seed: int = 7, level: int = None, top: int = 3,
         i = int(q.argmax())
         m = acts[i]
         step += 1
-        if m is not None and m.is_bomb:          # ⚠️ 候选里的「过」就是 None
+        if m is not None and m.is_bomb:
             bombs += 1
-        lead = "领出" if e.hand.table is None else "跟牌"
-        what = "**过**" if m is None else f"{_cards(m.cards, lv)}（{meld.describe_meld(m)}）"
-        # 「白炸」用 train/eval.py 的**唯一判定**，不另写一份（用户最初的抱怨就是它）
-        flag = ""
-        if bomb_opportunity(e.hand.table, acts):
+        # 「白炸」用 train/eval.py 的**唯一判定**，不另写一份
+        hit_chance = bomb_opportunity(e.hand.table, acts)
+        was_wasted = is_wasted_bomb(e.hand.table, acts, m)
+        if hit_chance:
             chance += 1
-            if is_wasted_bomb(e.hand.table, acts, m):
-                waste += 1
-                flag = "   ⚠️ **白炸**（有普通牌能压）"
-        log(f"  #{step:<3d} {_seat(seat)} {lead}  {what}{flag}")
-        if not quiet:
-            order = sorted(range(len(acts)), key=lambda j: -float(q[j]))[:top]
-            for r, j in enumerate(order):
-                a = acts[j]
-                txt = "过" if a is None else f"{_cards(a.cards, lv)}（{meld.describe_meld(a)}）"
-                log(f"          {'★' if r == 0 else ' '} {float(q[j]):+7.3f}  {txt}")
+            waste += int(was_wasted)
+        order = sorted(range(len(acts)), key=lambda j: -float(q[j]))[:top]
+        frames.append(Frame(
+            step=step, seat=seat, chosen=m, level=lv, turn=seat,
+            table=(Play(seat=e.hand.table_seat, cards=list(e.hand.table.cards))
+                   if e.hand.table is not None else None),
+            hands={s: set(e.hand.hands[s]) for s in rules.SEATS},
+            played={s: list(played[s]) for s in rules.SEATS},
+            passes=set(e.hand.passed),
+            candidates=[(float(q[j]), acts[j]) for j in order],
+            wasted=was_wasted))
+        if m is not None:
+            played[seat].append(Play(seat=seat, cards=list(m.cards)))
         obs, _r, _done, _info = e.step(i)
 
-    ranks = e.ranks          # ⚠️ `ranks[seat] = 1..4`（按座位索引，不是名次顺序表）
+    ranks = e.ranks                      # ⚠️ `ranks[seat] = 1..4`（按座位索引）
+    winner = rules.winner_team(ranks)
+    frames.append(Frame(                 # 终局帧：四家全部出牌都在，名次也定了
+        step=step, seat=None, chosen=None, level=lv, turn=None, table=None,
+        hands={s: set(e.hand.hands[s]) for s in rules.SEATS},
+        played={s: list(played[s]) for s in rules.SEATS},
+        passes=set(), over=True))
+    meta = {"path": p, "games": ck.get("games") if isinstance(ck, dict) else None,
+            "seed": seed, "level": lv, "first": e.hand.steps[0].seat,
+            "ranks": ranks, "winner": winner,
+            "points": rules.points(ranks), "steps": step,
+            "bombs": bombs, "chance": chance, "waste": waste}
+    return meta, frames
+
+
+def chosen_text(f: Frame) -> str:
+    """这一步出了什么（两个视图共用）。"""
+    if f.over:
+        return "终局"
+    if f.chosen is None:
+        return "过"
+    return f"{cards_text(f.chosen.cards, f.level)}（{meld.describe_meld(f.chosen)}）"
+
+
+def frame_hint(f: Frame) -> str:
+    """底部那一行提示。"""
+    if f.over:
+        return "本局结束 —— 点「上一步」回看"
+    lead = "领出" if f.table is None else "跟牌"
+    return f"第 {f.step} 手 · {seat_label(f.seat)} {lead} {chosen_text(f)}"
+
+
+def advice_of(f: Frame) -> list:
+    """渲染器要的候选结构 `[{cards, kind, q}, …]`（首选在前）—— 两个视图共用。"""
+    return [{"cards": [] if m is None else list(m.cards), "q": q}
+            for q, m in f.candidates]
+
+
+def render_text(meta: dict, frames: list, quiet: bool = False, log=print) -> None:
+    """把 `frames` 打成文字（就是这个脚本原来的样子）。"""
+    log("=== 自对弈一局 ===")
+    log(f"权重：{meta['path']}" + (f"（{meta['games']:,} 局）" if meta["games"] else ""))
+    log(f"级别：打 {meta['level']}      先手：{seat_label(meta['first'])}      "
+        f"种子：{meta['seed']}")
+    log("队伍：甲队 = 座位 0、2      乙队 = 座位 1、3")
+    log("")
+    log("--- 发牌 ---")
+    for s in rules.SEATS:
+        h = sorted(frames[0].hands[s])
+        log(f"  {seat_label(s)} {len(h):2d} 张：{cards_text(h, meta['level'])}")
+    log("")
+    log("--- 出牌 ---")
+    for f in frames:
+        if f.over:
+            break
+        lead = "领出" if f.table is None else "跟牌"
+        what = chosen_text(f)
+        if f.chosen is None:
+            what = f"**{what}**"          # 文字版把「过」加粗便于扫（图形版不要星号）
+        flag = "   ⚠️ **白炸**（有普通牌能压）" if f.wasted else ""
+        log(f"  #{f.step:<3d} {seat_label(f.seat)} {lead}  {what}{flag}")
+        if not quiet:
+            for r, (qv, a) in enumerate(f.candidates):
+                txt = "过" if a is None else (
+                    f"{cards_text(a.cards, f.level)}（{meld.describe_meld(a)}）")
+                log(f"          {'★' if r == 0 else ' '} {qv:+7.3f}  {txt}")
     log("")
     log("--- 终局 ---")
-    log("  名次：" + "  ".join(f"{ranks[s]} 名 {_seat(s)}" for s in rules.SEATS))
-    pts = rules.points(ranks)
-    w = rules.winner_team(ranks)
-    log(f"  {TEAM_NAME[w]}队赢 → 得 {pts} 分（双上是 3、有 3 名是 2、有 4 名是 1）")
-    log(f"  共 {step} 手，其中炸弹 {bombs} 手；"
-        f"有「用普通牌压」的机会 {chance} 次，其中白炸 {waste} 次"
-        + (f"（{waste / chance:.0%}）" if chance else ""))
-    return {"ranks": ranks, "points": pts, "winner": w, "steps": step,
-            "bombs": bombs, "chance": chance, "waste": waste, "path": p}
+    log("  名次：" + "  ".join(f"{meta['ranks'][s]} 名 {seat_label(s)}"
+                              for s in rules.SEATS))
+    log(f"  {TEAM_NAME[meta['winner']]}队赢 → 得 {meta['points']} 分"
+        f"（双上是 3、有 3 名是 2、有 4 名是 1）")
+    log(f"  共 {meta['steps']} 手，其中炸弹 {meta['bombs']} 手；"
+        f"有「用普通牌压」的机会 {meta['chance']} 次，其中白炸 {meta['waste']} 次"
+        + (f"（{meta['waste'] / meta['chance']:.0%}）" if meta["chance"] else ""))
+
+
+def show(path: str = None, seed: int = 7, level: int = None, top: int = 3,
+         quiet: bool = False, log=print) -> dict:
+    """打一局并打印战报（`tools/game_viewer.py` 是同一个重放的图形版）。"""
+    meta, frames = replay_game(path, seed=seed, level=level, top=top)
+    render_text(meta, frames, quiet=quiet, log=log)
+    return meta
 
 
 def main(argv=None) -> int:

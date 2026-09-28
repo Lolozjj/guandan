@@ -519,6 +519,10 @@ tools/            验收与运维
   game_log.py     读游戏日志语料（快照优先）
   snapshot_logs.py 冻结语料快照
   decision_points.py / bench_train.py
+  ab_compare.py   三臂同一把尺子（vs贪心 / 炸弹浪费 / 用炸率）
+  action_margin.py 动作边际（判据 2 的尺子）
+  show_game.py    把一局自对弈打成可读战报（文字）
+  game_viewer.py  同一局的图形版：牌桌 + 上一步/下一步（复用面板的渲染器）
 
 tests/            356 条；fixtures/ 里是协议样本
 data/game_corpus.json  日志语料快照（验收的真值靠它活着）
