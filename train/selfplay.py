@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import copy
 import glob
 import os
 import random
@@ -42,7 +43,8 @@ import torch
 from net.sim import env, rules
 from train import pool, replay
 from train.eval import match
-from train.net import DEVICE, QNet, q_argmax_batch
+from train.net import (DEVICE, QNet, check_q_scale, q_argmax_batch,
+                       q_max_batch)
 from train.policies import greedy_policy, random_policy
 
 BATCH_GAMES = 32              # spec §5.3（同步推进的局数；`--batch` 可调大）
@@ -285,6 +287,29 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     return out
 
 
+#: 自举的步数（spec §8）：一局每座位约 33 个决策点；n=1 最偏、n=∞ 就是 MC。
+N_STEP = 3
+#: β —— MC 与自举的混合比。**1.0 = 完全就是现在的 DMC（默认，行为不变）**。
+MC_MIX = 1.0
+#: 目标网络同步的间隔（局）—— 与权重广播同拍（那个节奏已经验过不拖死 learner）。
+TGT_SYNC_GAMES = 1000
+
+
+def sync_target(net, net_tgt, games, last_sync, every=TGT_SYNC_GAMES) -> int:
+    """到点就把 `net` 复制进目标网络，返回新的 `last_sync`。
+
+    ⚠️ 目标网络**永远不参与优化**，只用来算 `V`（spec §3.3）。它是为自举而存在的：
+    没有它，目标就是「追自己的尾巴」，发散风险大增。
+    `net_tgt=None`（β=1）或 `every<=0` 时是空操作。
+    """
+    if net_tgt is None or every <= 0:
+        return last_sync
+    if games - last_sync < every:
+        return last_sync
+    net_tgt.load_state_dict(net.state_dict())
+    return games
+
+
 def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0):
     """从 buffer 采一批、重放成张量原料。返回 `(samples, y_mc, boot)`，**等长同序**。
 
@@ -312,22 +337,40 @@ def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0)
     return samples, y_mc, boot
 
 
-def _learn_step(net, buf, rng, opt, *, batch_games, bomb_cost, fresh=None):
+def _targets(net, net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
+             fresh=None):
+    """这一批训练样本的目标值。**自举在这里、且只在这里进入标签。**
+
+    `mc_mix >= 1` 是纯 MC（默认）—— 那时连 `V` 都不算，`boot` 也不产出。
+    `boot` 里越界的那些点是 `None`，`blend` 会把它们整项退回 `y_mc`。
+    """
+    n_boot = 0 if mc_mix >= 1.0 else n_step
+    samples, y_mc, boot = build_samples(buf, rng, batch_games, fresh=fresh,
+                                        bomb_cost=bomb_cost, n_step=n_boot)
+    vals = q_max_batch(net_tgt, boot) if n_boot else None
+    return samples, replay.blend(y_mc, vals, mc_mix)
+
+
+def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
+                mc_mix, n_step, fresh=None):
     """从 buffer 采一批 → 重放 → 拼张量 → 一步 MSE。**两条训练路线共用这一份。**
 
-    ⚠️ **这一步只做重构**：目标仍然逐点等于 `y_mc`（`n_step=0`，不算自举、
-    不建目标网络）。自举在 Task 5 接上 —— 那时签名会变（多 `net_tgt`/`games`/
-    `mc_mix`/`n_step`），`_targets` 也多出来一层。
-    **故意不在这里接受 `mc_mix`**：接受了却算不出自举，就是一个「静默地按 β=1
-    走」的半吊子状态 —— 那正是本仓库最恨的那种错。
+    `mc_mix < 1` 时多一次前向算自举项（用**目标网络**、`no_grad`、返回 float）。
+    `|Q|` 或 `|标签|` 超限会**在这里 raise**（发散必须响，不许静默地训下去）。
     """
-    samples, y_mc, _boot = build_samples(buf, rng, batch_games, fresh=fresh,
-                                         bomb_cost=bomb_cost, n_step=0)
+    samples, targets = _targets(net, net_tgt, buf, rng, batch_games, bomb_cost,
+                                mc_mix, n_step, fresh=fresh)
     st, ac, hi = _tensors(samples)
     dev = next(net.parameters()).device
     y_hat = net(st.to(dev), ac.to(dev), hi.to(dev))
-    y = torch.tensor(y_mc, dtype=torch.float32).to(dev)
+    y = torch.tensor(targets, dtype=torch.float32).to(dev)
     loss = torch.nn.functional.mse_loss(y_hat, y)
+    # 发散守门：**预测与标签都查**（自举跑飞时，标签通常先炸）
+    # `.detach()` 不能省：`float()` 直接作用在带梯度的张量上，PyTorch 会告警
+    # （"Converting a tensor with requires_grad=True to a scalar"）—— 守门是纯读，
+    # 不该把预测卷进任何图里。
+    check_q_scale(float(y_hat.detach().abs().max()), games, loss.item())
+    check_q_scale(float(y.detach().abs().max()), games, loss.item(), what="标签")
     opt.zero_grad(); loss.backward(); opt.step()
     return loss.item()
 
@@ -467,7 +510,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           eps_games: int = EPS_GAMES, learn_all_seats: bool = False,
           init: str = None, snap_every: int = pool.SNAP_EVERY_GAMES,
           pool_size: int = pool.POOL_SIZE, eps_start: float = None,
-          bomb_cost: float = 0.0):
+          bomb_cost: float = 0.0, mc_mix: float = MC_MIX,
+          n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES):
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -477,6 +521,12 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     net = QNet().to(DEVICE)
     load_init(net, init)
     eps_start = resolve_eps_start(init, eps_start)   # 热启动 -> 低起点（EPS_START_WARM）
+
+    # 目标网络：**deepcopy 而不是再 `QNet()`** —— 后者会多消耗一份 RNG，
+    # 于是同一个 `--seed` 下两臂的网络初始化就不一样了（那是看不见的变量）。
+    # β=1（默认）时根本不建：不多算一次前向，A/B 的对照臂跑的就是**老代码**
+    # 外加一个恒假的 `if`。
+    net_tgt = copy.deepcopy(net).requires_grad_(False) if mc_mix < 1.0 else None
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     out_dir = out_dir or os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M"))
@@ -487,11 +537,14 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"对手混合 {opp_mix:.0%}"
         f"（其中贪心 {greedy_share:.0%}）"
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
+        + (f"  自举 β={mc_mix:g} n={n_step}（目标网络每 {tgt_sync} 局同步）"
+           if mc_mix < 1.0 else "  自举关（β=1）")
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
     games = steps = 0
+    last_tgt = 0                # 目标网络上次同步的局数
     curve = []
     best_greedy = -1.0
 
@@ -512,9 +565,11 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
 
         # 2) 从 buffer 采一批 + 训一步（spec §5.2）—— **共享实现**，
         #    与多进程那条路是同一份（以前两边各写一遍，「副本会漂」）
-        loss = _learn_step(net, buf, rng, opt, batch_games=batch_games,
-                           bomb_cost=bomb_cost, fresh=fresh)
+        loss = _learn_step(net, net_tgt, buf, rng, opt, games,
+                           batch_games=batch_games, bomb_cost=bomb_cost,
+                           mc_mix=mc_mix, n_step=n_step, fresh=fresh)
         steps += 1
+        last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
 
         el = time.perf_counter() - t0
         if steps % 10 == 0:
@@ -540,6 +595,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    pool_size: int = pool.POOL_SIZE, pfsp: bool = False,
                    pool_greedy_share: float = pool.GREEDY_SHARE,
                    eps_start: float = None, bomb_cost: float = 0.0,
+                   mc_mix: float = MC_MIX, n_step: int = N_STEP,
+                   tgt_sync: int = TGT_SYNC_GAMES,
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -561,6 +618,12 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     net = QNet().to(DEVICE)
     load_init(net, init)
     eps_start = resolve_eps_start(init, eps_start)   # 热启动 -> 低起点（EPS_START_WARM）
+
+    # 目标网络：**deepcopy 而不是再 `QNet()`** —— 后者会多消耗一份 RNG，
+    # 于是同一个 `--seed` 下两臂的网络初始化就不一样了（那是看不见的变量）。
+    # β=1（默认）时根本不建：不多算一次前向，A/B 的对照臂跑的就是**老代码**
+    # 外加一个恒假的 `if`。
+    net_tgt = copy.deepcopy(net).requires_grad_(False) if mc_mix < 1.0 else None
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     buf = replay.ReplayBuffer(capacity_games=buffer_games)
     send_q = ctx.Queue(maxsize=max(2, workers * 2))   # 有界 = 背压（不堆内存）
@@ -613,6 +676,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
            else f"（其中贪心 {greedy_share:.0%}、随机 {1 - greedy_share:.0%}）"
                 f"  **池子关**")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
+        + (f"  自举 β={mc_mix:g} n={n_step}（目标网络每 {tgt_sync} 局同步）"
+           if mc_mix < 1.0 else "  自举关（β=1）")
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
@@ -621,6 +686,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     curve = []
     best_greedy = -1.0
     last_sync = 0
+    last_tgt = 0                # 目标网络上次同步的局数
     qmax = 0                                # 队列积压峰值（背压有没有生效，看这个）
     t_kill = (time.perf_counter() + _kill_worker_after) if _kill_worker_after else None
     try:
@@ -654,8 +720,9 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 if rec.opp and rec.opp[0] == "member" and rec.won is not None:
                     wr.record(rec.opp[1], rec.won)
             # 采样 + 训一步（**与单进程那条路同一份实现**）
-            loss = _learn_step(net, buf, rng, opt, batch_games=batch_games,
-                               bomb_cost=bomb_cost)
+            loss = _learn_step(net, net_tgt, buf, rng, opt, games,
+                               batch_games=batch_games, bomb_cost=bomb_cost,
+                               mc_mix=mc_mix, n_step=n_step)
             steps += 1
             el = time.perf_counter() - t0
             if steps % 10 == 0:
@@ -668,6 +735,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 for q in ctrls:
                     q.put(("weights", (sd, eps_for(games, eps_games, start=eps_start), w)))
                 last_sync = games
+                # 目标网络与权重广播**同拍**（spec §3.3）—— 那个节奏已经验过不拖死 learner
+                last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
             best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
                                       eval_every, batch_games, out_dir, log,
                                       snap_every=snap_every, pool_size=pool_size)
@@ -723,6 +792,15 @@ def main(argv=None) -> int:
         # λ：每用一手炸弹，从**那一步起**的标签就少这么多（spec §3.3）。
         # 默认 0 = 老行为；A/B 的处理臂用 0.2。
         kw["bomb_cost"] = float(argv[argv.index("--bomb-cost") + 1])
+    if "--mc-mix" in argv:
+        # β：MC 与自举的混合比。1.0 = 现在的 DMC（默认）；处理臂用 0.5。
+        kw["mc_mix"] = float(argv[argv.index("--mc-mix") + 1])
+    if "--n-step" in argv:
+        # 自举往后看几步（默认 3，spec §8）。β=1 时它不起作用。
+        kw["n_step"] = int(argv[argv.index("--n-step") + 1])
+    if "--tgt-sync" in argv:
+        # 目标网络每多少局同步一次（默认 1000，与权重广播同拍）。
+        kw["tgt_sync"] = int(argv[argv.index("--tgt-sync") + 1])
     if "--eps-start" in argv:
         # ε 的**起点**。默认：热启动 -> 0.3（EPS_START_WARM），否则 1.0。
         # 想强制一个值（比如确认「起点低到底有多重要」）就传它。

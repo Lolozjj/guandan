@@ -46,8 +46,8 @@ def test_build_samples_ignores_fresh_when_bootstrapping():
 def test_learn_step_returns_a_finite_loss():
     net = QNet()
     opt = torch.optim.Adam(net.parameters(), lr=1e-4)
-    loss = _learn_step(net, _buffer(), random.Random(0), opt,
-                       batch_games=4, bomb_cost=0.0)
+    loss = _learn_step(net, None, _buffer(), random.Random(0), opt, 0,
+                       batch_games=4, bomb_cost=0.0, mc_mix=1.0, n_step=3)
     assert isinstance(loss, float) and loss == loss
 
 
@@ -57,6 +57,6 @@ def test_learn_step_is_deterministic_for_one_seed():
         torch.manual_seed(0)
         net = QNet()
         opt = torch.optim.Adam(net.parameters(), lr=1e-4)
-        return _learn_step(net, _buffer(), random.Random(7), opt,
-                           batch_games=4, bomb_cost=0.0)
+        return _learn_step(net, None, _buffer(), random.Random(7), opt, 0,
+                           batch_games=4, bomb_cost=0.0, mc_mix=1.0, n_step=3)
     assert once() == once()

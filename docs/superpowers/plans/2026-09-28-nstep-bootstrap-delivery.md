@@ -68,3 +68,31 @@
     短测试撞不上，是 `test_train_parallel` 抓到的）。
     代价若错：无（AttributeError 当场就响）。
   提交 `3f9d1c4`（待提交）。
+- **Task 5 + Task 6 完成**：目标网络（`deepcopy`，不消耗 RNG）、`_targets`（自举**唯一**入口）、
+  `_learn_step` 扩签名 + 发散守门（预测与标签都查）、CLI 三个开关、两条路线同拍同步。
+  RED 看过（`ImportError: cannot import name '_targets'`）→ GREEN：
+  `tests/test_nstep_wiring.py` **5 passed**；全量 **442 passed / 2 failed**。
+  - **Ruling**：CLI 的三个开关与 T5 的接线是**同一次改动**落地的，所以
+    `tests/test_mc_mix_cli.py` 写出来就是绿的 —— 按 TDD 的字面它没法「先看它红」。
+    处理办法是**反向对照**：临时把 `--mc-mix` 的转发删掉，看它确实红
+    （`KeyError: 'mc_mix'`，正是计划预期的失败），再装回。两次都记录在案。
+    代价若错：没有独立证据证明这条测试有牙 —— 所以补了反向对照。
+  - **Ruling**：发散守门要 `.detach()` 再 `float()` —— 直接 `float(带梯度的张量)`
+    PyTorch 会告警（"Converting a tensor with requires_grad=True to a scalar"）。
+    守门是纯读，不该把预测卷进任何图。
+  - **Ruling**：`tests/test_nstep_wiring.py` 里 patch 的是
+    `train.selfplay.q_max_batch`（**它被查找的那个名字空间**），不是
+    `train.net.q_max_batch` —— 计划里写的是后者，那样 patch 根本不起作用
+    （selfplay 用 `from ... import` 绑定了自己的名字）。
+    代价若错：测试会「恒绿」，把没接线的情况放过去。
+  - **端到端真跑**（60 秒，`--workers 2 --batch 8 --mc-mix 0.5 --n-step 3`）：
+    日志头 `自举 β=0.5 n=3（目标网络每 1000 局同步）` ✓、1,768 局、
+    **没触发发散守门**、loss 有限（0.7~1.7）、29.4 局/秒（随机初始化 + batch 8，
+    不可与 44.5 直接比 —— 正式成本在 Task 8 量）。
+    产物留在 `runs/ab/smoke_nstep/`（`rm` 被权限拒了，未清；它不在 `runs/rl/` 下，
+    面板看不见它）。
+- **环境变化（如实记）**：这一轮全量测试多了一条红
+  `tests/test_game_log.py::test_settled_games_are_conserved` ——
+  断言是「结算记录 ≥20 局」，当前实时日志只剩 **6 局**（日志被轮转掉了）。
+  与本次改动无关（这个测试只读 `LOG_DIR`），正是现用方案 §七.3 记着的那一类。
+  **基线红从 1 条变 2 条**，两条都是日志轮转。
