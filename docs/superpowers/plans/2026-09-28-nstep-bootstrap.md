@@ -556,7 +556,9 @@ git commit -m "feat(net): q_max_batch（返回 float）+ 发散守门 check_q_sc
 - Consumes: `replay.expand`（Task 2）、`_tensors`（既有）
 - Produces:
   - `build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0) -> (samples, y_mc, boot)`
-  - `_learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost, mc_mix, n_step, fresh=None) -> float`
+  - `_learn_step(net, buf, rng, opt, *, batch_games, bomb_cost, fresh=None) -> float`
+    （Task 5 会把它扩成 `(net, net_tgt, buf, rng, opt, games, *, batch_games,
+    bomb_cost, mc_mix, n_step, fresh=None)` 并改掉它的两个测试调用点）
 
 > 这一轮 `_learn_step` **还不算自举**（`n_boot` 恒为 0、不建目标网络）——
 > 目的是先把两条路线的重复代码收成一份，**行为逐字不变**，由既有测试守住。
@@ -619,8 +621,8 @@ def test_build_samples_ignores_fresh_when_bootstrapping():
 def test_learn_step_returns_a_finite_loss():
     net = QNet()
     opt = torch.optim.Adam(net.parameters(), lr=1e-4)
-    loss = _learn_step(net, None, _buffer(), random.Random(0), opt, 0,
-                       batch_games=4, bomb_cost=0.0, mc_mix=1.0, n_step=3)
+    loss = _learn_step(net, _buffer(), random.Random(0), opt,
+                       batch_games=4, bomb_cost=0.0)
     assert isinstance(loss, float) and loss == loss
 
 
@@ -630,8 +632,8 @@ def test_learn_step_is_deterministic_for_one_seed():
         torch.manual_seed(0)
         net = QNet()
         opt = torch.optim.Adam(net.parameters(), lr=1e-4)
-        return _learn_step(net, None, _buffer(), random.Random(7), opt, 0,
-                           batch_games=4, bomb_cost=0.0, mc_mix=1.0, n_step=3)
+        return _learn_step(net, _buffer(), random.Random(7), opt,
+                           batch_games=4, bomb_cost=0.0)
     assert once() == once()
 ```
 
@@ -667,21 +669,21 @@ def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0)
     return samples, y_mc, boot
 
 
-def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
-                mc_mix, n_step, fresh=None):
+def _learn_step(net, buf, rng, opt, *, batch_games, bomb_cost, fresh=None):
     """从 buffer 采一批 → 重放 → 拼张量 → 一步 MSE。**两条训练路线共用这一份。**
 
-    `mc_mix < 1` 时才多算一次前向（自举项，用目标网络、`no_grad`）——
-    见 Task 5。`|Q|` 超限会**在这里 raise**（发散必须响）。
+    ⚠️ **这一步只做重构**：目标仍然逐点等于 `y_mc`（`n_step=0`，不算自举、
+    不建目标网络）。自举在 Task 5 接上 —— 那时签名会变（多 `net_tgt`/`games`/
+    `mc_mix`/`n_step`），`_targets` 也多出来一层。
+    **故意不在这里接受 `mc_mix`**：接受了却算不出自举，就是一个「静默地按 β=1
+    走」的半吊子状态 —— 那正是本仓库最恨的那种错。
     """
-    n_boot = 0 if mc_mix >= 1.0 else n_step
-    samples, y_mc, boot = build_samples(buf, rng, batch_games, fresh=fresh,
-                                        bomb_cost=bomb_cost, n_step=n_boot)
+    samples, y_mc, _boot = build_samples(buf, rng, batch_games, fresh=fresh,
+                                         bomb_cost=bomb_cost, n_step=0)
     st, ac, hi = _tensors(samples)
     dev = next(net.parameters()).device
     y_hat = net(st.to(dev), ac.to(dev), hi.to(dev))
-    targets = replay.blend(y_mc, None if not n_boot else [], mc_mix)
-    y = torch.tensor(targets, dtype=torch.float32).to(dev)
+    y = torch.tensor(y_mc, dtype=torch.float32).to(dev)
     loss = torch.nn.functional.mse_loss(y_hat, y)
     opt.zero_grad(); loss.backward(); opt.step()
     return loss.item()
@@ -691,9 +693,8 @@ def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
 buf.sample(...)` 那一块）换成：
 
 ```python
-        loss = _learn_step(net, None, buf, rng, opt, games,
-                           batch_games=batch_games, bomb_cost=bomb_cost,
-                           mc_mix=1.0, n_step=n_step, fresh=fresh)
+        loss = _learn_step(net, buf, rng, opt, batch_games=batch_games,
+                           bomb_cost=bomb_cost, fresh=fresh)
         steps += 1
 ```
 
@@ -732,6 +733,10 @@ git commit -m "refactor(selfplay): 训练步收成 build_samples/_learn_step 一
   - `sync_target(net, net_tgt, games, last_sync, every=TGT_SYNC_GAMES) -> int`
   - `_targets(net, net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step, fresh=None) -> (samples, targets)`
   - `train(..., mc_mix=MC_MIX, n_step=N_STEP, tgt_sync=TGT_SYNC_GAMES)`（同上 `train_parallel`）
+  - **改掉 T4 的两个调用点**：`_learn_step` 的签名从
+    `(net, buf, rng, opt, *, batch_games, bomb_cost, fresh=None)`
+    扩成 `(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost, mc_mix,
+    n_step, fresh=None)`，`tests/test_learn_step.py` 里那两条要跟着补参数
 
 - [ ] **Step 1: 写失败测试（追加到 `tests/test_learn_step.py`）**
 
@@ -892,7 +897,12 @@ tgt_sync: int = TGT_SYNC_GAMES`，日志头加：
 
 `import copy` 加到文件顶部（与 `glob`/`os` 一起）。
 
-- [ ] **Step 4: 跑测试确认全绿**
+- [ ] **Step 4: 把 T4 那两个调用点补上新参数，跑测试确认全绿**
+
+`tests/test_learn_step.py` 里 `test_learn_step_returns_a_finite_loss` 与
+`test_learn_step_is_deterministic_for_one_seed` 的签名不同了，补成
+`_learn_step(net, None, _buffer(), random.Random(0), opt, 0,
+batch_games=4, bomb_cost=0.0, mc_mix=1.0, n_step=3)`（`net_tgt=None`、`games=0`）。
 
 Run: `.venv/Scripts/python.exe -m pytest tests/ -q`
 Expected: 除预存红外全绿
