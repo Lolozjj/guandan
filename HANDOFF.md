@@ -17,7 +17,12 @@
 > 路线②（n 步自举）**已经实现、测过、成本也量了**（2026-09-28，提交 `bfb81d4..a4d02a8`）：
 > `y_t = (1-β)·V̄(s_{t+n}) + β·R`，**β=1（默认）时逐点等于老的 DMC**（有测试钉着）。
 >
-> - 新开关：`--mc-mix β`、`--n-step n`（默认 3）、`--tgt-sync`（默认 1000 局）
+> - 新开关：`--mc-mix β`（默认 1.0 = 老 DMC）、`--n-step n`（默认 **2**）、`--tgt-sync`（默认 1000 局）
+> - ⚠️ **`n` 必须是偶数。** 整条分支评审（2026-09-28）抓到：自举值 `V(s_{t+n})` 取的是
+>   **那一刻出手的人那一队**的分，而标签是第 t 步出手那一队的 —— 出手顺序 `0→3→2→1`，
+>   **奇数 n 的自举源落在对家、符号是反的**（实测 n=1/3 的相关性是 −0.35/−0.15，
+>   n=2/4 是 +0.27；命中率 5%/16% vs 89%/88%）。已修：自举源要**同队且在学习的座位上**，
+>   否则整项退回 MC。`N_STEP` 因此从 3 改成 2。奇数的 n 会打 ⚠️ 警告
 > - 判据 2 的尺子：`tools/action_margin.py`（现役 1407 = **0.124**，与 9-27 记的 0.123 同口径）
 > - 实测成本：β=0.5 让吞吐 **−33%**（51.7 → 34.6 局/秒）—— 自举要 `max_a Q̄(s,a)`，
 >   **每个候选一行**（约 10× 行数），不是 spec 当初估的「翻倍」
@@ -33,7 +38,7 @@
 > $env:GUANDAN_DEVICE="cpu"
 > $C = "--workers 2 --opp-mix 0.5 --init runs/rl/20260926-1407/best.pt --eps-games 200000 --snap-every 20000"
 > .venv/Scripts/python.exe -u -m train.selfplay 9000 $C --mc-mix 1.0 --out-dir runs/ab/R4_b10
-> .venv/Scripts/python.exe -u -m train.selfplay 9000 $C --mc-mix 0.5 --n-step 3 --out-dir runs/ab/R4_b05
+> .venv/Scripts/python.exe -u -m train.selfplay 9000 $C --mc-mix 0.5 --n-step 2 --out-dir runs/ab/R4_b05
 > ```
 >
 > 查可用内存（**PowerShell 在拒绝清单里，用这个**）：
