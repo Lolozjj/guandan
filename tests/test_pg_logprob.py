@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from train import replay
-from train.net import (ENT_FLOOR_FRAC, QNet, check_entropy,
+from train.net import (ENT_FLOOR_FRAC, QNet, check_entropy, check_logits,
                        log_prob_and_entropy, q_argmax_batch, q_values)
 from train.policies import greedy_policy
 
@@ -140,3 +140,22 @@ def test_entropy_guard_raises_when_collapsed():
 
 def test_entropy_floor_is_a_small_fraction():
     assert 0.0 < ENT_FLOOR_FRAC <= 0.2
+
+
+def test_logits_guard_does_not_fire_on_normal_logits():
+    """⚠️ **回归测试**：几十的 logits 是**正常的**，不许炸。
+
+    2026-09-29 真踩过：把 `Q_ABS_MAX = 30` 照搬到 logits 上，PG 跑到 8,256 局被**误杀**
+    —— 当时 `loss=0.152`、熵 0.84，一切正常。logits 是**对数几率**，没有有界尺度。
+    """
+    check_logits(31.13, games=8256, loss=0.152)      # 就是那次误杀的那个值
+    check_logits(500.0, games=1, loss=0.0)
+
+
+def test_logits_guard_fires_on_overflow_and_nan():
+    with pytest.raises(RuntimeError):
+        check_logits(1e9, games=1, loss=0.0)
+    with pytest.raises(RuntimeError):
+        check_logits(float("nan"), games=1, loss=float("nan"))
+    with pytest.raises(RuntimeError):
+        check_logits(float("inf"), games=1, loss=0.0)

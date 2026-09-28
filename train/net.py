@@ -166,6 +166,19 @@ def q_max_batch(net, pending):
     return out
 
 
+#: **logits 的溢出兜底（不是"发散守门"）**。
+#:
+#: ⚠️ **别把 Q 的那个阈值（`Q_ABS_MAX = 30`）搬过来** —— 两者是不同量纲的东西：
+#: `Q` 是**值**，标签尺度 ±3，所以 30 就是发散；而 **logits 是「对数几率」，没有
+#: 有界尺度** —— `softmax` 把任何有限的 logits 映射成合法分布，`|z|` 大只说明
+#: 「这一手很确定」，**不是发散**。
+#:
+#: 2026-09-29 实测（这个坑真踩了）：照搬 30 之后，PG 跑到 **8,256 局被误杀**
+#: ——当时 `loss=0.152`、熵 0.84，**一切正常**。所以这里只留一个纯溢出兜底（1e4），
+#: 真正管「策略退化」的是 `check_entropy`。
+LOGIT_ABS_MAX = 1e4
+
+
 #: 熵的下限：低于「候选数对应的均匀熵」的这个比例，就认为策略塌成了 argmax。
 #: 0.05 = 均匀熵的二十分之一 —— 那是"几乎确定"的意思，不是"有一点偏好"。
 ENT_FLOOR_FRAC = 0.05
@@ -196,6 +209,18 @@ def log_prob_and_entropy(net, samples):
         lps.append(seg[i])
         ents.append(-(seg.exp() * seg).sum())
     return torch.stack(lps), torch.stack(ents), float(q.detach().abs().max())
+
+
+def check_logits(zmax: float, games: int, loss: float,
+                 limit: float = LOGIT_ABS_MAX) -> None:
+    """logits 的**溢出兜底**（不是"发散守门"）。见 `LOGIT_ABS_MAX` 的注释。
+
+    ⚠️ 用 `not (x <= limit)` 写 ⇒ **NaN / inf 一起拦住**（与 `check_q_scale` 同一个坑）。
+    """
+    if not (zmax <= limit):
+        raise RuntimeError(
+            f"logits 溢出：|z| = {zmax:.4g} > {limit:g}（第 {games:,} 局，loss={loss:.3f}）"
+            f" —— 数值炸了。（注意：**几十的 logits 是正常的**，见 LOGIT_ABS_MAX 的注释）")
 
 
 def check_entropy(h: float, log_k: float, frac: float = ENT_FLOOR_FRAC) -> None:

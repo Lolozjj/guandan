@@ -44,7 +44,7 @@ import torch
 from net.sim import env, rules
 from train import pool, replay
 from train.eval import match
-from train.net import (DEVICE, QNet, check_entropy, check_q_scale,
+from train.net import (DEVICE, QNet, check_entropy, check_logits,
                        log_prob_and_entropy, policy_sample_batch,
                        q_argmax_batch, q_max_batch)
 from train.policies import greedy_policy, random_policy
@@ -457,8 +457,10 @@ def _pg_step(net, opt, samples, rewards, base, games, beta_ent: float = BETA_ENT
     # （单测里网络在 cpu，所以只有走 `train()` 的集成路径才会撞上 —— 它抓到了。）
     adv = torch.tensor(rewards, dtype=torch.float32, device=lp.device) - base.value
     loss = -(lp * adv).mean() - beta_ent * ent.mean()
-    # 两处守门（「失败必须响」）：logits 发散 / 熵塌
-    check_q_scale(zmax, games, float(loss.detach()), what="logits")
+    # 两处守门（「失败必须响」）：logits 溢出 / 熵塌
+    # ⚠️ 这里**不能用 `check_q_scale`** —— 它的阈值是按"值"定的（标签尺度 ±3），
+    # 搬到 logits 上会误杀（2026-09-29 真踩过：8,256 局、一切正常却炸了）。
+    check_logits(zmax, games, float(loss.detach()))
     log_k = sum(math.log(len(a)) for _o, a, _i, _s, _h in samples) / len(samples)
     check_entropy(float(ent.mean().detach()), log_k)
     opt.zero_grad()
