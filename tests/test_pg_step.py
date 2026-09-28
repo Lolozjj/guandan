@@ -65,20 +65,53 @@ def test_pg_step_raises_when_the_policy_collapses(monkeypatch):
     import train.net as net_mod
 
     def _extreme(_net, pending, grad=False):
-        """每个局面都把**最后一个候选**抬到 1e6 ⇒ softmax 近似 one-hot ⇒ 熵≈0。"""
+        """每个局面都把**最后一个候选**抬到 200 ⇒ one-hot ⇒ 熵≈0。
+
+        ⚠️ 量级要**低于** `LOGIT_ABS_MAX`（1e4），否则响的是 logits 守门、
+        测不到熵那一条（评审 I3）；而且必须 `requires_grad=True`，
+        否则把两个守门都删掉之后 `backward()` 会报另一种 RuntimeError，
+        测试照样"通过" —— 那它就没有牙了。
+        """
         rows, counts = [], []
         for _o, a, _h in pending:
             counts.append(len(a))
-            rows += [0.0] * (len(a) - 1) + [1e6]
-        return torch.tensor(rows), counts
+            rows += [0.0] * (len(a) - 1) + [200.0]
+        return torch.tensor(rows, requires_grad=True), counts
 
     monkeypatch.setattr(net_mod, "_flat_scores", _extreme)
     net = QNet().to(DEVICE)
     opt = torch.optim.Adam(net.parameters(), lr=0.0)
     samples = _samples(2)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="熵"):
         _pg_step(net, opt, samples, [1.0] * len(samples), _RunningMean(), games=0)
 
 
 def test_beta_ent_default_is_small_and_positive():
     assert 0.0 < BETA_ENT <= 0.05
+
+
+def test_pg_step_feeds_the_baseline():
+    """⚠️ **评审抓到的 Critical**：`base.update` 原来一次都没被调用过 ⇒ `adv ≡ R`
+    （而 ~95% 的局都赢 ⇒ R 几乎恒正 ⇒ 更新退化成"无条件抬升采样到的那一手"）。
+
+    这条钉住「一步之后基线必须落在这一批 R 上」。
+    """
+    net = QNet().to(DEVICE)
+    opt = torch.optim.Adam(net.parameters(), lr=0.0)
+    samples = _samples(2)
+    base = _RunningMean()
+    assert base.value == 0.0
+    _pg_step(net, opt, samples, [5.0] * len(samples), base, games=0)
+    assert base.value == pytest.approx(5.0)
+
+
+def test_adv_is_centered_once_the_baseline_is_warm():
+    """基线喂热之后，同一批 R 的 `adv` 必须**接近于 0** —— 这才叫"中心化"。"""
+    net = QNet().to(DEVICE)
+    opt = torch.optim.Adam(net.parameters(), lr=0.0)
+    samples = _samples(2)
+    base = _RunningMean()
+    for _ in range(3):
+        base.update(5.0)
+    out = _pg_step(net, opt, samples, [5.0] * len(samples), base, games=0)
+    assert abs(out["adv"]) < 1e-6

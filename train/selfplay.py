@@ -44,7 +44,7 @@ import torch
 from net.sim import env, rules
 from train import pool, replay
 from train.eval import match
-from train.net import (DEVICE, QNet, check_entropy, check_logits,
+from train.net import (DEVICE, QNet, check_entropy, check_logits, check_q_scale,
                        log_prob_and_entropy, policy_sample_batch,
                        q_argmax_batch, q_max_batch)
 from train.policies import greedy_policy, random_policy
@@ -108,6 +108,18 @@ def resolve_eps_start(init: str = None, explicit: float = None) -> float:
 EVAL_GAMES = 200
 RUNS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "runs", "rl")
+
+
+#: 训练算法。`dmc` = 回归标量 Q + argmax（默认、老行为）；`pg` = 策略梯度（REINFORCE）。
+ALGOS = ("dmc", "pg")
+
+
+def _check_algo(name: str) -> str:
+    """`--algo` 的唯一校验处。**不认识的必须炸** —— 静默退回 DMC 会让
+    「PG 臂」其实是对照臂，而且日志上一个字都不提（评审 M1）。"""
+    if name not in ALGOS:
+        raise ValueError(f"认不出的算法：{name!r}（只有 {ALGOS}）")
+    return name
 
 
 #: 固定对手有哪几种「强」可选。`greedy` = 老基线；`rule` = 规则式（像人）。
@@ -455,14 +467,23 @@ def _pg_step(net, opt, samples, rewards, base, games, beta_ent: float = BETA_ENT
     # ⚠️ **设备要跟 `lp` 走**：网络在 `DEVICE`（可能是 cuda）上，而标签是新造的 cpu 张量
     # ⇒ 不搬就 `Expected all tensors to be on the same device`。
     # （单测里网络在 cpu，所以只有走 `train()` 的集成路径才会撞上 —— 它抓到了。）
+    #
+    # ⚠️ 顺序是**先用旧基线、再把它喂进去**（不是反过来）：
+    # 用更新后的基线会让这一批自己出现在自己的基线里 ⇒ adv 被自我抵消一部分。
+    # （`tests/test_pg_step.py::test_pg_step_reports_the_advantage_after_the_baseline` 钉着）
     adv = torch.tensor(rewards, dtype=torch.float32, device=lp.device) - base.value
+    # ⚠️ **这一行不能少**：少了就 `= R − 0 ≡ R`，而这个任务 ~95% 的局都赢
+    # ⇒ `R` 几乎恒正 ⇒ 更新退化成「把采样到的那一手无条件往上抬」✗
+    # ⇒ 那本身就足以把策略磨塌，**塌陷就不能干净地归因到信任域** ✗
+    # （评审 2026-09-29 抓到的 Critical：`update` 全仓库只有测试在调。）
+    base.update(sum(rewards) / len(rewards))
     loss = -(lp * adv).mean() - beta_ent * ent.mean()
     # 两处守门（「失败必须响」）：logits 溢出 / 熵塌
     # ⚠️ 这里**不能用 `check_q_scale`** —— 它的阈值是按"值"定的（标签尺度 ±3），
     # 搬到 logits 上会误杀（2026-09-29 真踩过：8,256 局、一切正常却炸了）。
     check_logits(zmax, games, float(loss.detach()))
-    log_k = sum(math.log(len(a)) for _o, a, _i, _s, _h in samples) / len(samples)
-    check_entropy(float(ent.mean().detach()), log_k)
+    check_entropy([float(x) for x in ent.detach()],
+                  [math.log(len(a)) for _o, a, _i, _s, _h in samples])
     opt.zero_grad()
     loss.backward()
     opt.step()
@@ -653,7 +674,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           bomb_cost: float = 0.0, mc_mix: float = MC_MIX,
           n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES,
           opp_kind: str = "greedy", algo: str = "dmc",
-          beta_ent: float = BETA_ENT):
+          beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -680,7 +701,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"对手混合 {opp_mix:.0%}"
         f"（其中{OPP_KIND_CN.get(opp_kind, opp_kind)} {greedy_share:.0%}）"
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
-        + _boot_log(mc_mix, n_step, tgt_sync)
+        + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
         + _pg_log(algo, beta_ent)      # 单进程没有权重广播 ⇒ 不打那一行
         + f"\n权重 -> {out_dir}")
@@ -839,7 +860,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 f"随机 {1 - greedy_share:.0%}）"
                 f"  **池子关**")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
-        + _boot_log(mc_mix, n_step, tgt_sync)
+        + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
         + _pg_log(algo, beta_ent, weight_sync_games)
         + f"\n权重 -> {out_dir}")
@@ -888,7 +909,9 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 # 数据就是刚收到的这一批（worker 发的是紧凑记录 ⇒ learner 侧重放）
                 samples, rewards = [], []
                 for rec in recs:
-                    pts, y, _b = replay.expand(rec)
+                    # ⚠️ `bomb_cost` 必须传 —— 漏了它，多进程 PG 的标签与日志头写的
+                    # 「炸弹代价 λ=0.2」不符（评审 I1；单进程那条路是传的）。
+                    pts, y, _b = replay.expand(rec, bomb_cost=bomb_cost)
                     samples += pts
                     rewards += y
                 out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
@@ -975,11 +998,18 @@ def main(argv=None) -> int:
         kw["bomb_cost"] = float(argv[argv.index("--bomb-cost") + 1])
     if "--algo" in argv:
         # 训练算法：dmc（默认，老行为）或 pg（策略梯度 / REINFORCE）
-        kw["algo"] = argv[argv.index("--algo") + 1]
+        # ⚠️ **不认识的取值必须炸**：`--algo ppo` 会静默走 DMC，
+        # 而 PG 那段日志对非 pg 返回空串 ⇒ 一次手滑的「PG 臂」其实是对照臂，
+        # 而且**没有任何东西会响**（评审 M1）。
+        kw["algo"] = _check_algo(argv[argv.index("--algo") + 1])
     if "--beta-ent" in argv:
         kw["beta_ent"] = float(argv[argv.index("--beta-ent") + 1])
     if "--weight-sync-games" in argv:
-        kw["weight_sync_games"] = int(argv[argv.index("--weight-sync-games") + 1])
+        n = int(argv[argv.index("--weight-sync-games") + 1])
+        if n <= 0:
+            # 0 会让 `games - last_sync >= 0` 恒真 ⇒ 每步广播 7.8 MB（评审 M7）
+            raise ValueError(f"--weight-sync-games 必须为正：{n}")
+        kw["weight_sync_games"] = n
     if "--opp-kind" in argv:
         # 固定对手用哪种「强」：greedy（默认，老行为）或 rule（规则式，像人）。
         kw["opp_kind"] = argv[argv.index("--opp-kind") + 1]

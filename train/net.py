@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 
+import statistics
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -223,19 +225,28 @@ def check_logits(zmax: float, games: int, loss: float,
             f" —— 数值炸了。（注意：**几十的 logits 是正常的**，见 LOGIT_ABS_MAX 的注释）")
 
 
-def check_entropy(h: float, log_k: float, frac: float = ENT_FLOOR_FRAC) -> None:
-    """熵低于「均匀熵 `log_k` 的 `frac`」就 raise（本项目纪律：失败必须响）。
+def check_entropy(hs, log_ks, frac: float = ENT_FLOOR_FRAC) -> None:
+    """逐个决策点算「熵 / 均匀熵」，**中位数**低于 `frac` 就 raise。
 
     熵塌 = 策略退化成确定性的 argmax = **白换框架**，所以它必须响，不许静默训完。
 
-    ⚠️ 用 `not (h >= floor)` 写 —— NaN 与任何数比较都是 False，
-    写成 `h < floor` 会让 NaN 悄悄溜过去（与 `check_q_scale` 同一个坑）。
+    ⚠️ **为什么是逐样本的中位数，而不是两个批均值相除**（评审 2026-09-29 的 I2）：
+    批均值会被「候选多的局面」抬过去 —— 90% 的决策点已经 argmax（H=0）、
+    10% 还有 20 个候选且均匀（H=3.0）⇒ 两个均值一比仍然"健康" ✗，
+    可实际上绝大部分决策已经退化了 ✗。中位数对这种情况不会瞎。
+
+    `k=1` 的点（只有一手可出）**跳过** —— 那里的熵恒为 0，没有信息（也没有除零）。
+    ⚠️ 用 `not (x >= frac)` 写 —— NaN 会顺着中位数传上来，写成 `<` 会让它溜过去。
     """
-    floor = frac * log_k
-    if not (h >= floor):
+    ratios = [h / lk for h, lk in zip(hs, log_ks) if lk > 0]
+    if not ratios:
+        return
+    med = statistics.median(ratios)
+    if not (med >= frac):
         raise RuntimeError(
-            f"策略熵塌了：H={h:.4g} < {floor:.4g}（均匀熵 {log_k:.4g} 的 {frac:.0%}）"
-            f" —— 已经退化成 argmax，等于白换框架。调 `--beta-ent`（当前默认见 BETA_ENT）")
+            f"策略熵塌了：逐点「熵/均匀熵」的**中位**={med:.4g} < {frac:.4g}"
+            f"（{len(ratios)} 个决策点）—— 已经退化成 argmax，等于白换框架。"
+            f"调 `--beta-ent`（当前默认见 BETA_ENT）")
 
 
 #: 发散守门（spec §6）：|Q| 超过这个数就**响亮地炸**。

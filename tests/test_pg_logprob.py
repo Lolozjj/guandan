@@ -131,11 +131,29 @@ def test_the_existing_helpers_still_run_under_no_grad():
 
 def test_entropy_guard_raises_when_collapsed():
     """熵塌到「候选数均匀熵」的 5% 以下 ⇒ 响亮地炸（等于偷偷退化成 argmax）。"""
-    check_entropy(0.9 * math.log(10), math.log(10))          # 正常：不炸
+    check_entropy([0.9 * math.log(10)], [math.log(10)])      # 正常：不炸
     with pytest.raises(RuntimeError):
-        check_entropy(0.001, math.log(10))
+        check_entropy([0.001], [math.log(10)])
     with pytest.raises(RuntimeError):                        # NaN 也要拦住
-        check_entropy(float("nan"), math.log(10))
+        check_entropy([float("nan")], [math.log(10)])
+
+
+def test_entropy_guard_is_per_decision_not_a_batch_average():
+    """⚠️ **评审 I2**：两个**批均值**相除会被"候选多的局面"抬过去 ——
+    90% 的决策点已经 argmax（H=0）、10% 还有 20 个候选且均匀（H=3.0）时，
+    均值一比仍然"健康"，可实际上绝大部分决策已经退化了 ✗
+    ⇒ 改成逐点算「熵/均匀熵」再取**中位数**。
+    """
+    hs = [0.0] * 90 + [3.0] * 10
+    ks = [math.log(2)] * 90 + [math.log(20)] * 10
+    assert (sum(hs) / len(hs)) > 0.05 * (sum(ks) / len(ks)), '批均值的口径确实是「健康」的' 
+    with pytest.raises(RuntimeError):
+        check_entropy(hs, ks)
+
+
+def test_entropy_guard_skips_single_candidate_decisions():
+    """只有一手可出（k=1）时熵恒为 0 —— 那不是退化，**跳过**（顺带没有除零）。"""
+    check_entropy([0.0, 0.9], [0.0, 1.0])
 
 
 def test_entropy_floor_is_a_small_fraction():

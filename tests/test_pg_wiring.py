@@ -68,3 +68,18 @@ def test_cli_forwards_the_pg_knobs(monkeypatch):
     monkeypatch.setattr(sp, "train", fake_train)
     sp.main(["1", "--algo", "pg", "--beta-ent", "0.02", "--weight-sync-games", "200"])
     assert (seen["algo"], seen["beta_ent"], seen["weight_sync_games"]) == ("pg", 0.02, 200)
+
+
+def test_unknown_algo_is_rejected(monkeypatch):
+    """⚠️ **评审 M1**：`--algo ppo` 原来会**静默走 DMC**，而日志对非 pg 一个字都不提
+    ⇒ 一次手滑的「PG 臂」其实是对照臂，没有任何东西会响。"""
+    with pytest.raises(ValueError):
+        sp.main(["1", "--algo", "ppo"])
+    with pytest.raises(ValueError):
+        sp.main(["1", "--algo", "PG"])
+
+
+def test_weight_sync_games_zero_is_rejected(monkeypatch):
+    """0 会让 `games - last_sync >= 0` 恒真 ⇒ 每步广播 7.8 MB（评审 M7）。"""
+    with pytest.raises(ValueError):
+        sp.main(["1", "--weight-sync-games", "0"])
