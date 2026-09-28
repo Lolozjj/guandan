@@ -84,7 +84,7 @@ def test_the_two_label_producers_agree_bit_for_bit():
                                       n_games=8, capture=True, opp_mix=1.0,
                                       greedy_share=1.0, bomb_cost=lam)
         for rec, caps, y_live in out:
-            pts, y_replay = replay.expand(rec, bomb_cost=lam)
+            pts, y_replay, _b = replay.expand(rec, bomb_cost=lam)
             assert y_live == y_replay, f"λ={lam}：现场与重放的标签不一致"
             assert len(pts) == len(caps) == len(y_live), "条数对不上"
 
@@ -101,7 +101,7 @@ def test_play_capturing_also_uses_the_single_label_source():
 
     rec, _pts, y = replay.play_capturing(greedy_policy, random.Random(0), level=5,
                                          capture=True, bomb_cost=0.2)
-    _pts2, y_expand = replay.expand(rec, bomb_cost=0.2)
+    _pts2, y_expand, _b2 = replay.expand(rec, bomb_cost=0.2)
     assert y == y_expand, "第三个产地与重放的标签不一致"
     assert all(isinstance(v, float) for v in y)
 

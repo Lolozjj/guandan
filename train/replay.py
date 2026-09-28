@@ -130,8 +130,8 @@ def blend(y_mc, boot, beta: float = 1.0) -> list:
             for y, v in zip(y_mc, boot)]
 
 
-def expand(rec: GameRecord, bomb_cost: float = 0.0):
-    """把记录重放成 `(决策点, 终局 reward)`。
+def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0):
+    """把记录重放成 `(决策点, MC 标签, 自举源)`。
 
     决策点是 `(obs, acts, 选中下标, 出牌人, hist)` —— 与 `env.rollout` 同形状，
     训练循环因此**不需要区分**「刚打的」和「从 buffer 里取的」。
@@ -139,23 +139,47 @@ def expand(rec: GameRecord, bomb_cost: float = 0.0):
     `rec.learn` 里的座位才产出决策点（`None` = 四家都产出，老行为）。
     ⚠️ **局面必须每一步都往前走** —— 过滤只发生在 `points.append` 那一行。
     提前 `continue` 会让重放错位（这是这个函数最容易被写错的地方）。
+
+    `n > 0` 时额外产出 `boot[i]`：第 i 个决策点**往后数 n 步**那个局面的
+    `(obs, acts, hist)` —— 自举要的 `s_{t+n}`（spec §3.2）。**越过终局的点是
+    `None`**（那些点整项退回 MC）。`n = 0` 时 `boot` 是空表，与老行为逐点相等。
+
+    ⚠️ **`boot` 与 `points` 必须等长同序** —— 错开一格就是拿别人的未来当自己的标签。
+    对齐靠一个**定长环**（`deque(maxlen=n+1)`）：走到第 t 步时环首正好是
+    第 `t-n` 步，此刻的局面就是它要的自举源。历史**必须现在取**
+    （`encode_history`）—— 整局打完再取会把后面的牌塞进去（未来信息泄漏）。
     """
+    if n < 0:
+        raise ValueError(f"n 不能为负：{n}")
     e = env.GuandanEnv(seed=0)
     e.reset(level=rec.level, hands=[set(h) for h in rec.hands], first=rec.first)
     learn = set(rec.learn) if rec.learn else None
-    seq, points = [], []
+    seq, points, boot = [], [], []
+    ring = deque(maxlen=n + 1) if n else None     # 定长环：环首 = 第 t-n 步
     obs = e.observe()
     for i in rec.actions:
         acts = e.legal()
         seat = e.hand.turn
         seq.append((seat, acts[i]))       # **全量步骤**：B_t 要沿着一局往后数
-        # 历史必须**在这一步当时**取 —— 整局打完再取会把后面的牌塞进历史
-        # （那是另一种泄漏：未来信息）。selfplay 那边也是这么取的。
+        tag = None                        # 这一步在 points 里的下标（没保留就是 None）
         if learn is None or seat in learn:
+            tag = len(points)
+            # 历史必须**在这一步当时**取 —— 整局打完再取会把后面的牌塞进历史
+            # （那是另一种泄漏：未来信息）。selfplay 那边也是这么取的。
             points.append((obs, acts, i, seat, env.encode_history(e.hand, seat)))
+            if ring is not None:
+                boot.append(None)         # 自举源在 t+n 步，那时才补得上
+                # （`n = 0` 时 boot 保持**空表** —— 「这一批根本没算自举」比
+                #   一列 None 更能让调用方一眼看出区别）
+        if ring is not None:
+            ring.append(tag)
+            # 环满（t >= n）时环首才是「第 t-n 步」；不满时那些点的源不存在
+            if len(ring) == n + 1 and ring[0] is not None:
+                boot[ring[0]] = (obs, acts, env.encode_history(e.hand, seat))
         obs, _r, _done, _info = e.step(i)
     # 标签**只有一个产地**（`mc_targets`）—— 过滤也在它里面做
-    return points, mc_targets(seq, e.ranks, learn=rec.learn, bomb_cost=bomb_cost)
+    return (points, mc_targets(seq, e.ranks, learn=rec.learn, bomb_cost=bomb_cost),
+            boot)
 
 
 def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.0):

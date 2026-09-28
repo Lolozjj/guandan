@@ -32,7 +32,7 @@ def test_expand_reproduces_the_live_trajectory():
     live_y = [rules.reward(e.ranks, s) for (_o, _a, _i, s, _h) in live]   # ranks 是 property，不加括号
 
     rec = replay.GameRecord.of(e, actions, hands0)
-    points, y = replay.expand(rec)
+    points, y, _b = replay.expand(rec)
 
     assert len(points) == len(live), "重放出来的步数与现场不一致"
     for (o1, a1, i1, s1, h1), (o2, a2, i2, s2, h2) in zip(live, points):

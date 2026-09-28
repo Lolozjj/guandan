@@ -466,7 +466,13 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         # 2) 从 buffer 采一批（spec §5.2：整局的终局 reward 当回归目标）
         samples, targets = [], []
         for rec in buf.sample(batch_games, rng):
-            pts, y = fresh.get(id(rec)) or replay.expand(rec)
+            # `or` 会把「缓存里的 2 元组」与「expand 的 3 元组」混在一起 ——
+            # 必须显式判 None（Task 4 会把这一段收进 build_samples）
+            got = fresh.get(id(rec))
+            if got is None:
+                pts, y, _b = replay.expand(rec)
+            else:
+                pts, y = got
             samples += pts
             targets += y
         st, ac, hi = _tensors(samples)
@@ -619,7 +625,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             # 采样 + 训一步（与单进程那条路逐字相同）
             samples, targets = [], []
             for rec in buf.sample(batch_games, rng):
-                pts, y = replay.expand(rec)
+                pts, y, _b = replay.expand(rec)
                 samples += pts
                 targets += y
             st, ac, hi = _tensors(samples)

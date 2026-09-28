@@ -31,7 +31,7 @@ def test_expand_only_yields_the_learner_team():
     """`opp_mix=1.0`：重放产出的座位必须**只有学习那一队**。"""
     for rec, caps, _y in _play(opp_mix=1.0, greedy_share=1.0):
         learner = {s for (_o, _a, _i, s, _h) in caps}
-        pts, y = replay.expand(rec)
+        pts, y, _b = replay.expand(rec)
         seats = {s for (_o, _a, _i, s, _h) in pts}
         assert seats <= learner, \
             f"重放产出了非学习队的座位：{sorted(seats - learner)}"
@@ -46,7 +46,7 @@ def test_expand_reproduces_the_learner_points_bit_for_bit():
     `expand` 的 `e.step(i)` 必须**每一步都走**，过滤只能发生在 `points.append` 那一行。
     """
     for rec, caps, _y in _play(opp_mix=1.0, greedy_share=1.0):
-        pts, _y2 = replay.expand(rec)
+        pts, _y2, _b = replay.expand(rec)
         assert [(s, i) for (_o, _a, i, s, _h) in pts] == \
                [(s, i) for (_o, _a, i, s, _h) in caps]
 
@@ -54,14 +54,14 @@ def test_expand_reproduces_the_learner_points_bit_for_bit():
 def test_expand_is_unchanged_for_pure_selfplay():
     """纯自对弈（`opp_mix=0`）时四家都学 —— 老行为不许变。"""
     for rec, _caps, _y in _play(opp_mix=0.0):
-        pts, _y2 = replay.expand(rec)
+        pts, _y2, _b = replay.expand(rec)
         assert {s for (_o, _a, _i, s, _h) in pts} == {0, 1, 2, 3}
 
 
 def test_learn_all_seats_restores_the_old_behaviour():
     """`learn_all_seats=True` = A/B 的**对照臂**：对手照旧换，但四家照旧都学。"""
     for rec, caps, _y in _play(opp_mix=1.0, greedy_share=1.0, learn_all_seats=True):
-        pts, _y2 = replay.expand(rec)
+        pts, _y2, _b = replay.expand(rec)
         assert {s for (_o, _a, _i, s, _h) in pts} == {0, 1, 2, 3}
         assert {s for (_o, _a, _i, s, _h) in caps} == {0, 1, 2, 3}, \
             "对照臂连现场抓取也必须是四家 —— 否则两臂差的就不止一处"
