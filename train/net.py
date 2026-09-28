@@ -74,8 +74,12 @@ def q_values(net, obs, acts, hist):
         return net(st.expand(len(acts), -1), ac, hi.expand(len(acts), -1, -1))
 
 
-def _flat_scores(net, pending):
+def _flat_scores(net, pending, grad: bool = False):
     """`pending = [(obs, acts, hist), ...]` -> `(q, counts)`：所有候选的 Q 首尾相接。
+
+    `grad=True` 时**不套 `no_grad`** —— 策略梯度要穿过 logits（见
+    `log_prob_and_entropy`）。⚠️ 默认 `False` 是**故意的**：老的调用方
+    （`q_argmax_batch` / `q_max_batch`）要的是"算出来的值"，带梯度进去只会白建图。
 
     不等长的候选**不补 padding**：直接首尾相接，用每组的下标区间取 max / argmax。
     补 padding 会白白多算一截，而且要把「无效候选」屏蔽掉，多一处出错的机会。
@@ -89,10 +93,12 @@ def _flat_scores(net, pending):
     ac = np.stack([env.encode_action(a, o.level)
                    for o, acts, _h in pending for a in acts])
     idx = np.repeat(np.arange(len(pending)), counts)
+    args = (torch.from_numpy(st[idx]).to(dev), torch.from_numpy(ac).to(dev),
+            torch.from_numpy(hi[idx]).to(dev))
+    if grad:
+        return net(*args), counts
     with torch.no_grad():
-        return net(torch.from_numpy(st[idx]).to(dev),
-                   torch.from_numpy(ac).to(dev),
-                   torch.from_numpy(hi[idx]).to(dev)), counts
+        return net(*args), counts
 
 
 def q_argmax_batch(net, pending):
@@ -133,6 +139,53 @@ def q_max_batch(net, pending):
         out[i] = float(q[off:off + c].max())
         off += c
     return out
+
+
+#: 熵的下限：低于「候选数对应的均匀熵」的这个比例，就认为策略塌成了 argmax。
+#: 0.05 = 均匀熵的二十分之一 —— 那是"几乎确定"的意思，不是"有一点偏好"。
+ENT_FLOOR_FRAC = 0.05
+
+
+def log_prob_and_entropy(net, samples):
+    """`samples = [(obs, acts, 选中下标, 出牌人, hist), ...]`（`replay.expand` 的产出形状）
+
+    返回 `(lp, ent, zmax)`：
+
+    - `lp[i] = log π(a_i | s_i)`，`π = softmax(该局面全部候选的 logits)`
+    - `ent[i] = π 的香农熵`（自然对数）
+    - `zmax` = 这一批 logits 的 `|z|` 最大值（float，给发散守门用）
+
+    `lp`/`ent` 是 **1-D tensor 而不是 float** —— 与 `q_max_batch` 正好相反：
+    那里返回 float 是**故意的**（目标项不许带梯度），这里要的就是梯度。
+
+    ⚠️ 内部走 `_flat_scores(..., grad=True)`。**忘了 `grad=True` 的话，loss 会变成
+    常数、梯度为 `None`、训练一步都不动，而日志上只看到 loss 平着不动**
+    —— `tests/test_pg_logprob.py` 里那条「训一步参数必须变」就是钉这个的。
+    """
+    q, counts = _flat_scores(net, [(o, a, h) for o, a, _i, _s, h in samples],
+                             grad=True)
+    lps, ents, off = [], [], 0
+    for (_o, _a, i, _s, _h), c in zip(samples, counts):
+        seg = torch.log_softmax(q[off:off + c], dim=0)
+        off += c
+        lps.append(seg[i])
+        ents.append(-(seg.exp() * seg).sum())
+    return torch.stack(lps), torch.stack(ents), float(q.detach().abs().max())
+
+
+def check_entropy(h: float, log_k: float, frac: float = ENT_FLOOR_FRAC) -> None:
+    """熵低于「均匀熵 `log_k` 的 `frac`」就 raise（本项目纪律：失败必须响）。
+
+    熵塌 = 策略退化成确定性的 argmax = **白换框架**，所以它必须响，不许静默训完。
+
+    ⚠️ 用 `not (h >= floor)` 写 —— NaN 与任何数比较都是 False，
+    写成 `h < floor` 会让 NaN 悄悄溜过去（与 `check_q_scale` 同一个坑）。
+    """
+    floor = frac * log_k
+    if not (h >= floor):
+        raise RuntimeError(
+            f"策略熵塌了：H={h:.4g} < {floor:.4g}（均匀熵 {log_k:.4g} 的 {frac:.0%}）"
+            f" —— 已经退化成 argmax，等于白换框架。调 `--beta-ent`（当前默认见 BETA_ENT）")
 
 
 #: 发散守门（spec §6）：|Q| 超过这个数就**响亮地炸**。
