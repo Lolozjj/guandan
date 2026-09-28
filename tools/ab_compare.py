@@ -27,6 +27,7 @@ import torch
 from train.eval import bomb_rate, bomb_waste, match
 from train.net import QNet
 from train.policies import greedy_policy
+from train.rule_policy import rule_policy
 from train.selfplay import net_play
 from tools.accept_meld import _utf8_stdout
 
@@ -76,6 +77,13 @@ def main(arm, ckpt="last.pt"):
     print(f"== {arm}/{ckpt}  （{d.get('games'):,} 局{selfrep}）")
     wr = match(pol, greedy_policy, games=400, seed=1002)
     print(f"   vs 贪心（400 局，同种子）    {wr:6.1%}")
+    # `vs 规则式`：2026-09-28 加的**第二把尺子**。
+    # 理由：`vs 贪心` 已经饱和（现役 93.8%），而规则式对手是「像人」的
+    # （不压队友、留炸、算剩牌），现役对它只有 **88.2%** —— 多 5.6pp 余量，
+    # 而且量的是「对面会像人一样打时你还行不行」。
+    # ⚠️ 它比贪心慢（每个决策点要枚举+估风险，纯 Python），一次约 20~40 秒。
+    wr_r = match(pol, rule_policy(), games=400, seed=1002)
+    print(f"   vs 规则式（400 局，同种子）  {wr_r:6.1%}")
 
     w, c, r = waste(pol, None)
     b, g, br = rate(pol, None)
@@ -93,7 +101,8 @@ def main(arm, ckpt="last.pt"):
         print(f"   炸弹浪费 · vs {tag:16s}  {w:3d}/{c:4d} = {r:5.1%}")
         print(f"   用炸率   · vs {tag:16s}  {b:3d}/{g:3d} = {br:5.2f} 手/局")
     med, bmed = statistics.median(rs), statistics.median(brs)
-    print(f"   >>> 对池中位 {med:5.1%}   用炸中位 {bmed:5.2f} 手/局   vs 贪心 {wr:5.1%}")
+    print(f"   >>> 对池中位 {med:5.1%}   用炸中位 {bmed:5.2f} 手/局   "
+          f"vs 贪心 {wr:5.1%}   vs 规则式 {wr_r:5.1%}")
     return wr, med
 
 

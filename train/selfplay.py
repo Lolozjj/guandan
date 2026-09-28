@@ -46,6 +46,7 @@ from train.eval import match
 from train.net import (DEVICE, QNet, check_q_scale, q_argmax_batch,
                        q_max_batch)
 from train.policies import greedy_policy, random_policy
+from train.rule_policy import rule_choose
 
 BATCH_GAMES = 32              # spec §5.3（同步推进的局数；`--batch` 可调大）
 LR = 1e-4                     # spec §5.3
@@ -107,11 +108,22 @@ RUNS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
                         "runs", "rl")
 
 
+#: 固定对手有哪几种「强」可选。`greedy` = 老基线；`rule` = 规则式（像人）。
+OPP_KINDS = ("greedy", "rule")
+OPP_KIND_CN = {"greedy": "贪心", "rule": "规则式"}
+
+
 def _fixed_pick(kind, pending, rng):
-    """固定对手出一手。`kind = ("greedy"|"random", 队号)`。"""
+    """固定对手出一手。`kind = ("greedy"|"rule"|"random", 队号)`。
+
+    `rule` 走 `train/rule_policy.py`（不压队友 / 留炸 / 算剩牌卡对手）——
+    2026-09-28 加的，因为贪心**不像人**：它 100% 压自己队友、从不主动炸、不算剩牌。
+    """
     obs, acts, hist = pending
     if kind[0] == "random":
         return rng.randrange(len(acts))
+    if kind[0] == "rule":
+        return rule_choose(obs, acts)
     return greedy_policy(obs, acts, hist)      # 复用评测那套贪心，不另写一份
 
 
@@ -150,7 +162,8 @@ def plan_step(learn_seats, turn, fixed) -> tuple:
 
 def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                    greedy_share=0.8, learn_all_seats=False, members=None,
-                   pick_fixed=None, bomb_cost: float = 0.0):
+                   pick_fixed=None, bomb_cost: float = 0.0,
+                   opp_kind: str = "greedy"):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
@@ -191,7 +204,9 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                 fixed.append(("member", kind[1]) if kind[0] == "member"
                              else (kind[0], opp))
             else:
-                kind = "greedy" if rng.random() < greedy_share else "random"
+                kind = (opp_kind if rng.random() < greedy_share else "random")
+                if kind not in OPP_KINDS and kind != "random":
+                    raise ValueError(f"认不出的固定对手类型：{kind!r}（只有 {OPP_KINDS} / random）")
                 fixed.append((kind, opp))
             learn.append(tuple(s for s in rules.SEATS if rules.TEAM[s] != opp))
         else:
@@ -548,7 +563,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           init: str = None, snap_every: int = pool.SNAP_EVERY_GAMES,
           pool_size: int = pool.POOL_SIZE, eps_start: float = None,
           bomb_cost: float = 0.0, mc_mix: float = MC_MIX,
-          n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES):
+          n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES,
+          opp_kind: str = "greedy"):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -573,7 +589,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"batch={batch_games} 局（同步推进）  buffer={buffer_games:,} 局  "
         f"评测每 {eval_every:,} 局  ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  "
         f"对手混合 {opp_mix:.0%}"
-        f"（其中贪心 {greedy_share:.0%}）"
+        f"（其中{OPP_KIND_CN.get(opp_kind, opp_kind)} {greedy_share:.0%}）"
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + _boot_log(mc_mix, n_step, tgt_sync)
         + (f"  热启动 {init}" if init else "")
@@ -595,7 +611,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
                                           opp_mix=opp_mix,
                                           greedy_share=greedy_share,
                                           learn_all_seats=learn_all_seats,
-                                          bomb_cost=bomb_cost):
+                                          bomb_cost=bomb_cost,
+                                          opp_kind=opp_kind):
             buf.add(rec)
             fresh[id(rec)] = (pts, y)
             games += 1
@@ -633,7 +650,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    pool_greedy_share: float = pool.GREEDY_SHARE,
                    eps_start: float = None, bomb_cost: float = 0.0,
                    mc_mix: float = MC_MIX, n_step: int = N_STEP,
-                   tgt_sync: int = TGT_SYNC_GAMES,
+                   tgt_sync: int = TGT_SYNC_GAMES, opp_kind: str = "greedy",
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -699,7 +716,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                                      learn_all_seats=learn_all_seats,
                                                      init=init, use_pool=pfsp,
                                                      pool_greedy_share=pool_greedy_share,
-                                                     bomb_cost=bomb_cost)))
+                                                     bomb_cost=bomb_cost,
+                                                     opp_kind=opp_kind)))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
@@ -711,7 +729,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
         # 写下了结论，却没看出池子其实只拿到 20%（全局 10%）。别再合并成一句。
         + (f"（其中池成员 {1 - pool_greedy_share:.0%}、贪心 {pool_greedy_share:.0%}）"
            f"  池子 {len(pool_sds)} 个种子成员" if pfsp
-           else f"（其中贪心 {greedy_share:.0%}、随机 {1 - greedy_share:.0%}）"
+           else f"（其中{OPP_KIND_CN.get(opp_kind, opp_kind)} {greedy_share:.0%}、"
+                f"随机 {1 - greedy_share:.0%}）"
                 f"  **池子关**")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + _boot_log(mc_mix, n_step, tgt_sync)
@@ -831,6 +850,9 @@ def main(argv=None) -> int:
         # λ：每用一手炸弹，从**那一步起**的标签就少这么多（spec §3.3）。
         # 默认 0 = 老行为；A/B 的处理臂用 0.2。
         kw["bomb_cost"] = float(argv[argv.index("--bomb-cost") + 1])
+    if "--opp-kind" in argv:
+        # 固定对手用哪种「强」：greedy（默认，老行为）或 rule（规则式，像人）。
+        kw["opp_kind"] = argv[argv.index("--opp-kind") + 1]
     if "--mc-mix" in argv:
         # β：MC 与自举的混合比。1.0 = 现在的 DMC（默认）；处理臂用 0.5。
         kw["mc_mix"] = float(argv[argv.index("--mc-mix") + 1])
