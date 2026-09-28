@@ -103,6 +103,33 @@ def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0) -> list:
             if keep is None or seat in keep]
 
 
+def blend(y_mc, boot, beta: float = 1.0) -> list:
+    """把 MC 标签与自举值按 β 混合 —— **自举进入标签的唯一一处**（spec §3.1）。
+
+        y_t = (1 - beta) * V(s_{t+n})  +  beta * y_mc
+
+    - `beta = 1.0` 时**原样返回 `y_mc`**（默认 = 现在的 DMC，逐点相等）。
+      这里刻意提前返回、而不是算 `(1-β)*v + β*y` —— 结构上相等，而且
+      顺带不会去碰 `boot`（那条路上 `boot` 可能是空表或全是 None）。
+    - `boot` 里某一项是 `None`（越过终局 / 本轮不算自举）→ 那一项整项退回 `y_mc`。
+      **不许拿 0 或上一项顶上** —— 那是凭空造一个未来。
+    - `boot` 整条为 `None` 表示「这一批根本没算自举」（`n=0`），也退回 `y_mc`。
+    - 长度必须对齐：错开一格就是「拿别人的未来当自己的标签」，
+      而这种错在 loss 曲线上完全看不出来（本仓库纪律：失败必须响）。
+
+    ⚠️ **不 import torch、也不碰张量** —— 与 `mc_targets` 一样是纯标量运算，
+    所以 `beta = 1` 的逐点相等是**算术上的**相等，不依赖浮点运气。
+    """
+    if not 0.0 <= beta <= 1.0:
+        raise ValueError(f"β 必须在 [0, 1]：{beta}")
+    if beta >= 1.0 or boot is None:
+        return list(y_mc)
+    if len(boot) != len(y_mc):
+        raise ValueError(f"自举值与标签长度不一致：{len(boot)} vs {len(y_mc)}")
+    return [y if v is None else (1.0 - beta) * v + beta * y
+            for y, v in zip(y_mc, boot)]
+
+
 def expand(rec: GameRecord, bomb_cost: float = 0.0):
     """把记录重放成 `(决策点, 终局 reward)`。
 
