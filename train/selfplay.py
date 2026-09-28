@@ -287,8 +287,13 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     return out
 
 
-#: 自举的步数（spec §8）：一局每座位约 33 个决策点；n=1 最偏、n=∞ 就是 MC。
-N_STEP = 3
+#: 自举的步数（spec §8 的初值 3 已被 2026-09-28 的评审改掉，见下）。
+#: ⚠️ **必须是偶数**：`V(s_{t+n})` 是「**那一刻出手的人**那一队」的值，而出手顺序是
+#: `0→3→2→1`，所以**奇数 n 的自举源落在对家** —— 符号反、标签被往 0 拉。
+#: 实测（`1407`）：n=1/3 的自举命中率只有 5%/16%（corr 与标签是 -0.35/-0.15），
+#: n=2/4 是 89%/88%（corr +0.27）。详见 `train/replay.py::_boot_source_ok`。
+#: 一局每座位约 33 个决策点；n 越小偏差越大、n→∞ 就是 MC。
+N_STEP = 2
 #: β —— MC 与自举的混合比。**1.0 = 完全就是现在的 DMC（默认，行为不变）**。
 MC_MIX = 1.0
 #: 目标网络同步的间隔（局）—— 与权重广播同拍（那个节奏已经验过不拖死 learner）。
@@ -302,7 +307,11 @@ def sync_target(net, net_tgt, games, last_sync, every=TGT_SYNC_GAMES) -> int:
     没有它，目标就是「追自己的尾巴」，发散风险大增。
     `net_tgt=None`（β=1）或 `every<=0` 时是空操作。
     """
-    if net_tgt is None or every <= 0:
+    if every <= 0:
+        raise ValueError(
+            f"tgt_sync 必须为正，给的是 {every} —— 0 会让目标网络**永不同步**，"
+            f"靶子停在热启动权重上（那是 bug，不是配置）。配置错了必须响。")
+    if net_tgt is None:            # β=1：压根没建目标网络，空操作
         return last_sync
     if games - last_sync < every:
         return last_sync
@@ -337,17 +346,45 @@ def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0)
     return samples, y_mc, boot
 
 
-def _targets(net, net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
+def _check_boot_args(mc_mix, n_step, tgt_sync) -> None:
+    """自举三个参数的**唯一一处校验**（两条训练路线共用 —— 各写一份就会漂）。"""
+    if not 0.0 <= mc_mix <= 1.0:
+        raise ValueError(f"mc_mix(β) 必须在 [0, 1]，给的是 {mc_mix}")
+    if mc_mix < 1.0 and n_step <= 0:
+        raise ValueError(
+            f"β={mc_mix:g} < 1 却把 n_step 设成 {n_step} —— 要自举就得往后看至少 1 步，"
+            f"这两个参数是矛盾的：日志会写「自举 β={mc_mix:g}」，实际一个自举项都不算。")
+    if tgt_sync <= 0:
+        raise ValueError(f"tgt_sync 必须为正，给的是 {tgt_sync}（0 = 目标网络永不同步）")
+
+
+def _boot_log(mc_mix, n_step, tgt_sync) -> str:
+    """日志头里的自举那一段。**两条路线共用一份**（各写一份就会漂）。"""
+    if mc_mix >= 1.0:
+        return "  自举关（β=1）"
+    odd = ("  ⚠️ n 是**奇数** —— 自举源落在对家、命中率很低"
+           "（见 replay._boot_source_ok 的实测表），请用偶数" if n_step % 2 else "")
+    return f"  自举 β={mc_mix:g} n={n_step}（目标网络每 {tgt_sync} 局同步）{odd}"
+
+
+def _targets(net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
              fresh=None):
     """这一批训练样本的目标值。**自举在这里、且只在这里进入标签。**
 
     `mc_mix >= 1` 是纯 MC（默认）—— 那时连 `V` 都不算，`boot` 也不产出。
     `boot` 里越界的那些点是 `None`，`blend` 会把它们整项退回 `y_mc`。
+
+    ⚠️ **只收目标网络**（在线网络根本不传进来）—— 老签名里挂着一个没用到的
+    `net` 参数，会让人以为「在线网络也参与算目标」，顺手写成
+    `q_max_batch(net, ...)`（= 追自己的尾巴）时**全部测试照样绿**（评审 I2）。
+    现在这件事由**签名**排除，不靠注释。
     """
     n_boot = 0 if mc_mix >= 1.0 else n_step
     samples, y_mc, boot = build_samples(buf, rng, batch_games, fresh=fresh,
                                         bomb_cost=bomb_cost, n_step=n_boot)
-    vals = q_max_batch(net_tgt, boot) if n_boot else None
+    # `boot` 的第 4 位是出手人（判视角用的）—— 打分只吃前三位
+    vals = (q_max_batch(net_tgt, [b[:3] if b is not None else None for b in boot])
+            if n_boot else None)
     return samples, replay.blend(y_mc, vals, mc_mix)
 
 
@@ -358,7 +395,7 @@ def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
     `mc_mix < 1` 时多一次前向算自举项（用**目标网络**、`no_grad`、返回 float）。
     `|Q|` 或 `|标签|` 超限会**在这里 raise**（发散必须响，不许静默地训下去）。
     """
-    samples, targets = _targets(net, net_tgt, buf, rng, batch_games, bomb_cost,
+    samples, targets = _targets(net_tgt, buf, rng, batch_games, bomb_cost,
                                 mc_mix, n_step, fresh=fresh)
     st, ac, hi = _tensors(samples)
     dev = next(net.parameters()).device
@@ -512,6 +549,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           pool_size: int = pool.POOL_SIZE, eps_start: float = None,
           bomb_cost: float = 0.0, mc_mix: float = MC_MIX,
           n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES):
+    _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
     # ⚠️ **`.to(DEVICE)` 不能省。** 漏了它的后果是静默的：日志第一行写着 `device=cpu`，
@@ -537,8 +575,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"对手混合 {opp_mix:.0%}"
         f"（其中贪心 {greedy_share:.0%}）"
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
-        + (f"  自举 β={mc_mix:g} n={n_step}（目标网络每 {tgt_sync} 局同步）"
-           if mc_mix < 1.0 else "  自举关（β=1）")
+        + _boot_log(mc_mix, n_step, tgt_sync)
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
@@ -610,6 +647,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
 
     from train import worker as worker_mod
 
+    _check_boot_args(mc_mix, n_step, tgt_sync)
     ctx = mp.get_context("spawn")           # Windows 只有 spawn；入口必须是模块级函数
     out_dir = out_dir or os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M"))
     os.makedirs(out_dir, exist_ok=True)
@@ -676,8 +714,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
            else f"（其中贪心 {greedy_share:.0%}、随机 {1 - greedy_share:.0%}）"
                 f"  **池子关**")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
-        + (f"  自举 β={mc_mix:g} n={n_step}（目标网络每 {tgt_sync} 局同步）"
-           if mc_mix < 1.0 else "  自举关（β=1）")
+        + _boot_log(mc_mix, n_step, tgt_sync)
         + (f"  热启动 {init}" if init else "")
         + f"\n权重 -> {out_dir}")
 
@@ -735,8 +772,10 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 for q in ctrls:
                     q.put(("weights", (sd, eps_for(games, eps_games, start=eps_start), w)))
                 last_sync = games
-                # 目标网络与权重广播**同拍**（spec §3.3）—— 那个节奏已经验过不拖死 learner
-                last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
+            # ⚠️ **不能放进上面那个 `if` 里**（评审 I1）：那样 `--tgt-sync` 会被
+            # 静默夹到 `WEIGHT_SYNC_GAMES`（1000）那一拍上 —— 传 500 实际是 1000，
+            # 而日志头照写用户给的值（参数说谎）。放在外面才真的按参数走。
+            last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
             best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
                                       eval_every, batch_games, out_dir, log,
                                       snap_every=snap_every, pool_size=pool_size)

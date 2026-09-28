@@ -130,6 +130,37 @@ def blend(y_mc, boot, beta: float = 1.0) -> list:
             for y, v in zip(y_mc, boot)]
 
 
+def _boot_source_ok(learn, tgt_seat: int, src_seat: int) -> bool:
+    """这个自举源能不能用 —— **视角**与「不拿固定对手当老师」两件事一起判。
+
+    ⚠️ **视角（2026-09-28 评审抓到的 Critical）**：`Q(s, a)` 学的是
+    「**出手人那一队**」的收益（`encode_state` 一切以出手人为原点、
+    标签又是 `rules.reward(ranks, seat)`），而 `V(s_{t+n}) = max_a Q(s_{t+n}, a)`
+    取的是 **`s_{t+n}` 处出手人**的视角。出手顺序是 `0→3→2→1`（`rules.NEXT`），
+    所以 **n 是奇数时那个位置在对家** —— 直接用会把符号弄反，
+    `(1-β)·V + β·R` 两项互相抵消、标签被往 0 拉。
+
+    实测（`1407`，`greedy_policy` 打出来的局）：
+
+        n      自举源与标签同队     corr(V, 标签)    β=0.5 后保留的方差
+        1          5.4%              -0.353              0.27
+        2         89.2%              +0.271              0.51
+        3         16.0%              -0.145              0.35
+        4         88.3%              +0.273              0.52
+
+    ⇒ **n 要取偶数**（默认已改成 2）。奇数不算错、只是命中率很低。
+
+    异队的点**整项退回 MC**，不做取负：取负等于把「对家按最大打」的价值当成我们的，
+    而行为策略并不是最大 —— 那是另一种偏差，本轮不引入。
+
+    `learn` 那一半是老纪律：固定对手的着法不进训练目标（记进去等于拿它当老师），
+    它的状态自然也不该当自举源。`learn=None`（四家都学）时不设这道闸。
+    """
+    if learn is not None and src_seat not in learn:
+        return False
+    return rules.TEAM[src_seat] == rules.TEAM[tgt_seat]
+
+
 def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0):
     """把记录重放成 `(决策点, MC 标签, 自举源)`。
 
@@ -141,8 +172,10 @@ def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0):
     提前 `continue` 会让重放错位（这是这个函数最容易被写错的地方）。
 
     `n > 0` 时额外产出 `boot[i]`：第 i 个决策点**往后数 n 步**那个局面的
-    `(obs, acts, hist)` —— 自举要的 `s_{t+n}`（spec §3.2）。**越过终局的点是
-    `None`**（那些点整项退回 MC）。`n = 0` 时 `boot` 是空表，与老行为逐点相等。
+    `(obs, acts, hist, 出手人)` —— 自举要的 `s_{t+n}`（spec §3.2）。
+    **第 4 位是必需的**：`V` 是「出手人那一队」的值，不带上出手人就没法判视角。
+    **这三种点整项退回 MC（`None`）**：越过终局、自举源在对家、自举源是固定对手
+    （见 `_boot_source_ok`）。`n = 0` 时 `boot` 是空表，与老行为逐点相等。
 
     ⚠️ **`boot` 与 `points` 必须等长同序** —— 错开一格就是拿别人的未来当自己的标签。
     对齐靠一个**定长环**（`deque(maxlen=n+1)`）：走到第 t 步时环首正好是
@@ -172,10 +205,12 @@ def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0):
                 # （`n = 0` 时 boot 保持**空表** —— 「这一批根本没算自举」比
                 #   一列 None 更能让调用方一眼看出区别）
         if ring is not None:
-            ring.append(tag)
+            ring.append((tag, seat))      # 环里要带上「那一步谁在出手」——判视角要用
             # 环满（t >= n）时环首才是「第 t-n 步」；不满时那些点的源不存在
-            if len(ring) == n + 1 and ring[0] is not None:
-                boot[ring[0]] = (obs, acts, env.encode_history(e.hand, seat))
+            if len(ring) == n + 1:
+                j, tgt_seat = ring[0]
+                if j is not None and _boot_source_ok(learn, tgt_seat, seat):
+                    boot[j] = (obs, acts, env.encode_history(e.hand, seat), seat)
         obs, _r, _done, _info = e.step(i)
     # 标签**只有一个产地**（`mc_targets`）—— 过滤也在它里面做
     return (points, mc_targets(seq, e.ranks, learn=rec.learn, bomb_cost=bomb_cost),

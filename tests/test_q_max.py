@@ -55,10 +55,27 @@ def test_two_different_nets_give_different_values():
     assert q_max_batch(a, pend)[0] != pytest.approx(q_max_batch(b, pend)[0])
 
 
-def test_no_grad_leaks_into_the_network():
+def test_forward_runs_under_no_grad():
+    """**这条要有牙**：把 `_flat_scores` 里的 `torch.no_grad()` 删掉，它必须红。
+
+    （原来那条「`p.grad is None`」是**假牙** —— 只前向不 backward，`grad` 本来就是
+    None，删掉 `no_grad` 它照样绿。2026-09-28 评审实测过。）
+    """
     net = QNet()
-    q_max_batch(net, _pending(games=1))
-    assert all(p.grad is None for p in net.parameters())
+    seen = []
+    orig = QNet.forward
+
+    def spy(self, *a, **kw):
+        seen.append(torch.is_grad_enabled())
+        return orig(self, *a, **kw)
+
+    QNet.forward = spy
+    try:
+        q_max_batch(net, _pending(games=1))
+    finally:
+        QNet.forward = orig
+    assert seen, "前向没被走到？"
+    assert not any(seen), "前向跑在开启梯度的上下文里 —— 目标项会被卷进梯度图"
 
 
 def test_argmax_batch_is_unchanged_by_the_refactor():

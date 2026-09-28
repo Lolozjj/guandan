@@ -18,6 +18,11 @@
 **Spec:** `docs/superpowers/specs/2026-09-28-nstep-bootstrap-design.md`（本计划从它论证；
 执行者两份都要读）
 
+> ⚠️ **执行时有修正**：本计划里的 `N_STEP = 3` 与「自举值直接用 `max_a Q̄`」
+> 被 **2026-09-28 的整条分支评审**推翻了（视角接反 —— 见
+> `2026-09-28-nstep-bootstrap-delivery.md` §「评审」。以台账与修正后的 spec 为准：
+> `N_STEP = 2`，自举源要筛视角）。
+
 ## Global Constraints
 
 - **标签唯一的产地不变**：`y_mc` 只能由 `replay.mc_targets` 产出；自举只许经
@@ -259,7 +264,11 @@ def test_boot_is_really_the_state_n_steps_later():
                 assert b is None, f"越过终局那一步该退回 MC（t={t} n={n}）"
                 continue
             obs, hist = steps[t + n]
-            assert b is not None, f"该有自举源（t={t} n={n}）"
+            # ⚠️ `b is None` 还有一种原因：视角/对手过滤（见 _boot_source_ok）。
+            # 所以这里只查「非空时**必须**是那个局面」，不查「必须非空」——
+            # 「必须非空」由 `test_odd_n_barely_bootstraps...` 按比例管。
+            if b is None:
+                continue
             assert np.array_equal(b[0], obs), f"obs 对不上（t={t} n={n}）"
             assert np.array_equal(b[2], hist), f"历史对不上（t={t} n={n}）"
 

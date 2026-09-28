@@ -90,6 +90,25 @@ def bomb_waste(policy, games: int = 40, seed: int = 0, opponent=None):
     return _bomb_stats(policy, games, seed, opponent)[:2]
 
 
+def bomb_opportunity(has_table, acts) -> bool:
+    """这一步有没有「用普通牌压」的机会：**桌上有牌要压**、且**手里有非炸弹候选**。
+
+    `acts` 已经按 `beats` 过滤过，所以「非炸弹候选」就是能压的普通牌。
+    """
+    return bool(has_table) and any(x is not None and not x.is_bomb for x in acts)
+
+
+def is_wasted_bomb(has_table, acts, chosen) -> bool:
+    """**白炸**：有机会用普通牌压，却用了炸弹 —— 「炸弹浪费率」的唯一判定。
+
+    ⚠️ **只此一份**：`_bomb_stats`（统计口径）与 `tools/show_game.py`（战报里标出
+    具体哪一手）共用它。两处各写一份就是「副本会漂」，而这条正是用户最初的抱怨
+    （「有普通牌能压却出炸」），口径漂了会把人骗得很惨。
+    """
+    return (bomb_opportunity(has_table, acts)
+            and chosen is not None and chosen.is_bomb)
+
+
 def _bomb_stats(policy, games: int = 40, seed: int = 0, opponent=None):
     """跑 N 局，**一次**量出四样：`(浪费数, 能压的普通牌机会数, 用炸手数, 局数)`。
 
@@ -115,13 +134,10 @@ def _bomb_stats(policy, games: int = 40, seed: int = 0, opponent=None):
             if mine:
                 if m is not None and m.is_bomb:
                     bombs += 1
-                if obs.table:
-                    # `acts` 已经按 `beats` 过滤过，所以「非炸弹候选」就是能压的普通牌
-                    plain = [x for x in acts if x is not None and not x.is_bomb]
-                    if plain:
-                        chance += 1
-                        if m is not None and m.is_bomb:
-                            waste += 1
+                if bomb_opportunity(obs.table, acts):
+                    chance += 1
+                    if is_wasted_bomb(obs.table, acts, m):
+                        waste += 1
             e.step(i)
     return waste, chance, bombs, games
 
