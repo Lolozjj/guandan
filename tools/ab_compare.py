@@ -11,6 +11,10 @@
 用法：
     .venv/Scripts/python.exe -m tools.ab_compare runs/ab/A_old runs/ab/C_fix runs/ab/B_pool
 
+    # 按**同局数快照**比（预登记的配对点就是这么比的）——
+    # 默认找 `last.pt`，但**被中断过的臂没有 last.pt**，所以这里得指快照：
+    .venv/Scripts/python.exe -m tools.ab_compare runs/ab/R4_b10 runs/ab/R4_b05         --ckpt pool/snap_280000.pt
+
 （原来它躺在 `.superpowers/` 里 —— 那是 gitignore 的临时目录，清理后台账里的数字
   就不可复现了。评审的 M8 提的这件事，搬进 `tools/` 解决。）
 """
@@ -94,6 +98,12 @@ def main(arm, ckpt="last.pt"):
 
 
 if __name__ == "__main__":
-    for a in sys.argv[1:]:
-        main(a)
+    argv = sys.argv[1:]
+    ckpt = "last.pt"
+    if "--ckpt" in argv:
+        i = argv.index("--ckpt")
+        ckpt = argv[i + 1]
+        del argv[i:i + 2]
+    for a in argv:
+        main(a, ckpt)
         print()
