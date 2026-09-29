@@ -51,6 +51,31 @@ def open_shadow(out_path: str = SHADOW, topk: int = 3,
                      weights_note=err, topk=topk, show_advice=show_advice)
 
 
+def model_banner(weights: str) -> str:
+    """启动时那一行：**写清真正加载的是哪份权重**。
+
+    面板挑权重有两级（`GUANDAN_WEIGHTS` → `runs/rl/*/best.pt` 里最新的），
+    设过环境变量之后从控制台**看不出加载了哪一份**，也就没法确认
+    「试完之后有没有回到默认那份」—— 用户 2026-09-29 提的。
+
+    带上训练局数是为了区分同一个目录里的不同文件（`best.pt` 与 `snap_160000.pt`
+    是两个东西，光看文件名容易以为是同一份）。
+    目录名也要写 —— `snap_160000.pt` 在好几轮训练里都叫这个名字。
+
+    ⚠️ **只此一处**：`net.launcher` 与两个面板的 `main()` 打的都是
+    `ShadowLog.last_line`，所以这一行改一次、三个入口同时生效（不会漂）。
+    """
+    if not weights:
+        return "影子模式：没有模型（只记牌局，不给建议）"
+    info = advise.weights_info(weights)
+    games = info.get("games")
+    # 取路径**末三段**：只取 `目录/文件名` 的话，快照全是 `pool/snap_*.pt` ——
+    # 分不出是哪一次训练（`basename(dirname)` 给的是 `pool`）。这个是测试抓出来的。
+    parts = [x for x in os.path.normpath(weights).replace("\\", "/").split("/") if x]
+    where = "/".join(parts[-3:]) if parts else weights
+    return "影子模式就绪 —— 模型：" + where + (f"（{games:,} 局）" if games else "")
+
+
 class ShadowLog:
     def __init__(self, net=None, out_path=SHADOW, weights="", weights_note="",
                  topk=3, show_advice=True):
@@ -70,7 +95,8 @@ class ShadowLog:
         self.advice_top = []
         self.n_decisions = 0
         self.skips = {}
-        self.last_line = weights_note or "影子模式已就绪"
+        # 加载失败时保留原因（那时用户更需要知道为什么），成功才报模型身份
+        self.last_line = weights_note or model_banner(weights)
         self._fh = None
         self._pending = None
         self._cands = []
