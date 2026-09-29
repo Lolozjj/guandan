@@ -6,6 +6,10 @@
 显示逻辑里能脱离窗口的那部分拆成纯函数（`table._wrap`）离线测 ——
 项目规矩：面板的显示逻辑要能不打开窗口就测（HANDOFF 第八节第 6 条）。
 """
+
+import ast
+import inspect
+import textwrap
 from net import shadow
 from net.sim.meld import cid_from_name as A
 from net.state import GameState
@@ -69,3 +73,42 @@ def test_drawing_the_advice_panel_does_not_crash(tmp_path):
         tk.Label(root).destroy()            # 只是让 root 有个子控件，避免空窗口的怪行为
     finally:
         root.destroy()
+
+
+# ------------------------------------------------ 几何只许有一个来源
+
+def _bare_geometry_names(src: str) -> list:
+    """扫一段源码的 AST，找出**裸引用**模块级几何常量的地方。
+
+    裸 = 没有 `self.L.` 前缀。`self.L.W` 里的 `L` 是 Attribute，不算。
+    """
+    bad = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(src))):
+        if (isinstance(node, ast.Name) and node.id in _GEOM_NAMES
+                and isinstance(node.ctx, ast.Load)):
+            bad.add(node.id)
+    return sorted(bad)
+
+
+_GEOM_NAMES = {"W", "H", "CARD", "MY_CARD", "STEP", "MY_STEP"}
+
+
+def test_the_scanner_has_teeth():
+    """先证明这个扫描**抓得住** —— 不然它只是个永远绿的摆设。"""
+    assert _bare_geometry_names("def f():\n    return W / 2\n") == ["W"]
+    assert _bare_geometry_names("def f():\n    return self.L.W / 2\n") == []
+
+
+def test_the_renderer_never_reaches_for_the_module_level_geometry():
+    """渲染器里的坐标**必须全部走 `self.L`**（`LIVE` / `BIG` 两套布局的唯一来源）。
+
+    ⚠️ 2026-09-29 真踩过：把坐标搬进 `Layout` 时**漏了 13 处裸 `W`/`H`** ——
+    它们是模块级全局，语法完全合法、**15 条面板测试全绿**，只是在 1880×960 的
+    回放布局里仍然取 1520/830 ⇒ **整个界面错位**，最后是用户看出来的。
+
+    这条就是那次事故的自动化版本：**任何方法里都不许出现裸的几何常量。**
+    """
+    src = inspect.getsource(table.TableWindow)
+    bad = _bare_geometry_names(src)
+    assert not bad, (f"TableWindow 里还有裸的 {bad} —— 它们不跟着 `self.L` 走，"
+                     f"换布局时会静默用错值（2026-09-29 的错位就是这么来的）")
