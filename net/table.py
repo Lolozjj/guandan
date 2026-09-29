@@ -173,7 +173,8 @@ class TableWindow:
 
     # ------------------------------------------------------------ 建议栏
 
-    def _advice_panel(self, advice, show_q: bool = False):
+    def _advice_panel(self, advice, show_q: bool = False,
+                      empty: str = "（轮到我时显示）"):
         """右侧「模型建议」：**画牌面图片，不写 Q 值/名次这些数字**。
 
         `advice` 是记录器给的 `[{cards, kind, q}, …]`（首选在前，牌 ID）。
@@ -190,7 +191,7 @@ class TableWindow:
         cv.create_text((x0 + x1) / 2, y0 + 22, text="模型建议",
                        font=self.f_mid, fill=TURN)
         if not advice:
-            cv.create_text((x0 + x1) / 2, y0 + 70, text="（轮到我时显示）",
+            cv.create_text((x0 + x1) / 2, y0 + 70, text=empty,
                            font=self.f_small, fill=DIM)
             cv.create_text((x0 + x1) / 2, y1 - 18, text="只记录，不影响你打牌",
                            font=self.f_small, fill=DIM)
@@ -232,7 +233,8 @@ class TableWindow:
     # ------------------------------------------------------------ 主绘制
 
     def draw(self, st, hint, n_ev, shadow_line="", advice=None,
-             hand_label: str = None, top_right: str = None, show_q: bool = False):
+             hand_label: str = None, top_right: str = None, show_q: bool = False,
+             advice_empty: str = "（轮到我时显示）"):
         """画一帧。后三个参数**只给 `tools/game_viewer.py`（自对弈回放器）用**，
         默认 None = 实机面板的老行为（`tests/test_table_panel.py` 与
         `smoke_panel.py` 守着这条）。"""
@@ -293,7 +295,7 @@ class TableWindow:
                            font=self.f_small, fill=DIM)
 
         # 右侧：模型建议（画牌面）
-        self._advice_panel(advice, show_q=show_q)
+        self._advice_panel(advice, show_q=show_q, empty=advice_empty)
 
         if st.passes:
             cv.create_text(600, 496, text="要不起：" + "、".join(

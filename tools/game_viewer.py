@@ -9,7 +9,11 @@
 用法：
     .venv/Scripts/python.exe -m tools.game_viewer                 # 挑最新 best.pt
     .venv/Scripts/python.exe -m tools.game_viewer --seed 61
+    .venv/Scripts/python.exe -m tools.game_viewer --opp-kind rule   # 模型 vs 规则式对手
     .venv/Scripts/python.exe -m tools.game_viewer --selftest       # 建窗口→翻到底→自关
+
+⚠️ `--opp-kind` 时**对手那一队没有 Q 值**（空着）—— 拿模型的 Q 给规则式的牌打分
+是编数据。底部提示条与右栏都会写明「这一手是谁出的」。
 
 键盘：`←` 上一步、`→` 下一步、`Home`/`End` 跳首尾。
 """
@@ -24,6 +28,7 @@ from net.sim import rules
 from tools.accept_meld import _utf8_stdout
 from tools.show_game import (TEAM_NAME, advice_of, frame_hint, replay_game,
                              seat_label)
+from train.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型唯一产地
 
 BAR_H = 56                       # 底部按钮条的高度（画布往下拉这么多）
 
@@ -107,7 +112,9 @@ class Viewer:
         self.cur = Cursor(len(frames))
         self.win = table.TableWindow(root)
         self.win.cv.config(height=table.H + BAR_H)
-        root.title(f"自对弈回放 —— {meta['path']}（种子 {meta['seed']}）")
+        mode = (f"模型 vs {OPP_KIND_CN[meta['opp_kind']]}"
+                if meta.get("opp_kind") else "自对弈")
+        root.title(f"{mode} —— {meta['path']}（种子 {meta['seed']}）")
         for key, fn in (("<Left>", self.cur.prev), ("<Right>", self.cur.next),
                         ("<Home>", lambda: self.cur.goto(0)),
                         ("<End>", lambda: self.cur.goto(len(frames) - 1))):
@@ -121,6 +128,10 @@ class Viewer:
         self.win.draw(
             _View(f), frame_hint(f), 0, advice=advice_of(f), show_q=True,
             top_right=head,
+            # 对手帧没有候选 —— 右栏得说清楚**为什么**空着，不能显示
+            # 「轮到我时显示」（那句话在复盘里是错的，会让人以为这里是模型的决策点）
+            advice_empty=(f"{OPP_KIND_CN[f.opp]}对手出的这一手（不打分）"
+                          if f.opp else "（轮到我时显示）"),
             hand_label=f"{seat_label(_whose(f))} 的手牌"
                        f"（{len(f.hands[_whose(f)])} 张）")
         self._bar(head)
@@ -190,9 +201,15 @@ def main(argv=None) -> int:
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--selftest", action="store_true",
                     help="建窗口 → 从头翻到尾 → 自己关（不用手动点）")
+    ap.add_argument("--opp-kind", choices=OPP_KINDS, default=None,
+                    help="对手那一队走固定对手（默认 None = 自对弈）")
+    ap.add_argument("--opp-team", type=int, choices=(0, 1), default=1,
+                    help="哪一队当对手（默认乙队 = 座位 1、3）")
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)
-    print("正在打一局自对弈…（约 5 秒）")
-    meta, frames = replay_game(a.weights, seed=a.seed, level=a.level, top=a.top)
+    what = (f"模型 vs {OPP_KIND_CN[a.opp_kind]}" if a.opp_kind else "一局自对弈")
+    print(f"正在打{what}…（约 5 秒）")
+    meta, frames = replay_game(a.weights, seed=a.seed, level=a.level, top=a.top,
+                               opp_kind=a.opp_kind, opp_team=a.opp_team)
     print(f"打完了：{meta['steps']} 手，{TEAM_NAME[meta['winner']]}队赢。开窗口…")
     open_viewer(meta, frames, autoclose_s=8.0 if a.selftest else 0.0)
     return 0
