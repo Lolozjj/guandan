@@ -329,6 +329,35 @@ def decode_hand(fields, low=18, high=27):
     return None
 
 
+def decode_seat_sync(fields):
+    """从 msgid 3019（手牌/状态同步）里认出「我」的座位号。
+
+    字段路径 `3.26.2`，与手牌同一层的那个整数：
+
+        3.26.2     = **我的座位号**（protobuf 省略 0 ⇒ 字段缺席即座位 0）
+        3.26.3.1.* = 另外几组牌（同一帧里重复多次）
+        3.26.3.2.* = 我的手牌（张数 + 牌数组）
+
+    ⚠️ **不能借 `decode_hand` 定位** —— 它有个「手牌 18~27 张」的窗口，
+    而抓包经常是从中局接进来的（实测：手牌只剩 9 张时那个窗口读不出来，
+    座位字段照样在）。所以这里只按结构推：**任意一个牌数组的路径往前推 3 段、
+    再取兄弟字段 2**（同层还有 `1` = 消息号、`3.26.3.*.1` = 各组张数，都不是座位）。
+
+    证据（2026-09-29）：8 段会话 / **16 局**，与出牌报文里 `LeftCardList` 给出的真值
+    **全部一致**，含中途接进来的局面。用户报的「只有我出了一手之后座位才对」
+    就是缺这条 —— 在那之前面板用的是写死的默认座位。
+    """
+    for kind, path, val in fields:
+        if kind != "arr" or len(path) < 4:
+            continue
+        want = tuple(path)[:-3] + (2,)
+        for k, p, v in fields:
+            if k == "int" and tuple(p) == want:
+                return v
+        return 0                    # 字段缺席 ⇒ protobuf 省略了 0（座位 0）
+    return None                     # 这帧里没有牌数组 ⇒ 认不出
+
+
 def decode_levels(fields):
     """从 msgid 3008 里取**每座位的级别**；不是这条消息则返回 None。
 

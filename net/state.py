@@ -157,9 +157,32 @@ class GameState:
         self.table = None
         self.passes = []
 
-    def on_hand(self, ids: List[int]) -> None:
-        """服务器同步了我的手牌（msgid 3019，周期性重发）。"""
+    def on_seat(self, seat: int) -> None:
+        """服务器直接说「我是哪个座位」（msgid 3019 的 `3.26.2`）。
+
+        ⚠️ 这条**在出牌之前就能拿到**。修之前只能等自己出牌时的 `LeftCardList`，
+        在那之前用的是写死的 `ME_SEAT` —— 用户 2026-09-29 报的
+        「只有我出了一手之后座位才对」就是这件事。
+        实测 8 段抓包里有 6 段的真实座位**不是**默认值，所以「偶尔对」纯属碰巧。
+        """
+        if not 0 <= seat <= 3:
+            return
+        if seat != self.me:
+            self._me_note = (f"座位判定：同步报文说我是座位 {seat}"
+                             f"（依据：3019 的 3.26.2）")
+        self.me = seat
+        self.me_confirmed = True
+
+    def on_hand(self, ids: List[int], seat: Optional[int] = None) -> None:
+        """服务器同步了我的手牌（msgid 3019，周期性重发）。
+
+        `seat` 是同一条报文里的座位号（见 `on_seat`）—— 顺手一起认了。
+        ⚠️ **顺序**：`_sync_hand` 可能触发 `on_deal`（会把 `me_confirmed` 清零），
+        所以座位必须在它**之后**赋值。
+        """
         self._sync_hand(ids)
+        if seat is not None:
+            self.on_seat(seat)
 
     def on_deal(self, level: Optional[int] = None) -> None:
         """新一局：清桌面状态，但保留级别（级别是跨局累积的）。

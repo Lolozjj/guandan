@@ -66,8 +66,11 @@ def apply_event(st: GameState, ev: dict) -> str:
                    ev.get("left_cards"))
         who = st.seat_label(ev["seat"])
         return f"{who} 出 {' '.join(ev.get('names') or cards.decode_all(ev['cards']))}"
+    if t == "seat":
+        st.on_seat(ev["seat"])
+        return f"座位同步：我是 {ev['seat']} 号"
     if t == "hand":
-        st.on_hand(ev["cards"])
+        st.on_hand(ev["cards"], ev.get("seat"))
         return f"手牌同步 {len(ev['cards'])} 张"
     if t == "pass":
         st.on_pass(ev["seat"], ev.get("next"))

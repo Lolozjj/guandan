@@ -70,13 +70,20 @@ class GuandanTap:
                 }
         elif msg["msgid"] == 3019:
             hand = protocol.decode_hand(msg["fields"])
+            # 座位和手牌是**两件事**：中局接进来时手牌读不出来（张数窗口），
+            # 座位照样读得出来 —— 那种帧单独发一条 `seat` 事件。
+            seat = protocol.decode_seat_sync(msg["fields"])
             if hand:
                 self.stats["hands"] += 1
                 return {
                     "type": "hand",
                     "cards": hand["cards"],
                     "names": cards.decode_all(hand["cards"]),
+                    "seat": seat,
                 }
+            if seat is not None:
+                self.stats["seats"] = self.stats.get("seats", 0) + 1
+                return {"type": "seat", "seat": seat}
         elif msg["msgid"] == 3006:
             p = protocol.decode_pass(msg["fields"])
             if p:
