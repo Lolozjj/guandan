@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from net import table
+from net import cards, table
 from net.state import GameState
 from net.sim import rules
 from tools.accept_meld import _utf8_stdout
@@ -80,6 +80,12 @@ class _View:
         #: 四家手牌（**回放器独有** —— 实机面板拿不到，所以 `GameState` 没这个方法）。
         #: 用户 2026-09-29 要的：一眼看全四家，而不是「走到谁才看得到谁的手牌」。
         self._hands = {s: set(f.hands[s]) for s in rules.SEATS}
+        #: 模型**推荐的那几手**的牌面名（绿底用）。⚠️ 只有**出手那一家**有 ——
+        #: 帧里的 `candidates` 是模型给这个决策点算的，别的座位没有。
+        top = next((m for _q, m in (f.candidates or []) if m is not None), None)
+        self._advised = (frozenset(cards.names_sorted(top.cards, f.level))
+                         if top is not None else frozenset())
+        self._advised_seat = f.seat if self._advised else None
         self.table = f.table
         self.passes = f.passes
         # 露给渲染器的手牌是**出手那个人**的（复盘要看的就是「他当时握着什么」），
@@ -91,6 +97,10 @@ class _View:
         if seat not in self._hands:
             return None
         return sorted(self._hands[seat])
+
+    def advised(self, seat):
+        """模型**推荐的那几手**的牌面名 —— 渲染器拿它上**绿底**（回放器专属）。"""
+        return self._advised if seat == self._advised_seat else ()
 
     @property
     def hand(self):
@@ -119,8 +129,10 @@ class Viewer:
     def __init__(self, root, meta: dict, frames: list):
         self.root, self.meta, self.frames = root, meta, frames
         self.cur = Cursor(len(frames))
-        self.win = table.TableWindow(root)
-        self.win.cv.config(height=table.H + BAR_H)
+        # ⚠️ 用 **BIG** 布局（2000×1180）：四家大牌在 1520×830 里放不下。
+        # 实机面板走的是 `LIVE`（1520×830）—— 它要跟游戏并排摆着看，不能放大。
+        self.win = table.TableWindow(root, layout=table.BIG)
+        self.win.cv.config(height=self.win.L.H + BAR_H)
         mode = (f"模型 vs {OPP_KIND_CN[meta['opp_kind']]}"
                 if meta.get("opp_kind") else "自对弈")
         root.title(f"{mode} —— {meta['path']}（种子 {meta['seed']}）")
@@ -149,8 +161,8 @@ class Viewer:
 
     def _bar(self, head: str) -> None:
         cv = self.win.cv
-        y0 = table.H + 6
-        cv.create_line(20, y0, table.W - 20, y0, fill=table.BG_EDGE, width=2)
+        y0 = self.win.L.H + 6
+        cv.create_line(20, y0, self.win.L.W - 20, y0, fill=table.BG_EDGE, width=2)
         cy = y0 + 26
         self._button(40, cy, "◀  上一步", "prev", self.cur.prev,
                      not self.cur.at_start)
@@ -166,7 +178,7 @@ class Viewer:
                            text=f"—— {TEAM_NAME[m['winner']]}队赢，得 {m['points']} 分"
                                 f"（炸弹 {m['bombs']} 手，白炸 {m['waste']}/{m['chance']}）",
                            font=self.win.f_small, fill=table.DIM)
-        cv.create_text(table.W - 40, cy, anchor="e",
+        cv.create_text(self.win.L.W - 40, cy, anchor="e",
                        text="← → 翻页 · Home / End 跳首尾",
                        font=self.win.f_small, fill=table.DIM)
 

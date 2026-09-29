@@ -45,15 +45,19 @@ FONT = "Microsoft YaHei"
 FONT_SYM = "Segoe UI Symbol"
 
 #: 右侧多留一栏给「模型建议」（用户 2026-09-26：原来那行字不够明显）
-W, H = 1520, 830
-CARD = (34, 46)             # 出过的牌
-#: 座位区域里画**手牌**用的小牌（回放器专用 —— 见 `_seat_area`）。
-#: 比 `CARD` 小一圈：一个座位框要塞下「手牌 + 出过的牌」两样，27 张手牌还得折行。
-MINI_CARD = (22, 30)
-MINI_STEP = 15
-MY_CARD = (52, 74)          # 我的手牌
-STEP = 21                   # 出过的牌横向步进（叠着放，露出左上角点数）
-MY_STEP = 34
+#: 画布的几何 —— **回放器和实机面板各用一套**（`tools/game_viewer.py` 传 `BIG`）。
+#:
+#: 为什么要分开：用户 2026-09-29 要在回放里看**四家大牌**，一套牌 27 张按
+#: `MY_CARD` 排开就是 936px —— 四个方位在 1520×830 里**根本放不下**，
+#: 必须把窗口放大。但实机面板是**跟游戏并排摆着看**的，放大到 2000px 就摆不下了。
+#: 所以坐标做成可配置：面板一字不动，回放器用大布局。
+def parse_name(name: str):
+    """牌面名 -> (点数, 花色, 是不是副牌)。'K♦' / '小王' / '5♥(二副)'。"""
+    deck = "(二副)" in name
+    core = name.replace("(二副)", "")
+    if core in ("小王", "大王"):
+        return core, "", deck
+    return core[:-1], core[-1], deck
 
 
 def _wrap(items, per_row: int) -> list:
@@ -64,30 +68,65 @@ def _wrap(items, per_row: int) -> list:
     return [list(items[i:i + per_row]) for i in range(0, len(items), per_row)]
 
 
-def parse_name(name: str):
-    """牌面名 -> (点数, 花色, 是不是副牌)。'K♦' / '小王' / '5♥(二副)'。"""
-    deck = "(二副)" in name
-    core = name.replace("(二副)", "")
-    if core in ("小王", "大王"):
-        return core, "", deck
-    return core[:-1], core[-1], deck
+class Layout:
+    def __init__(self, W, H, AREA, ADVICE, show_bottom_hand=True,
+                 CARD=(34, 46), MY_CARD=(52, 74), STEP=21, MY_STEP=34):
+        self.W, self.H = W, H
+        self.CARD, self.MY_CARD = CARD, MY_CARD
+        self.STEP, self.MY_STEP = STEP, MY_STEP
+        self.AREA = AREA
+        self.ADVICE = ADVICE
+        #: 底部要不要再画一行「我的手牌」。回放器里四个方位本来就都是大牌了，
+        #: 再画一行是重复，而且没地方（`me` 那个框已经顶到画布下沿）。
+        self.show_bottom_hand = show_bottom_hand
+
+
+W, H = 1520, 830
+CARD = (34, 46)             # 出过的牌
+MY_CARD = (52, 74)          # 我的手牌
+STEP = 21                   # 出过的牌横向步进（叠着放，露出左上角点数）
+MY_STEP = 34
+
+#: 出过的牌 —— **黄底**（用户 2026-09-29 定的：一眼分出「手里还有的」和「打出去的」）
+TINT_PLAYED = "#fdf1c8"
+#: 模型推荐的那几手 —— **绿底**（**只给回放器**：实机面板上绿比建议栏还刺眼，
+#: 会把用户带着走，而 `advice_shown` 那份「模型与人的分歧」数据就不干净了）
+TINT_ADVISE = "#d5f0d5"
+
+#: 实机面板：**原来的坐标，一个字没动**
+LIVE = Layout(
+    W, H,
+    {
+        "top": (600, 40, 300, 64, 900, 250),      # (标签x, 标签y, x0, y0, x1, y1)
+        "left": (40, 250, 30, 276, 385, 600),
+        "right": (1160, 250, 815, 276, 1170, 600),
+        "me": (600, 560, 300, 580, 900, 690),
+    },
+    (1210, 60, 1500, 660),
+)
+
+#: 回放器：窗口放大到放得下四家大牌（27 张按 `MY_STEP` 排开是 936px）。
+#: ⚠️ 尺寸**按 1920×1080 的屏留的余量**（连底部按钮条共 1880×1016）——
+#: 再大就会超出屏幕，用户就看不全了。
+BIG = Layout(
+    1880, 960,
+    {
+        "top": (650, 26, 60, 48, 1290, 214),      # 宽，手牌 1 行
+        "left": (36, 246, 36, 266, 500, 700),     # 窄，手牌折 3 行
+        "right": (1284, 246, 790, 266, 1290, 700),
+        "me": (650, 722, 60, 742, 1290, 890),     # 宽，手牌 1 行
+    },
+    (1310, 50, 1870, 740),
+    show_bottom_hand=False,
+)
 
 
 class TableWindow:
     """四个方位各自一块区域。每家出过的牌就铺在自己的区域里。"""
 
-    #: 右侧「模型建议」栏的位置 (x0, y0, x1, y1)
-    ADVICE = (1210, 60, 1500, 660)
-
-    # 每家的摆放区域 (x0, y0, x1, y1)，以及标签位置
-    AREA = {
-        "top": (600, 40, 300, 64, 900, 250),      # (标签x, 标签y, x0, y0, x1, y1)
-        "left": (40, 250, 30, 276, 385, 600),
-        "right": (1160, 250, 815, 276, 1170, 600),
-        "me": (600, 560, 300, 580, 900, 690),
-    }
-
-    def __init__(self, root):
+    def __init__(self, root, layout: "Layout" = None):
+        """`layout` 不给就用**实机面板那套**（`LIVE`）—— 面板一字不变。"""
+        self.L = layout or LIVE
         import tkinter as tk
         self.tk = tk
         root.title("掼蛋牌桌 —— 数据直读网络，无截图")
@@ -106,11 +145,16 @@ class TableWindow:
 
     # ------------------------------------------------------------ 画牌
 
-    def _card(self, x, y, size, name, small=False):
+    def _card(self, x, y, size, name, small=False, tint=None):
+        """`tint` 是**底色**（不传就是白的）。
+
+        用户 2026-09-29 定的两色：**出过的牌黄底、模型推荐的牌绿底** ——
+        一眼分出「手里还有的 / 已经打掉的 / 建议出哪几张」。
+        """
         w, h = size
         rank, suit, deck = parse_name(name)
         color = RED if suit in "♥♦" else BLACK
-        self.cv.create_rectangle(x, y, x + w, y + h, fill=CARD_BG,
+        self.cv.create_rectangle(x, y, x + w, y + h, fill=tint or CARD_BG,
                                  outline=CARD_EDGE, width=1)
         if deck:                       # 副牌右上角点一个金点，跟游戏一致
             self.cv.create_oval(x + w - 9, y + 4, x + w - 4, y + 9,
@@ -127,13 +171,21 @@ class TableWindow:
         self.cv.create_text(x + w / 2, y + h * 0.66, text=suit,
                             anchor="center", font=fs, fill=color)
 
-    def _flow(self, names, x0, y0, x1, y1, step=STEP, size=CARD):
+    def _flow(self, names, x0, y0, x1, y1, step=None, size=None, small=None,
+              card_tint=None):
         """把一串牌从左到右铺开，铺不下就换行；行数超出就直接停。
 
         返回实际铺下的张数（不够铺时会小于 len(names)，调用方可以提示）。
+
+        `small`：用**小字号**画。⚠️ 原来写死成 `size is self.L.CARD` —— 比 `self.L.CARD` 小的牌
+        会**拿 13pt 的字去画小牌**，字比牌还大、全糊在一起（用户一眼看出来的「丑」）。
+        `card_tint(name) -> 颜色|None`：单张牌的底色（出过的牌黄、建议的牌绿）。
         """
         if not names:
             return 0
+        step = self.L.STEP if step is None else step
+        size = self.L.CARD if size is None else size
+        small = (size == self.L.CARD) if small is None else small
         w, h = size
         per = max(1, int((x1 - x0 - w) / step) + 1)
         done = 0
@@ -142,7 +194,8 @@ class TableWindow:
             if y + h > y1:
                 break
             for j, name in enumerate(names[i:i + per]):
-                self._card(x0 + j * step, y, size, name, small=(size is CARD))
+                self._card(x0 + j * step, y, size, name, small=small,
+                           tint=card_tint(name) if card_tint else None)
                 done += 1
             y += h + 4
         return done
@@ -159,7 +212,7 @@ class TableWindow:
         布局（只在有手牌时）：出过的牌贴**下沿**、手牌在上面铺。
         出过的牌固定在下沿是为了**不随张数跳动** —— 回放时要盯着看的是手牌。
         """
-        lx, ly, x0, y0, x1, y1 = self.AREA[key]
+        lx, ly, x0, y0, x1, y1 = self.L.AREA[key]
         hs = st.history.get(seat) or []
         left = st.remaining.get(seat)
         head = st.seat_label(seat)
@@ -172,6 +225,8 @@ class TableWindow:
         self.cv.create_text(lx, ly, text=head, font=self.f_mid, fill=color,
                             anchor=anchor)
         hand = st.hand_of(seat) if hasattr(st, "hand_of") else None
+        #: 模型推荐的那几手（**只有回放器给得出** —— 见 `_View.advised`）
+        adv = set(st.advised(seat)) if hasattr(st, "advised") else set()
         if not hs and not hand:
             return
         # **整体排一次**，不是每手各排各的 ——
@@ -181,14 +236,20 @@ class TableWindow:
         for p in hs:
             every.extend(p.cards)
         names = cards.names_sorted(every, st.level)
+        yellow = lambda _n: TINT_PLAYED
         if not hand:
-            self._flow(names, x0, y0, x1, y1)          # 实机面板：老行为，不动
+            # 实机面板：出过的牌铺满整框。**只有底色变了**（用户要的黄底），
+            # 位置/尺寸/流程一字未动
+            self._flow(names, x0, y0, x1, y1, card_tint=yellow)
             return
-        py0 = y1 - CARD[1] - 4                          # 出过的牌贴下沿
+        py0 = y1 - self.L.CARD[1] - 4                   # 出过的牌贴下沿
         if names:
-            self._flow(names, x0, py0, x1, y1)
+            self._flow(names, x0, py0, x1, y1, card_tint=yellow)
+        # 手牌用**和底部那行一样大的牌**（用户 2026-09-29 要求）：
+        # 叠着放的小牌在 355px 宽的框里只露 7px，就是一条糊带子。
         self._flow(cards.names_sorted(hand, st.level), x0, y0, x1, py0 - 2,
-                   step=MINI_STEP, size=MINI_CARD)
+                   step=self.L.MY_STEP, size=self.L.MY_CARD,
+                   card_tint=lambda nm: TINT_ADVISE if nm in adv else None)
 
     # ------------------------------------------------------------ 主绘制
 
@@ -206,7 +267,7 @@ class TableWindow:
         复盘，看的就是「模型当时给每个候选打了多少分」。**实机面板一律不传** ——
         这条是用户 2026-09-26 定的，理由见上（建议上屏会改变人怎么打）。
         """
-        x0, y0, x1, y1 = self.ADVICE
+        x0, y0, x1, y1 = self.L.ADVICE
         cv = self.cv
         cv.create_rectangle(x0, y0, x1, y1, outline=BG_EDGE, width=2)
         cv.create_text((x0 + x1) / 2, y0 + 22, text="模型建议",
@@ -303,9 +364,9 @@ class TableWindow:
 
         # 我的手牌（右边界让给建议栏，不许压过去）
         hx0, hy = 240, H - 128
-        self._flow(st.hand_grouped(), hx0, hy, min(W - 240, self.ADVICE[0] - 20),
-                   H - 50, step=MY_STEP, size=MY_CARD)
-        cv.create_text(W / 2, H - 108,
+        self._flow(st.hand_grouped(), hx0, hy, min(W - 240, self.L.ADVICE[0] - 20),
+                   H - 50, step=self.L.MY_STEP, size=self.L.MY_CARD)
+        cv.create_text(hx0 - 14, hy + self.L.MY_CARD[1] / 2, anchor="e",
                        text=hand_label or f"我的手牌（{len(st.hand)} 张，按大小排序）",
                        font=self.f_small, fill=DIM)
         cv.create_text(W / 2, H - 24, text=hint, font=self.f_small, fill=DIM)
@@ -325,6 +386,7 @@ class TableWindow:
 
 
 # ------------------------------------------------------------------ 跑起来
+
 
 def _replay_frames(capture):
     """读出可回放的帧。
