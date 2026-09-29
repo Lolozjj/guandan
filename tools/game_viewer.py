@@ -77,11 +77,20 @@ class _View:
         self.plays = [] if f.turn is None else [None] * f.step
         self.history = f.played
         self.remaining = {s: len(f.hands[s]) for s in rules.SEATS}
+        #: 四家手牌（**回放器独有** —— 实机面板拿不到，所以 `GameState` 没这个方法）。
+        #: 用户 2026-09-29 要的：一眼看全四家，而不是「走到谁才看得到谁的手牌」。
+        self._hands = {s: set(f.hands[s]) for s in rules.SEATS}
         self.table = f.table
         self.passes = f.passes
         # 露给渲染器的手牌是**出手那个人**的（复盘要看的就是「他当时握着什么」），
         # 而四个方位固定以 `me` 为底 —— 不然每点一步整桌转一次，认不出谁是谁
         self._gs = GameState(level=f.level, hand=sorted(f.hands[_whose(f)]))
+
+    def hand_of(self, seat):
+        """这一家的手牌（`net/table.py::_seat_area` 会问它）。"""
+        if seat not in self._hands:
+            return None
+        return sorted(self._hands[seat])
 
     @property
     def hand(self):

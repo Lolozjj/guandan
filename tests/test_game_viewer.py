@@ -10,6 +10,8 @@ import textwrap
 import pytest
 
 from net import table
+from net.sim import rules
+from net.state import GameState
 from tools.game_viewer import Cursor, _View
 from tools.show_game import advice_of, frame_hint, replay_game
 
@@ -88,3 +90,34 @@ def test_advice_is_the_shape_the_panel_wants():
     assert adv and all("cards" in a and "q" in a for a in adv)
     assert [a["q"] for a in adv] == sorted((a["q"] for a in adv), reverse=True)
     assert f.wasted in (True, False) and frame_hint(f)
+
+
+# ------------------------------------------------ 四家手牌（2026-09-29 用户要的）
+
+def test_the_viewer_exposes_all_four_hands():
+    """用户报的：「想直接看到每个人打过的牌，和当前手牌，而不是**到谁了才能看到谁的手牌**」。
+
+    ⚠️ 这是**回放器独有**的能力：真实对局里拿不到别人的手牌，所以实机面板
+    （`GameState`）没有 `hand_of` —— 见下面那条测试。
+    """
+    _, frames = replay_game(seed=7, level=8)
+    f = next(x for x in frames if not x.over)
+    v = _View(f)
+    for s in rules.SEATS:
+        assert v.hand_of(s) == sorted(f.hands[s]), f"座位{s} 的手牌不对"
+
+
+def test_the_live_panel_state_has_no_hand_of():
+    """**隔离**：`GameState` 没有 `hand_of` ⇒ `_seat_area` 走原来那条分支
+    （出过的牌铺满整个框、不画手牌）⇒ **实机面板的样子一字不变**。"""
+    assert not hasattr(GameState(), "hand_of")
+
+
+def test_hand_of_returns_a_copy_not_the_live_set():
+    """返回 `sorted(...)` 而不是原集合 —— 渲染器不该能改到帧里的数据。"""
+    _, frames = replay_game(seed=7, level=8)
+    f = next(x for x in frames if not x.over)
+    v = _View(f)
+    got = v.hand_of(3)
+    got.append(999999)
+    assert v.hand_of(3) == sorted(f.hands[3]), "改了返回值却影响到了帧"

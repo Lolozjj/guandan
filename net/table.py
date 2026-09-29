@@ -47,6 +47,10 @@ FONT_SYM = "Segoe UI Symbol"
 #: 右侧多留一栏给「模型建议」（用户 2026-09-26：原来那行字不够明显）
 W, H = 1520, 830
 CARD = (34, 46)             # 出过的牌
+#: 座位区域里画**手牌**用的小牌（回放器专用 —— 见 `_seat_area`）。
+#: 比 `CARD` 小一圈：一个座位框要塞下「手牌 + 出过的牌」两样，27 张手牌还得折行。
+MINI_CARD = (22, 30)
+MINI_STEP = 15
 MY_CARD = (52, 74)          # 我的手牌
 STEP = 21                   # 出过的牌横向步进（叠着放，露出左上角点数）
 MY_STEP = 34
@@ -146,7 +150,15 @@ class TableWindow:
     # ------------------------------------------------------------ 一家区域
 
     def _seat_area(self, st, seat, key):
-        """画一家的区域：标签 + 剩几张 + 本局出过的所有牌。"""
+        """画一家的区域：标签 + 剩几张 + **手牌（如果有）** + 本局出过的所有牌。
+
+        ⚠️ **手牌只有回放器给得出来**：它靠 `st.hand_of(seat)` 拿，而实机面板的
+        `GameState` **压根没有这个方法**（真实对局里拿不到别人的手牌）。
+        没有它时走的是**原来那条路（一字未动）** —— 所以面板的样子不受影响。
+
+        布局（只在有手牌时）：出过的牌贴**下沿**、手牌在上面铺。
+        出过的牌固定在下沿是为了**不随张数跳动** —— 回放时要盯着看的是手牌。
+        """
         lx, ly, x0, y0, x1, y1 = self.AREA[key]
         hs = st.history.get(seat) or []
         left = st.remaining.get(seat)
@@ -159,7 +171,8 @@ class TableWindow:
         anchor = "center" if key in ("top", "me") else ("w" if key == "left" else "e")
         self.cv.create_text(lx, ly, text=head, font=self.f_mid, fill=color,
                             anchor=anchor)
-        if not hs:
+        hand = st.hand_of(seat) if hasattr(st, "hand_of") else None
+        if not hs and not hand:
             return
         # **整体排一次**，不是每手各排各的 ——
         # 每手内部排好、再按时间拼接，整体看还是乱的（用户一眼就看出来了）。
@@ -167,7 +180,15 @@ class TableWindow:
         every = []
         for p in hs:
             every.extend(p.cards)
-        self._flow(cards.names_sorted(every, st.level), x0, y0, x1, y1)
+        names = cards.names_sorted(every, st.level)
+        if not hand:
+            self._flow(names, x0, y0, x1, y1)          # 实机面板：老行为，不动
+            return
+        py0 = y1 - CARD[1] - 4                          # 出过的牌贴下沿
+        if names:
+            self._flow(names, x0, py0, x1, y1)
+        self._flow(cards.names_sorted(hand, st.level), x0, y0, x1, py0 - 2,
+                   step=MINI_STEP, size=MINI_CARD)
 
     # ------------------------------------------------------------ 主绘制
 
