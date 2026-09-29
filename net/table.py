@@ -69,13 +69,15 @@ def _wrap(items, per_row: int) -> list:
 
 
 class Layout:
-    def __init__(self, W, H, AREA, ADVICE, show_bottom_hand=True,
+    def __init__(self, W, H, AREA, ADVICE, show_bottom_hand=True, CENTER=(600, 400),
                  CARD=(34, 46), MY_CARD=(52, 74), STEP=21, MY_STEP=34):
         self.W, self.H = W, H
         self.CARD, self.MY_CARD = CARD, MY_CARD
         self.STEP, self.MY_STEP = STEP, MY_STEP
         self.AREA = AREA
         self.ADVICE = ADVICE
+        #: 桌面（当前待压的牌）的中心 —— 桌面框是 `cx±175 × cy±68`
+        self.CENTER = CENTER
         #: 底部要不要再画一行「我的手牌」。回放器里四个方位本来就都是大牌了，
         #: 再画一行是重复，而且没地方（`me` 那个框已经顶到画布下沿）。
         self.show_bottom_hand = show_bottom_hand
@@ -112,12 +114,13 @@ BIG = Layout(
     1880, 960,
     {
         "top": (650, 26, 60, 48, 1290, 214),      # 宽，手牌 1 行
-        "left": (36, 246, 36, 266, 500, 700),     # 窄，手牌折 3 行
-        "right": (1284, 246, 790, 266, 1290, 700),
+        "left": (36, 246, 36, 266, 460, 700),     # 窄，手牌折 3 行
+        "right": (1284, 246, 830, 266, 1290, 700),
         "me": (650, 722, 60, 742, 1290, 890),     # 宽，手牌 1 行
     },
     (1310, 50, 1870, 740),
     show_bottom_hand=False,
+    CENTER=(645, 470),                            # 桌面框 ±175 ⇒ 470~820，正好落在左右两块之间
 )
 
 
@@ -131,7 +134,7 @@ class TableWindow:
         self.tk = tk
         root.title("掼蛋牌桌 —— 数据直读网络，无截图")
         root.configure(bg=BG)
-        self.cv = tk.Canvas(root, width=W, height=H, bg=BG,
+        self.cv = tk.Canvas(root, width=self.L.W, height=self.L.H, bg=BG,
                             highlightthickness=0)
         self.cv.pack(fill="both", expand=True)
         self.f_big = (FONT, 15, "bold")
@@ -322,7 +325,7 @@ class TableWindow:
         `smoke_panel.py` 守着这条）。"""
         cv = self.cv
         cv.delete("all")
-        cv.create_rectangle(14, 14, W - 14, H - 14, outline=BG_EDGE, width=3)
+        cv.create_rectangle(14, 14, self.L.W - 14, self.L.H - 14, outline=BG_EDGE, width=3)
 
         # 顶部信息条
         cv.create_text(34, 26, text=f"级别  打{st.level_name()}",
@@ -330,13 +333,13 @@ class TableWindow:
         turn = ("本局结束" if st.turn is None and st.plays
                 else (st.seat_label(st.turn) if st.turn is not None
                       else "等待发牌"))
-        cv.create_text(W / 2, 26, text=f"轮到：{turn}", font=self.f_big,
+        cv.create_text(self.L.W / 2, 26, text=f"轮到：{turn}", font=self.f_big,
                        fill=TEXT)
-        cv.create_text(W - 34, 26, text=top_right or f"已收 {n_ev} 个事件",
+        cv.create_text(self.L.W - 34, 26, text=top_right or f"已收 {n_ev} 个事件",
                        anchor="e", font=self.f_small, fill=DIM)
 
         # 桌子中央：当前待压的牌
-        cx, cy = 600, 400
+        cx, cy = self.L.CENTER
         cv.create_rectangle(cx - 175, cy - 68, cx + 175, cy + 68,
                             outline=BG_EDGE, width=2)
         cv.create_text(cx, cy - 52, text="桌面（待压）", font=self.f_small,
@@ -363,17 +366,21 @@ class TableWindow:
         self._seat_area(st, st.me, "me")                # 我
 
         # 我的手牌（右边界让给建议栏，不许压过去）
-        hx0, hy = 240, H - 128
-        self._flow(st.hand_grouped(), hx0, hy, min(W - 240, self.L.ADVICE[0] - 20),
-                   H - 50, step=self.L.MY_STEP, size=self.L.MY_CARD)
-        cv.create_text(hx0 - 14, hy + self.L.MY_CARD[1] / 2, anchor="e",
-                       text=hand_label or f"我的手牌（{len(st.hand)} 张，按大小排序）",
-                       font=self.f_small, fill=DIM)
-        cv.create_text(W / 2, H - 24, text=hint, font=self.f_small, fill=DIM)
+        # 底部那行「我的手牌」。⚠️ `BIG` 布局**不画**：四个方位本来就都是大牌了，
+        # 再画一行是重复，而且 `me` 那个框已经顶到画布下沿、根本没地方（用户 2026-09-29）。
+        if self.L.show_bottom_hand:
+            hx0, hy = 240, self.L.H - 128
+            self._flow(st.hand_grouped(), hx0, hy,
+                       min(self.L.W - 240, self.L.ADVICE[0] - 20), self.L.H - 50,
+                       step=self.L.MY_STEP, size=self.L.MY_CARD)
+            cv.create_text(hx0 - 14, hy + self.L.MY_CARD[1] / 2, anchor="e",
+                           text=hand_label or f"我的手牌（{len(st.hand)} 张，按大小排序）",
+                           font=self.f_small, fill=DIM)
+        cv.create_text(self.L.W / 2, self.L.H - 24, text=hint, font=self.f_small, fill=DIM)
         # 影子模式的那一行（**只报进度，不显示建议** —— 用户 2026-09-25 定：
         # 建议一旦上屏，人就会被它影响，「模型与人的分歧」这份数据就废了）
         if shadow_line:
-            cv.create_text(W / 2, H - 66, text=shadow_line,
+            cv.create_text(self.L.W / 2, self.L.H - 66, text=shadow_line,
                            font=self.f_small, fill=DIM)
 
         # 右侧：模型建议（画牌面）
