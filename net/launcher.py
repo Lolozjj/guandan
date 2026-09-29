@@ -36,6 +36,10 @@ CA_CER = os.path.join(CONFDIR, "mitmproxy-ca-cert.cer")
 CA_CN = "mitmproxy"
 
 PORT = 8080
+
+#: 删证书时**轮询证书库**的上限（秒）。`certutil -delstore` 删真实存在的证书会卡住不退，
+#: 所以不等它 —— 数到库里没有就收工。见 `_delstore`。
+DELSTORE_WAIT_S = 12.0
 REG_PATH = (r"Software\Microsoft\Windows\CurrentVersion"
             r"\Internet Settings")
 
@@ -103,14 +107,26 @@ def ensure_ca_generated():
 
 
 def ca_installed_count():
-    """当前用户证书库里还有几张 mitmproxy 证书。"""
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         "Get-ChildItem Cert:\\CurrentUser\\Root | "
-         f"Where-Object {{$_.Subject -like '*{CA_CN}*'}} | "
-         "Measure-Object | Select-Object -ExpandProperty Count"],
-        capture_output=True, text=True, timeout=60).stdout.strip()
-    return int(out) if out.isdigit() else 0
+    """当前用户证书库里还有几张 mitmproxy 证书。**查不到返回 `None`（≠ 0）**。
+
+    ⚠️ 两条都是 2026-09-29 实机自检之后改的：
+    1. **改用 `certutil`，不用 PowerShell** —— certutil 本来就是这个流程的依赖，
+       启动快得多；而 PowerShell 起不来时，原写法
+       （`int(out) if out.isdigit() else 0`）会**静默返回 0** ——
+       那是「已经删干净了」的**假成功**，而且正好落在**还原路径**上。
+    2. 只数 `Subject:` 行。同一张证 `Issuer:` / `Subject:` 各占一行，
+       数所有含 `CA_CN` 的行会把 1 张数成 2 张。
+    """
+    try:
+        r = subprocess.run(["certutil", "-user", "-store", "Root"],
+                           capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return sum(1 for ln in r.stdout.splitlines()
+               if ln.strip().startswith("Subject:") and CA_CN in ln)
 
 
 def install_ca():
@@ -119,15 +135,46 @@ def install_ca():
     return ca_thumbprint()
 
 
-def remove_ca(thumbprint):
-    """删证书，两种方式都试，最后复核。返回是否确认删干净。"""
-    if thumbprint:
-        subprocess.run(["certutil", "-user", "-delstore", "Root", thumbprint],
-                       capture_output=True, timeout=60)
-    if ca_installed_count():
-        subprocess.run(["certutil", "-user", "-delstore", "Root", CA_CN],
-                       capture_output=True, timeout=60)
+def _delstore(target) -> bool:
+    """按指纹/名字删证书。**不等 `certutil` 退出**，只看证书库里的结果。
+
+    ⚠️ 为什么不能用 `subprocess.run`：`certutil -delstore` 删一张**真实存在**的证书时
+    会**删完卡住不退**（实测 >60 秒，像是弹了个确认框；删不存在的目标只要 0.29 秒）。
+    所以这里：起进程 → **轮询证书库** → 数到 0 就收工并把它 kill 掉。
+    **结论永远由复核给，不看 certutil 的脸色。**
+    """
+    try:
+        proc = subprocess.Popen(
+            ["certutil", "-user", "-f", "-delstore", "Root", target],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL)
+    except OSError:
+        return False
+    deadline = time.monotonic() + DELSTORE_WAIT_S
+    while time.monotonic() < deadline:
+        if ca_installed_count() == 0:
+            break
+        time.sleep(0.2)
+    if proc.poll() is None:                    # 还卡着就收掉，别留着占用
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
     return ca_installed_count() == 0
+
+
+def remove_ca(thumbprint):
+    """删证书（先按指纹、再按名字），最后**复核**。返回是否**确认**删干净。
+
+    2026-09-29 实机自检抓到：原来直接把 `TimeoutExpired` 抛出去，后果是
+    **演示结束关面板时卡一分钟 + 弹一段红色 traceback**，而且后面那两行
+    「证书已卸干净 / 已还原代理」**全被跳过**（代理其实还原了，用户看不到）。
+    """
+    for target in (thumbprint, CA_CN):
+        if target and _delstore(target):
+            return True
+    return ca_installed_count() == 0          # `None`（查不到）**不等于**干净
 
 
 # ---------------------------------------------------------------- 端口

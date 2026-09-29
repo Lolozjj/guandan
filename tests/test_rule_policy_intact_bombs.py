@@ -80,7 +80,23 @@ def test_does_not_dig_into_its_own_bomb_when_another_pair_would_do():
     acts = meld.melds_from(sorted(hand), 8)
     m = acts[rp.rule_choose(o, acts)]
     assert not rp.breaks_bomb(hand, m), f"拆了自己的炸：{m}"
-    assert m.kind == meld.TRIPLE_PAIR, "这一步仍该按规则优先三带二"
+
+
+def test_the_triple_pair_shortcut_is_what_refuses_to_break_the_bomb(monkeypatch):
+    """把 **[源 2]**（按计划出牌）关掉，单独钉 **[源 4]** 的那道闸。
+
+    ⚠️ 为什么要拆开：`SOURCE2_MAX_HANDS` 从 3 提到 12 之后（实测 +4pp），
+    [源 2] 会**先于** [源 4] 触发，上面那条测试因此不再经过三带二这条捷径。
+    原来把「必须出三带二」写进上面那条 —— 那是**过度指定**：
+    它把 [源 4] 的行为当成了整体契约，而 [源 2] 合理地排在它前面。
+    """
+    monkeypatch.setattr(rp, "SOURCE2_MAX_HANDS", 0)      # 2 <= len(hands) <= 0 不可能
+    hand = _seat3_hand()
+    o = _obs(seat=3, hand=hand, level=8)
+    acts = meld.melds_from(sorted(hand), 8)
+    m = acts[rp.rule_choose(o, acts)]
+    assert not rp.breaks_bomb(hand, m), f"拆了自己的炸：{m}"
+    assert m.kind == meld.TRIPLE_PAIR, "关掉 [源 2] 之后，这一步该按 [源 4] 出三带二"
 
 
 def test_triple_pair_tie_goes_to_the_smaller_pair():
