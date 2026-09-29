@@ -84,6 +84,12 @@ class GuandanTap:
             if seat is not None:
                 self.stats["seats"] = self.stats.get("seats", 0) + 1
                 return {"type": "seat", "seat": seat}
+        elif msg["msgid"] == 3004:
+            # 开桌那条：`3.5.1` = 本局谁领出。没有它，我领出那一局影子模式拿不到建议
+            lead = protocol.decode_leader(msg["fields"])
+            if lead is not None:
+                self.stats["leaders"] = self.stats.get("leaders", 0) + 1
+                return {"type": "leader", "seat": lead}
         elif msg["msgid"] == 3006:
             p = protocol.decode_pass(msg["fields"])
             if p:

@@ -358,6 +358,30 @@ def decode_seat_sync(fields):
     return None                     # 这帧里没有牌数组 ⇒ 认不出
 
 
+def decode_leader(fields):
+    """msgid 3004（开桌那条）里的 **`3.5.1` = 本局领出者的座位**。
+
+    protobuf 省略 0 ⇒ **字段缺席即座位 0**。
+
+    为什么要它：`on_deal` 会把轮次清成 `None`（新一局谁先出由服务器重分配），
+    而**在第一手出牌之前没有任何事件能说明轮到谁**。我领出那一局因此拿不到建议
+    （影子模式的门是 `st.turn == st.me`）—— 用户 2026-09-29 报的。
+    实测每局开桌前正好来一条；16 局里 11 条带这个字段、5 条不带，
+    而**「不带」正好对应领出者 = 0**。
+
+    ⚠️ 判据是「这条消息里有 `3.5.x` 这一组」，**不能只看 `3.5.1` 在不在** ——
+    它本来就会因为省略 0 而缺席，那样连「这是不是 3004」都分不出来。
+    认不出返回 `None`，**不许瞎认一个座位**。
+    """
+    if not any(k == "int" and len(p) == 3 and tuple(p[:2]) == (3, 5) and p[2] >= 2
+               for k, p, _ in fields):
+        return None
+    for k, p, v in fields:
+        if k == "int" and tuple(p) == (3, 5, 1):
+            return v
+    return 0
+
+
 def decode_levels(fields):
     """从 msgid 3008 里取**每座位的级别**；不是这条消息则返回 None。
 

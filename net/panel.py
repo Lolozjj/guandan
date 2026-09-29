@@ -66,6 +66,9 @@ def apply_event(st: GameState, ev: dict) -> str:
                    ev.get("left_cards"))
         who = st.seat_label(ev["seat"])
         return f"{who} 出 {' '.join(ev.get('names') or cards.decode_all(ev['cards']))}"
+    if t == "leader":
+        st.on_leader(ev["seat"])
+        return f"开桌：{st.seat_label(ev['seat'])} 领出"
     if t == "seat":
         st.on_seat(ev["seat"])
         return f"座位同步：我是 {ev['seat']} 号"
@@ -172,6 +175,11 @@ def run_replay(st: GameState, capture: str, delay: float, level: int = None,
             q = protocol.decode_pass(msg["fields"])
             if q:
                 ev = {"type": "pass", "seat": q["seat"], "next": q["next"]}
+        elif msg and msg["msgid"] == 3004:
+            # 开桌那条：谁领出。回放也要走同一条路，否则回放里我领出那局没建议
+            s2 = protocol.decode_leader(msg["fields"])
+            if s2 is not None:
+                ev = {"type": "leader", "seat": s2}
         elif msg and msg["msgid"] == 3019:
             h = protocol.decode_hand(msg["fields"])
             if h:

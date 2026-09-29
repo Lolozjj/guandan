@@ -157,6 +157,22 @@ class GameState:
         self.table = None
         self.passes = []
 
+    def on_leader(self, seat: int) -> None:
+        """开桌那条报文说**这局谁领出**（msgid 3004 的 `3.5.1`）。
+
+        为什么要它：`on_deal` 把 `turn` 清成 `None`，而**第一手出牌之前没有任何事件
+        能说明轮到谁**。我领出那一局因此拿不到建议（影子模式的门是 `turn == me`）——
+        用户 2026-09-29 报的「我的第一首出牌，模型不会有建议」。
+
+        ⚠️ **只在轮次还是空的时候采用**：中局来一条陈旧的 3004 不许改掉已经建立的
+        轮次 —— 改了会让 `_advance_to` 凭空补出几个不存在的「要不起」。
+        万一这条给了错的座位，第一手出牌报文也会把它纠正回来（`on_play` 会设 `turn`）。
+        """
+        if not 0 <= seat <= 3:
+            return
+        if self.turn is None:
+            self.turn = seat
+
     def on_seat(self, seat: int) -> None:
         """服务器直接说「我是哪个座位」（msgid 3019 的 `3.26.2`）。
 
