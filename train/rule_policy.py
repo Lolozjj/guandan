@@ -28,9 +28,25 @@
   明牌泄漏那条红线靠类型堵，不靠自觉（见 `net/sim/env.py`）。
 - 「台面那手是谁出的」**没有单独字段**，从公开信息**推**：`obs.played[座位]`
   包含台面上的每一张牌 ⇒ 就是那家出的（牌 ID 带副牌标记，判断是精确的）。
+
+## 用户 2026-09-29 补的第 12 条：**不许拆自己的炸**
+
+「这个规则式，为啥第一手就把炸弹毫无意义的给拆了」—— 查出来是**取舍口径**的
+毛病（「优先三带二」那条规则本身没错）：`_key` 看不见三带二里那一对，
+`is_fire` 又只看**这一手本身**是不是炸，于是 `222+77`（从四个 7 里抽两张）
+既不同分、也没人拦，纯粹**按枚举顺序抽签**抽中了。实测它 4.79% 的决策
+**本可不拆却拆了**，波及 39/40 局 ⇒ `vs 规则式 88.2%` 那把尺子**虚高**。
+修法见 `breaks_bomb` / `_prefer_intact` / `_spent`（`[源 4]` 那条捷径也加了闸）。
+
+**修完的账**（同一批牌，40 局 / 400 局）：本可不拆 3.96% → **0.36%**；
+规则式自己对贪心 67.0% → **84.2%**，用炸率 1.25 → 2.42 手/局（不是不炸了，
+是**炸不再被当对子单张糟蹋**）；现役 `1407` 对**新**规则式只有 **54.8%**
+（旧 88.2% —— **那个数作废**）。完整记录见
+`docs/superpowers/plans/2026-09-29-rule-ruler-fix.md`。
 """
 from __future__ import annotations
 
+from collections import Counter
 from typing import Optional
 
 from net import cards
@@ -192,34 +208,98 @@ def hand_partition(hand, level) -> list:
 
 
 def _key(m):
+    """主排序键 —— 与 `policies.greedy_policy` 的 `_sort_key` 同口径
+    （张数优先，所以「最小」永远不会是炸）。**并列时另有 `_spent` 细化。**"""
     return (m.size, m.rank, m.kind)
 
 
-def _cheapest(acts):
+def breaks_bomb(hand, m) -> bool:
+    """这一手是不是**从自己手里的炸里挖牌**：某个点数我握着 ≥4 张，
+    这一手只用了其中 1~3 张 ⇒ 那个炸废了。
+
+    ⚠️ 豁免只有一种：**把整个炸当炸打出去**（`is_bomb` 且四张全用掉）。
+    不能只看「四张全用掉」—— 逢人配会骗人：`8♠8♥8♣8♦J♠`（8♥ 当 J 去配对子）
+    里真被吃掉的 8 只有 3 张，8 炸没了，但按牌面点数看 4 个 8 全在。
+
+    用户 2026-09-29 报的：「为啥第一手就把炸弹毫无意义的给拆了」。
+    查出来两层毛病**都在这一层**（移植来的是「优先三带二」那条规则，
+    怎么在三带二之间取舍是我写的）：`_key` 看不见「那一对」，
+    而 `is_fire(m)` 判的是**这一手本身**是不是炸 —— `222+77` 不是炸，
+    就当普通牌放行了。实测代价：规则式 4.7% 的决策**本可不拆却拆了**。
+    """
+    if m is None:
+        return False
+    have = Counter(cards.parts(c)[0] for c in hand)
+    used = Counter(cards.parts(c)[0] for c in m.cards)
+    for idx, n in have.items():
+        if n < 4:
+            continue
+        k = used.get(idx, 0)
+        if k and not (m.is_bomb and k == n):
+            return True
+    return False
+
+
+def _prefer_intact(cand, hand):
+    """`cand = [(下标, Meld), …]` —— **有没挖炸的就只在那些里挑**，下标原地不动。
+
+    ⚠️ 只在**同一批候选内**做偏好，**不做成「先把 acts 全局过滤一遍」**。
+    那样有两处会坏（都实测过）：
+    (a) 手里唯一能压的普通牌型就埋在炸里时（跟三张只剩 `777` 可出），
+        过滤会把 `777` 剔掉，于是被逼去**开整个炸** —— 比拆炸更蠢；
+    (b) 过滤后的列表下标与调用方的 `acts` 不是一套，返回的下标**直接是错的**。
+    """
+    keep = [(i, m) for i, m in cand if not breaks_bomb(hand, m)]
+    return keep or cand          # 没得挑时该拆还得拆 —— 这是偏好，不是禁令
+
+
+def _spent(m, level):
+    """这一手**花掉的最大那张**的点数（级牌按 14 算）—— `_key` 并列时的细化键。
+
+    为什么需要它：`_key` 只看**三张**的点数，于是 `222+33` / `222+77` / `222+KK`
+    的键**完全一样**（那 11 个候选同分），`min` 退化成「按枚举顺序抽签」——
+    用户报的那一手就是这么抽中 `222+77` 的。
+    """
+    return max((meld.point_value(cards.parts(c)[0], level) for c in m.cards),
+               default=0)
+
+
+def _pick(cand, hand, level):
+    """所有选牌助手共用的出口：**先别拆自己的炸**，再按 `(_key, _spent)` 取最小。"""
+    cand = _prefer_intact(cand, hand)
+    return (min(cand, key=lambda im: (_key(im[1]), _spent(im[1], level)))[0]
+            if cand else None)
+
+
+def _cheapest(acts, hand, level):
     """最便宜的一手（含火力）—— 就是贪心的选择，做兜底用。"""
     cand = [(i, m) for i, m in enumerate(acts) if m is not None]
-    return min(cand, key=lambda im: _key(im[1]))[0] if cand else _pass(acts)
+    i = _pick(cand, hand, level)
+    return _pass(acts) if i is None else i
 
 
-def _cheapest_plain(acts):
+def _cheapest_plain(acts, hand, level):
     """最便宜的一手，**排除火力牌**（留着炸）。没有就 None。"""
     cand = [(i, m) for i, m in enumerate(acts) if m is not None and not is_fire(m)]
-    return min(cand, key=lambda im: _key(im[1]))[0] if cand else None
+    return _pick(cand, hand, level)
 
 
-def _cheapest_fire(acts):
-    """最便宜的一手**火力牌**。没有就 None。"""
+def _cheapest_fire(acts, hand, level):
+    """最便宜的一手**火力牌**。没有就 None。
+
+    火力牌里也有「挖炸」的情况（同花顺从四张同点里抽两张），所以照样过 `_pick`。
+    """
     cand = [(i, m) for i, m in enumerate(acts) if m is not None and is_fire(m)]
-    return min(cand, key=lambda im: _key(im[1]))[0] if cand else None
+    return _pick(cand, hand, level)
 
 
-def _of_kinds(acts, kinds):
+def _of_kinds(acts, kinds, hand, level):
     """最小的、属于 `kinds` 的那一手。没有就 None。"""
     cand = [(i, m) for i, m in enumerate(acts) if m is not None and m.kind in kinds]
-    return min(cand, key=lambda im: _key(im[1]))[0] if cand else None
+    return _pick(cand, hand, level)
 
 
-def _size_not(acts, n, cheat=False):
+def _size_not(acts, n, hand, level, cheat=False):
     """最小的、**张数不等于 `n`** 的一手（`cheat` 时连火力牌也允许）。
 
     为什么是「张数不等于」：**要跟牌必须同牌型同张数** —— 所以领一张
@@ -227,10 +307,10 @@ def _size_not(acts, n, cheat=False):
     """
     cand = [(i, m) for i, m in enumerate(acts)
             if m is not None and m.size != n and (cheat or not is_fire(m))]
-    return min(cand, key=lambda im: _key(im[1]))[0] if cand else None
+    return _pick(cand, hand, level)
 
 
-def _planned_plain(acts, hands):
+def _planned_plain(acts, hands, hand, level):
     """分区里**非火力**的那几手中，最小的一个在 `acts` 里的下标。
 
     为什么按分区挑、而不是挑「最小的合法牌」：这一步的意图是**执行计划** ——
@@ -240,7 +320,7 @@ def _planned_plain(acts, hands):
     want = {frozenset(h.cards) for h in hands if not is_fire(h)}
     cand = [(i, m) for i, m in enumerate(acts)
             if m is not None and frozenset(m.cards) in want]
-    return min(cand, key=lambda im: _key(im[1]))[0] if cand else None
+    return _pick(cand, hand, level)
 
 
 def _pass(acts):
@@ -266,23 +346,28 @@ def _lead(obs, acts, pool) -> Optional[int]:
     hands = hand_partition(obs.hand, obs.level)
     # [源 2] 还剩 2~3 手、且既有火力又有非火力 -> 先走非火力那手（留炸）
     if 2 <= len(hands) <= 3 and any(map(is_fire, hands)) and not all(map(is_fire, hands)):
-        i = _planned_plain(acts, hands)
+        i = _planned_plain(acts, hands, obs.hand, obs.level)
         if i is not None:
             return i
 
     # [源 3] 喂队友：队友剩 1 张 -> 出最小单张；剩 2 张 -> 出最小对子
     if obs.left[ally] == 1:
-        i = _of_kinds(acts, (meld.SINGLE,))
+        i = _of_kinds(acts, (meld.SINGLE,), obs.hand, obs.level)
         if i is not None:
             return i
     if obs.left[ally] == 2:
-        i = _of_kinds(acts, (meld.PAIR,))
+        i = _of_kinds(acts, (meld.PAIR,), obs.hand, obs.level)
         if i is not None:
             return i
 
     # [源 4] 优先三带二（一次消 5 张）
-    i = _of_kinds(acts, (meld.TRIPLE_PAIR,))
-    if i is not None:
+    #
+    # ⚠️ 但**不拆自己的炸优先于这条**（用户 2026-09-29 报的）。实测剩下那 37 例
+    # 「本可不拆却拆了」全是这个形状：为了凑三带二从自己炸里抽 3 张，
+    # 而不拆的出路明明有（炸本身、对子、单张）。所以拆炸时不走捷径，
+    # 让它落到后面的规则去（后面那几条都过 `_prefer_intact`）。
+    i = _of_kinds(acts, (meld.TRIPLE_PAIR,), obs.hand, obs.level)
+    if i is not None and not breaks_bomb(obs.hand, acts[i]):
         return i
 
     # [源 5 + 用户] 卡对手：领出的**张数不等于他剩的张数**，他就一手走不完。
@@ -290,7 +375,7 @@ def _lead(obs, acts, pool) -> Optional[int]:
     # 剩 2 张出单张」更一般 —— 3/5/6 张同样可能一手走完（用户补的那条）。
     for opp in sorted(opponents(obs.seat), key=lambda s: -finish_risk(obs.left[s], pool)):
         if finish_risk(obs.left[opp], pool) >= DANGER:
-            i = _size_not(acts, obs.left[opp])
+            i = _size_not(acts, obs.left[opp], obs.hand, obs.level)
             if i is not None:
                 return i
     return None
@@ -317,6 +402,11 @@ def _follow(obs, acts, pool) -> Optional[int]:
     #     B 队友赢着就过（危险时除外）                68.0%     37.9%
     #     C 现在这个（能一把走完除外）                67.0%      1.2%
     #
+    # ⚠️ 2026-09-29：这张表的**绝对胜率已过时**（拆炸那个 bug 修掉之后 C 变成
+    # 84.2%），而「三条都在噪声内 ⇒ 不压队友免费」这个**相对**结论**修复后没复核**。
+    # 「不压队友」的依据本来就不只是胜率（压队友 100%→1.2% 是行为事实），所以先不动。
+    # 见 `docs/superpowers/plans/2026-09-29-rule-ruler-fix.md` §6.3。
+    #
     # 三条的胜率全在噪声内（±2.5%）⇒ **「不压队友」是免费的**，那就取最像人的那个。
     # 源规则只在「队友那手够硬」时才让，队友出小牌时照压 —— 而那正是用户抱怨的
     # 「人类不会这么打」。**危险时**也不该压队友：他本来就赢着这一手，
@@ -332,19 +422,19 @@ def _follow(obs, acts, pool) -> Optional[int]:
 
     # [用户 2] 有对手面临「一手走完」-> **必须拦**：先普通牌，没有就动炸
     if danger >= DANGER:
-        i = _cheapest_plain(acts)
+        i = _cheapest_plain(acts, obs.hand, obs.level)
         if i is not None:
             return i
-        i = _cheapest_fire(acts)
+        i = _cheapest_fire(acts, obs.hand, obs.level)
         return i if i is not None else _pass(acts)
 
     # [源 2] 不危险：压最小的**普通牌**（火力留着）
-    i = _cheapest_plain(acts)
+    i = _cheapest_plain(acts, obs.hand, obs.level)
     if i is not None:
         return i
     # [源 3] 台面主点 > 10 且我凑得出炸 -> 才动炸
     if obs.table_rank > 10:
-        i = _cheapest_fire(acts)
+        i = _cheapest_fire(acts, obs.hand, obs.level)
         if i is not None:
             return i
     return _pass(acts)
@@ -354,7 +444,7 @@ def rule_choose(obs, acts) -> int:
     """规则式选择，返回 `acts` 的下标。**两条链的唯一实现。**"""
     pool = unseen_pool(obs)
     i = _follow(obs, acts, pool) if obs.table else _lead(obs, acts, pool)
-    return _cheapest(acts) if i is None else i
+    return _cheapest(acts, obs.hand, obs.level) if i is None else i
 
 
 def rule_policy():
