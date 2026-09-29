@@ -56,11 +56,19 @@ def test_the_old_deal_line_still_works(tmp_path):
     assert w.level_src.startswith("发牌行")
 
 
-def test_settle_wins_over_a_stale_deal_line(tmp_path):
-    """同一个日志里两条都有时，**结算行更新**（它是后写的那条）。"""
+def test_the_settlement_no_longer_overrides_a_this_deal_source(tmp_path):
+    """⚠️ **这条原来是反的**：以前断言「结算行后出现就算数」。
+
+    2026-09-29 用现场数据推翻：结算行的 `TrumpValue` **不再等于「下一局打几」**——
+    15:03 那条说 16，紧接着 15:42 的发牌行却是 `Trump=11`。
+    而且「后出现的算」这条规则本身让级别每局一结束就被顶错（用户报的那次：
+    面板拿 13 去打了真实级别 6 的一局）。
+
+    ⇒ 期望反过来：**本局来源（发牌行 / 界面自报）优先，结算行只做兜底。**
+    """
     d = _log(tmp_path, DEAL, SETTLE)
     w = LevelWatcher(log_dir=d)
-    assert w.poll() == 11, "结算行在后 -> 它说的算"
+    assert w.poll() == 9, "发牌行是本局级别，不该被后面那条结算行顶掉"
 
 
 def test_nothing_readable_means_no_level(tmp_path):
@@ -106,3 +114,62 @@ def test_the_deal_line_far_back_still_overrides_a_manual_level(tmp_path):
     w = LevelWatcher(log_dir=d)
     assert w.poll() == 9, "发牌行在 300KB 之外，也必须读到（否则手输的级别永远不被覆盖）"
     assert w.level_src.startswith("发牌行")
+
+
+# ------------------------------------------------ 2026-09-29：又换了一次来源
+
+#: 游戏界面自己打印的（`GDTableView`）——**本局级别**，每局开头连着 3 条。
+#: 17:11:07 的真实行：面板当时显示「打K」，而游戏里是 6。
+UI = ('2026-09-29|17:11:07:051|INFO|G|GameLogger|520|520|3222027089|'
+      'GDTableView selfTrump = 6 otherTrump = 6')
+
+#: 今天那条结算行（17:14:54，**那一局结束时**的）。它的 TrumpValue=10 ——
+#: 而同一段日志里 15:03 的结算说 TrumpValue=16、紧接着 15:42 的发牌行却是 Trump=11
+#: ⇒ **`TrumpValue` 不再等于「下一局打几」**（老结论是拿已删掉的发牌行验的）。
+SETTLE_TODAY = ('2026-09-29|17:14:54:269|INFO|G|GameLogger|520|520|3222027089|'
+                'EVA1B001结算协议 = {"Result":0,"Rank":[1,3,2,4],'
+                '"UpgradeInfo":{"trump":[10,6,10,6],"Upgrade":0,"TrumpOwner":0,'
+                '"TrumpValue":10,"RoundCount":1,"UsedSeriesTime":300}}')
+
+
+def test_the_ui_self_report_gives_this_deals_level(tmp_path):
+    """**用户 2026-09-29 报的**：面板显示「打K」，游戏里其实是打 6。
+
+    `GDTableView selfTrump = N` 是游戏界面**自己打印**的当前级别 ——
+    每局开头连着 3 条（比发牌行还全：今天 17 点那个文件里发牌行 0 条、它 3 条）。
+    两处独立交叉验证：17:11 这条 =6 与用户截图「我方 6」一致；
+    15:42 那条 =11 与同局的发牌行 `Trump=11` 一致。
+    """
+    d = _log(tmp_path, UI)
+    w = LevelWatcher(log_dir=d)
+    assert w.poll() == 6
+    assert w.level_src == "界面自报（本局）"
+
+
+def test_a_this_deal_source_beats_a_later_settlement_line(tmp_path):
+    """⚠️ **这条是今天那个 bug 的回归测试。**
+
+    原来是「两条都在时**后出现的那条**算」，而结算行**总在**发牌行之后 ——
+    于是每局一结束，级别就被那条不可靠的结算行顶掉，一直错到下一局开头。
+    今天的现场：面板拿 15:45 那条结算的 13 去打了 17:11 那局（真实级别 6）。
+
+    ⇒ 改成本局来源（界面自报 / 发牌行）**永远优先**，结算行只做最后兜底。
+    """
+    d = _log(tmp_path, UI, SETTLE_TODAY)
+    w = LevelWatcher(log_dir=d)
+    assert w.poll() == 6, "被后面那条结算行顶掉了 —— 就是今天那个 bug"
+
+
+def test_the_old_deal_line_also_beats_a_later_settlement(tmp_path):
+    """发牌行同样是**本局**来源（15:42 实测与界面自报互相印证），所以它也优先。"""
+    d = _log(tmp_path, DEAL, SETTLE)
+    w = LevelWatcher(log_dir=d)
+    assert w.poll() == 9, "发牌行的 Trump 是本局级别，不该被结算行顶掉"
+
+
+def test_the_settlement_still_fills_in_when_no_this_deal_source_exists(tmp_path):
+    """兜底不能丢：一个本局来源都没见过时（万一游戏又改回去），结算行还得能用。"""
+    d = _log(tmp_path, SETTLE)
+    w = LevelWatcher(log_dir=d)
+    assert w.poll() == 11
+    assert w.level_src == "结算行（下一局）"

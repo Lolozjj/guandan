@@ -27,6 +27,12 @@ LOG_DIR = (r"C:\Users\17837\AppData\Roaming\Tencent\xwechat\radium\users"
 
 DEAL_RE = re.compile(r"SendCardsService set roundID:([\d,]+) k : "
                      r"\{.*?\"Trump\":(\d+)")
+#: **游戏界面自己打印的当前级别**（`GDTableView selfTrump = 6 otherTrump = 6`）。
+#: 2026-09-29 新增 —— 它是**本局**级别，且每局开头连着 3 条。
+#: 实测两个独立印证：17:11 那条 `=6` 与用户截图「我方 6」一致；
+#: 15:42 那条 `=11` 与同局的发牌行 `Trump=11` 一致。
+#: **它是现在的首选来源**（发牌行会缺：今天 17 点那个文件里 0 条，而它有 3 条）。
+UI_RE = re.compile(r"GDTableView selfTrump = (\d+)")
 #: 结算行（3.2.2 之后级别的主要来源）。只关心 UpgradeInfo。
 SETTLE_RE = re.compile(r"EVA1B001结算协议 = (\{.*)")
 
@@ -54,6 +60,9 @@ class LevelWatcher:
         self.last_levels = None
         self.last_seen = 0.0
         self._pos = {}
+        #: 这次运行里见过**本局**来源（界面自报 / 发牌行）没有。
+        #: 见过之后，结算行就**不再改级别**了 —— 见 `poll` 里的说明。
+        self._seen_this_deal = False
 
     def poll(self):
         """返回级别（没变就返回 None）。"""
@@ -78,16 +87,30 @@ class LevelWatcher:
                 continue
             self._pos[f] = start + cut + 1
             text = raw[:cut + 1].decode("utf-8", "replace")
-            # 按行序处理：两条都在时**后出现的那条**算 —— 结算行总是在发牌行之后
+            # ⚠️ 2026-09-29 改：**本局来源永远优先**。
+            #
+            # 原来是「两条都在时**后出现的那条**算」—— 而结算行**总在**发牌行之后，
+            # 于是每局一结束级别就被结算行顶掉、一直错到下一局开头。
+            # 现场：面板拿 15:45 那条结算的 13 去打了 17:11 那局（真实级别 6，用户报的）。
+            # 而且 `TrumpValue` **已经不再等于「下一局打几」**了：
+            # 15:03 那条说 16，而紧接着 15:42 的发牌行是 `Trump=11` ✗
+            # （老结论「34/34 对上」是拿**已被删掉**的发牌行验的）。
+            # ⇒ 结算行降级成**最后兜底**：一个本局来源都没见过时才用（万一游戏又改回去）。
             for line in text.splitlines():
+                u = UI_RE.search(line)
+                if u:
+                    found, src = int(u.group(1)), "界面自报（本局）"
+                    self._seen_this_deal = True
+                    continue
                 m = DEAL_RE.search(line)
                 if m:
                     found, src = int(m.group(2)), "发牌行（本局）"
+                    self._seen_this_deal = True
                     continue
                 j = SETTLE_RE.search(line)
                 if j:
-                    got = self._from_settle(j.group(1))
-                    if got is not None:
+                    got = self._from_settle(j.group(1))       # 顺带更新 last_levels
+                    if got is not None and not self._seen_this_deal:
                         found, src = got, "结算行（下一局）"
         if found is not None and found != self.level:
             self.level, self.level_src = found, src
