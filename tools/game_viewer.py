@@ -26,8 +26,8 @@ from net import cards, table
 from net.state import GameState
 from net.sim import rules
 from tools.accept_meld import _utf8_stdout
-from tools.show_game import (TEAM_NAME, advice_of, frame_hint, replay_game,
-                             seat_label)
+from tools.show_game import (TEAM_NAME, advice_of, frame_hint, policy_name,
+                             replay_game, seat_label)
 from train.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型唯一产地
 
 BAR_H = 56                       # 底部按钮条的高度（画布往下拉这么多）
@@ -70,8 +70,10 @@ class _View:
     渲染器将来要是多要一个字段，这里会**当场 AttributeError** —— 不会静默画错。
     """
 
-    def __init__(self, f, me: int = 0):
+    def __init__(self, f, me: int = 0, meta: dict = None):
         self.me = me
+        #: 这一帧所属那一局的元信息 —— 用来标「这个座位是谁在打」（见 `policy_name`）
+        self._meta = meta
         self.level = f.level
         self.turn = f.turn
         self.plays = [] if f.turn is None else [None] * f.step
@@ -80,11 +82,14 @@ class _View:
         #: 四家手牌（**回放器独有** —— 实机面板拿不到，所以 `GameState` 没这个方法）。
         #: 用户 2026-09-29 要的：一眼看全四家，而不是「走到谁才看得到谁的手牌」。
         self._hands = {s: set(f.hands[s]) for s in rules.SEATS}
-        #: 模型**推荐的那几手**的牌面名（绿底用）。⚠️ 只有**出手那一家**有 ——
-        #: 帧里的 `candidates` 是模型给这个决策点算的，别的座位没有。
-        top = next((m for _q, m in (f.candidates or []) if m is not None), None)
-        self._advised = (frozenset(cards.names_sorted(top.cards, f.level))
-                         if top is not None else frozenset())
+        #: 这一帧**要出的那手牌**的牌面名（绿底用）。
+        #:
+        #: ⚠️ 用 `chosen`（实际出的牌）而**不是** `candidates[0]`：
+        #: **非模型的座位没有候选** —— 规则式/贪心的着法我们不打分（给对手打分就是
+        #: 编数据，见 `show_game.replay_game` 的说明），但它们照样该能标绿。
+        #: 对模型来说两者本来就是一回事（回放里走 argmax）。
+        self._advised = (frozenset(cards.names_sorted(f.chosen.cards, f.level))
+                         if f.chosen is not None else frozenset())
         self._advised_seat = f.seat if self._advised else None
         self.table = f.table
         self.passes = f.passes
@@ -99,7 +104,10 @@ class _View:
         return sorted(self._hands[seat])
 
     def advised(self, seat):
-        """模型**推荐的那几手**的牌面名 —— 渲染器拿它上**绿底**（回放器专属）。"""
+        """这一帧**要出的那手牌**的牌面名 —— 渲染器拿它上**绿底**。
+
+        **三种策略都能标**：模型（= 它的首选）、规则式、贪心。
+        只有「过」那一手没得标（没有牌）。"""
         return self._advised if seat == self._advised_seat else ()
 
     @property
@@ -113,7 +121,9 @@ class _View:
         return self._gs.level_name()
 
     def seat_label(self, s: int) -> str:
-        return seat_label(s)
+        """**带上「谁在打」** —— 渲染器所有写座位名的地方（四个方位 + 台面 + 要不起）
+        都走这里，所以标一处就全标上了。"""
+        return f"{seat_label(s)}·{policy_name(self._meta, s)}"
 
 
 def _whose(f) -> int:
@@ -147,7 +157,7 @@ class Viewer:
         head = (f"终局（共 {self.meta['steps']} 手）" if f.over
                 else f"第 {self.cur.i + 1} / {len(self.frames)} 手")
         self.win.draw(
-            _View(f), frame_hint(f), 0, advice=advice_of(f), show_q=True,
+            _View(f, meta=self.meta), frame_hint(f), 0, advice=advice_of(f), show_q=True,
             top_right=head,
             # 对手帧没有候选 —— 右栏得说清楚**为什么**空着，不能显示
             # 「轮到我时显示」（那句话在复盘里是错的，会让人以为这里是模型的决策点）

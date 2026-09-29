@@ -51,6 +51,23 @@ def seat_label(s: int) -> str:
     return f"座位{s}({TEAM_NAME[rules.TEAM[s]]})"
 
 
+def policy_name(meta: dict, seat: int) -> str:
+    """**这个座位是谁在打** —— 模型 / 规则式 / 贪心。
+
+    为什么要标出来：回放里最容易搞混的就是这件事 —— 看半天以为在复盘模型，
+    其实对面那一队是规则式（或者反过来）。`replay_game` 只有三种可能：
+    - 没给 `opp_kind`（默认）：**四家全是模型**（自对弈）
+    - 给了：`opp_team` 那一队走固定对手（`OPP_KIND_CN` 里的名字），另一队是模型
+
+    ⚠️ **没有「随机」** —— `replay_game` 只支持 `greedy` / `rule` 两种对手
+    （`OPP_KINDS` 就这两个）。想加的话得先把它接进 `--opp-kind`。
+    """
+    kind = (meta or {}).get("opp_kind")
+    if kind and rules.TEAM[seat] == (meta or {}).get("opp_team"):
+        return OPP_KIND_CN.get(kind, kind)
+    return "模型"
+
+
 def cards_text(ids, level) -> str:
     return " ".join(names_sorted(ids, level))
 
@@ -194,6 +211,8 @@ def render_text(meta: dict, frames: list, quiet: bool = False, log=print) -> Non
     log(f"级别：打 {meta['level']}      先手：{seat_label(meta['first'])}      "
         f"种子：{meta['seed']}")
     log("队伍：甲队 = 座位 0、2      乙队 = 座位 1、3")
+    log("谁在打：" + "    ".join(
+        f"{seat_label(s)} = {policy_name(meta, s)}" for s in rules.SEATS))
     if opp:
         t = meta["opp_team"]
         seats = "、".join(str(s) for s in rules.SEATS if rules.TEAM[s] == t)

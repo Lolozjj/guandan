@@ -12,8 +12,11 @@
 """
 import pytest
 
+from net.cards import names_sorted
 from net.sim import rules
-from tools.show_game import OPP_KIND_CN, frame_hint, replay_game
+from tools.game_viewer import _View
+from tools.show_game import (OPP_KIND_CN, frame_hint, policy_name,
+                             replay_game, seat_label)
 
 
 def _key(frames):
@@ -64,3 +67,40 @@ def test_frame_hint_marks_the_opponent_frame():
     assert OPP_KIND_CN["rule"] in frame_hint(f)
     mine = next(x for x in frames if not x.over and x.opp is None)
     assert OPP_KIND_CN["rule"] not in frame_hint(mine)
+
+
+# ------------------------------------------------ 每个座位「谁在打」
+
+def test_self_play_labels_everyone_as_the_model():
+    """默认（不给 `opp_kind`）= 四家全是网络。**别让人以为对面是规则式。**"""
+    meta, _ = replay_game(seed=7, level=8)
+    assert [policy_name(meta, s) for s in rules.SEATS] == ["模型"] * 4
+
+
+def test_the_fixed_team_is_labelled_with_its_policy():
+    for kind, cn in (("rule", "规则式"), ("greedy", "贪心")):
+        meta, _ = replay_game(seed=7, level=8, opp_kind=kind, opp_team=1)
+        got = [policy_name(meta, s) for s in rules.SEATS]
+        assert got == ["模型", cn, "模型", cn], f"{kind}: {got}"
+
+
+def test_the_viewer_tags_every_seat_label():
+    """图形版每个座位名后面都跟着「谁在打」—— 渲染器写座位名的地方都走 `seat_label`，
+    所以标一处就全标上了（四个方位 + 台面 + 要不起）。"""
+    meta, frames = replay_game(seed=7, level=8, opp_kind="rule", opp_team=1)
+    f = next(x for x in frames if not x.over)
+    v = _View(f, meta=meta)
+    assert "规则式" in v.seat_label(1) and "模型" in v.seat_label(0)
+    assert v.seat_label(1).startswith(seat_label(1)), "原来的座位名要保留"
+
+
+def test_the_green_marks_what_is_about_to_be_played_for_any_policy():
+    """绿底 = **这一帧要出的那手牌**，所以**非模型的座位也能标**
+    （规则式/贪心没有候选 —— 我们不给对手打分 —— 但它们的实际着法是知道的）。"""
+    meta, frames = replay_game(seed=7, level=8, opp_kind="rule", opp_team=1)
+    f = next(x for x in frames if not x.over and rules.TEAM[x.seat] == 1
+             and x.chosen is not None)
+    v = _View(f, meta=meta)
+    assert set(v.advised(f.seat)) == set(
+        names_sorted(f.chosen.cards, f.level))
+    assert v.advised((f.seat + 1) % 4) == (), "只有出手那一家有"
