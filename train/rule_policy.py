@@ -56,6 +56,12 @@ from net.sim import meld, rules
 #: **这是一个启发式门槛**，不是概率 —— `finish_risk` 返回的是刻度，不是概率。
 DANGER = 0.5
 
+#: [源 2]「还剩几手就先走非火力那手（留炸）」的门槛。
+#: ⚠️ **这是个魔数**：`hand_partition` 是粗估（高估手数），所以门槛定在几，
+#: 是「什么时候开始按计划出牌」的开关。实测触发率（领出决策点）：
+#: ≤3 → 1.3%、≤5 → 4.0%、≤6 → 7.3%、≤8 → 13.0%。
+SOURCE2_MAX_HANDS = 12
+
 #: 「够硬」的门槛：主点 ≥ K。按 `point_value` 口径算出来，不写死数字
 #: （K → 12、A → 13、级牌 → 14、王 → 15/16）。队友压到这个份上就别添乱了。
 K_POINT = meld.point_value(meld.level_idx("K"), None)
@@ -167,21 +173,65 @@ def finish_risk(n: int, pool: dict) -> float:
     return 0.05
 
 
+def _nat_cards(avail: dict, v: int) -> list:
+    """自然值 `v` 现在还有哪些牌可用（A 的两个头由 `meld.nat_values` 一处定义）。
+
+    ⚠️ **四张同点的点数不参与** —— 那是一个炸，不许拿去凑顺子
+    （「不许拆自己的炸」这条纪律对分区同样成立，见 `breaks_bomb`）。
+    """
+    out = []
+    for idx, cs in avail.items():
+        if len(cs) >= 4:
+            continue
+        if v in meld.nat_values(idx):
+            out += cs
+    return out
+
+
+def _take_run(avail: dict, length: int, per: int):
+    """找一个「`length` 个连续自然值、每个至少 `per` 张」的组合并**就地取走**。
+
+    取走是就地改 `avail` —— 同一个牌 ID 因此不可能被两个组合用到。
+    从**最小的起点**开始找（同样能成，先花小的）。
+    """
+    for start in range(1, 15 - length + 1):
+        groups = [_nat_cards(avail, v)[:per] for v in range(start, start + length)]
+        if all(len(g) == per for g in groups):
+            out = [c for g in groups for c in g]
+            for c in out:
+                avail[cards.parts(c)[0]].remove(c)
+            return out
+    return None
+
+
 def hand_partition(hand, level) -> list:
     """把手牌**贪心**拆成尽量少的几手 —— 估「我还要几手才能走完」。
 
-    口径来自那份开源 AI 的 `utils.partition`：三张尽量配一对凑成三带二
-    （一次消 5 张）；剩下的对子、单张各算一手；4 张以上同点算炸。
+    口径：**先抽序列类**（钢板/三连对 6 张、顺子 5 张 —— 一次消得多的先抽），
+    剩下的照开源 AI 的 `utils.partition`：三张尽量配一对凑成三带二（一次消 5 张）；
+    对子、单张各算一手；4 张以上同点算炸。
 
-    ⚠️ **不做最优划分**（那是指数级的），**也不认顺子/三连对/钢板** ——
+    ⚠️ **不做最优划分**（那是指数级的），**也不认逢人配** ——
     所以它**高估**手数，只当粗估用。要问「整手是不是一个牌型」（一把走完），
     用 `melds_from` 精确判，别用这个。
+
+    ⚠️ 2026-09-29：**原来不认顺子/三连对/钢板**，手里有顺子时把 5 张算成 5 张单牌
+    ⇒ 系统性高估手数 ⇒ [源 2] 几乎不触发。序列类那一段是补上的。
     """
-    by_idx: dict = {}
+    avail: dict = {}
     for c in hand:
-        by_idx.setdefault(cards.parts(c)[0], []).append(c)
+        avail.setdefault(cards.parts(c)[0], []).append(c)
+    groups: list = []
+    for length, per in ((2, 3), (3, 2), (5, 1)):      # 钢板 → 三连对 → 顺子
+        while True:
+            g = _take_run(avail, length, per)
+            if g is None:
+                break
+            groups.append(g)
     singles, pairs, triples, bombs = [], [], [], []
-    for idx, cs in by_idx.items():
+    for idx, cs in avail.items():
+        if not cs:
+            continue                                  # 已被序列类抽空
         if not meld.nat_values(idx):          # 王：不参与序列，单独算一张
             singles += cs
         elif len(cs) >= 4:
@@ -192,7 +242,7 @@ def hand_partition(hand, level) -> list:
             pairs.append(cs)
         else:
             singles += cs
-    groups = list(bombs)
+    groups += list(bombs)
     while triples:
         t = triples.pop(0)
         groups.append(t + pairs.pop(0) if pairs else t)   # 三张优先配一对 -> 三带二
@@ -264,11 +314,22 @@ def _spent(m, level):
                default=0)
 
 
-def _pick(cand, hand, level):
-    """所有选牌助手共用的出口：**先别拆自己的炸**，再按 `(_key, _spent)` 取最小。"""
+def _extreme(cand, hand, level, strongest: bool = False):
+    """所有选牌助手共用的出口：**先别拆自己的炸**，再按 `(_key, _spent)` 取最小/最大。
+
+    `strongest=True` 是给「卡不住形状就卡强度」用的（见 `_lead` [源 5]）——
+    那不是把偏好翻过来，是**另一边**：没得选的时候出最大而不是最小。
+    """
     cand = _prefer_intact(cand, hand)
-    return (min(cand, key=lambda im: (_key(im[1]), _spent(im[1], level)))[0]
-            if cand else None)
+    if not cand:
+        return None
+    key = lambda im: (_key(im[1]), _spent(im[1], level))
+    return (max if strongest else min)(cand, key=key)[0]
+
+
+def _pick(cand, hand, level):
+    """最小的那个（正常路线）。"""
+    return _extreme(cand, hand, level, strongest=False)
 
 
 def _cheapest(acts, hand, level):
@@ -291,6 +352,18 @@ def _cheapest_fire(acts, hand, level):
     """
     cand = [(i, m) for i, m in enumerate(acts) if m is not None and is_fire(m)]
     return _pick(cand, hand, level)
+
+
+def _strongest_plain(acts, hand, level):
+    """**最大**的一手，排除火力牌（留炸）—— 只给 [源 5] 的「卡强度」用。"""
+    cand = [(i, m) for i, m in enumerate(acts) if m is not None and not is_fire(m)]
+    return _extreme(cand, hand, level, strongest=True)
+
+
+def _strongest(acts, hand, level):
+    """**最大**的一手，含火力牌（兜底用）。"""
+    cand = [(i, m) for i, m in enumerate(acts) if m is not None]
+    return _extreme(cand, hand, level, strongest=True)
 
 
 def _of_kinds(acts, kinds, hand, level):
@@ -345,7 +418,7 @@ def _lead(obs, acts, pool) -> Optional[int]:
 
     hands = hand_partition(obs.hand, obs.level)
     # [源 2] 还剩 2~3 手、且既有火力又有非火力 -> 先走非火力那手（留炸）
-    if 2 <= len(hands) <= 3 and any(map(is_fire, hands)) and not all(map(is_fire, hands)):
+    if 2 <= len(hands) <= SOURCE2_MAX_HANDS and any(map(is_fire, hands))             and not all(map(is_fire, hands)):
         i = _planned_plain(acts, hands, obs.hand, obs.level)
         if i is not None:
             return i
@@ -378,6 +451,15 @@ def _lead(obs, acts, pool) -> Optional[int]:
             i = _size_not(acts, obs.left[opp], obs.hand, obs.level)
             if i is not None:
                 return i
+            # ⚠️ **卡不住形状就卡强度**（2026-09-29 加）：出我**最大**的那手。
+            # 不加这条会落到兜底 `_cheapest`（最小的合法牌）—— 而「对手只剩 1 张、
+            # 我手里全是单张」时，那正好是**把牌权递给对手**：
+            # 实测手牌 `3♠4♥5♦` 会出 `3♠`，而人出 `5♦`（压不过他接不上，牌权还在我手上）。
+            # 只有在**形状卡不住**（`_size_not` 返回 None）时才走这里，所以不覆盖 [源 5] 的原意。
+            i = _strongest_plain(acts, obs.hand, obs.level)
+            if i is None:
+                i = _strongest(acts, obs.hand, obs.level)
+            return i
     return None
 
 
