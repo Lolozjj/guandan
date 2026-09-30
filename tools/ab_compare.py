@@ -13,10 +13,14 @@
 
     # 按**同局数快照**比（预登记的配对点就是这么比的）——
     # 默认找 `last.pt`，但**被中断过的臂没有 last.pt**，所以这里得指快照：
-    .venv/Scripts/python.exe -m tools.ab_compare runs/ab/R4_b10 runs/ab/R4_b05         --ckpt pool/snap_280000.pt
+    .venv/Scripts/python.exe -m tools.ab_compare runs/ab/R8_rule runs/ab/R9_rule --ckpt pool/snap_540000.pt
 
 （原来它躺在 `.superpowers/` 里 —— 那是 gitignore 的临时目录，清理后台账里的数字
   就不可复现了。评审的 M8 提的这件事，搬进 `tools/` 解决。）
+⚠️ **2026-09-30**：示例原来指的是 `R4_b10` / `R4_b05` —— 那两个臂（连同 `R6_pg`）已按
+「结论都进台账了」清掉，**这里不能指不存在的路径**，换成现存的两臂。
+它们当年的数字仍在 `plans/2026-09-28-nstep-bootstrap-delivery.md` 与
+`plans/2026-09-29-policy-gradient.md` 里。
 """
 import os
 import statistics
