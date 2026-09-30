@@ -7,8 +7,8 @@ import multiprocessing as mp
 
 import torch
 
-from train import pool, worker
-from train.net import QNet
+from guandan.rl import pool, worker
+from guandan.rl.net import QNet
 
 
 def test_worker_takes_a_new_member_from_the_control_queue():
@@ -39,7 +39,7 @@ def test_worker_takes_a_new_member_from_the_control_queue():
 def test_pool_report_warns_when_the_pool_collapses():
     """池子塌成一个成员必须**响**（spec §1.4）—— 返回值就是那个「响」，
     不是只写一行日志。"""
-    from train import selfplay
+    from guandan.rl import selfplay
     wr = pool.WinRates()
     for _ in range(200):
         wr.record(0, True)
@@ -49,7 +49,7 @@ def test_pool_report_warns_when_the_pool_collapses():
 
 
 def test_pool_report_is_quiet_for_a_healthy_pool():
-    from train import selfplay
+    from guandan.rl import selfplay
     wr = pool.WinRates()
     for i in range(3):
         for _ in range(50):

@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from train import selfplay
+from guandan.rl import selfplay
 
 
 def test_worker_death_raises_loudly(tmp_path):

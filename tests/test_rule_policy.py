@@ -1,4 +1,4 @@
-"""规则式对手（`train/rule_policy.py`）—— 每条规则一条测试，**都能脱离牌局跑**。
+"""规则式对手（`guandan/rl/rule_policy.py`）—— 每条规则一条测试，**都能脱离牌局跑**。
 
 为什么要有这个对手：现在的固定对手是「能压就压最小」，它**会压自己队友**、
 **从不主动炸**、**不算剩牌**。这几条测试就是钉「它现在不会那样了」。
@@ -8,9 +8,9 @@
 """
 import pytest
 
-from net.sim import meld
-from net.sim.env import Observation
-from train import rule_policy as rp
+from guandan.sim import meld
+from guandan.sim.env import Observation
+from guandan.rl import rule_policy as rp
 
 
 def C(*names):

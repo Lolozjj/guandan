@@ -1,16 +1,17 @@
-"""快照必须**嵌套 + 不叫 best.pt** —— 否则面板会误加载（静默换源）。
+"""训练快照必须**嵌套 + 不叫 best.pt** —— 面板不许看见它们。
 
-`net/advise.py::newest_weights()` 按修改时间挑 `runs/rl/*/best.pt`。
-快照要是长得像 `best.pt`、或者落在那一层，面板会**在你眼皮底下**换一个模型给建议，
-而日志上一概看不出来 —— 这是本项目「换源必须可见」纪律的反面教材。
+面板只认 `models/best.pt` 一个路径（`guandan/advice/advise.py::resolve_weights`），
+所以「快照被误加载」在结构上已经不可能发生。这条测试钉两件事：
+① 快照落在 `<run>/pool/` 下、名字是 `snap_*.pt`；
+② 权重解析只有三档**写死的**路径，没有「扫目录挑最新」那套魔法。
 
-为什么要定期快照：现在只在「刷新最好」时存 `best.pt`，
-1407 那 144 万局只落了几个点 —— 池子原料不够（spec §3.1）。
+为什么要定期快照：老版本只在「刷新最好」时存 `best.pt`，
+一次 144 万局的训练只落了几个点 —— 池子原料不够。
 """
 import glob
 import os
 
-from train import pool
+from guandan.rl import pool
 
 
 def test_snapshot_path_is_nested_and_not_named_best(tmp_path):
@@ -19,13 +20,20 @@ def test_snapshot_path_is_nested_and_not_named_best(tmp_path):
     assert os.path.dirname(p).endswith("pool"), "快照要嵌在 pool/ 下，别平铺在 run 目录里"
 
 
-def test_snapshots_are_invisible_to_newest_weights(tmp_path):
-    """`newest_weights()` 必须**看不见**快照 —— 看见了就是静默换源。"""
-    from net.advise import newest_weights
-    p = pool.snapshot_path(str(tmp_path), 20000)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    open(p, "wb").close()
-    assert newest_weights(str(tmp_path)) is None
+def test_weights_resolve_to_exactly_one_path(monkeypatch, tmp_path):
+    """权重解析 = 传参 → `GUANDAN_WEIGHTS` → `models/best.pt`，三档都是写死的路径。
+
+    ⚠️ 这里**不断言「扫目录扫不到快照」** —— 现在压根没有扫目录这件事，
+    断言它等于给一个不存在的机制写测试。
+    """
+    from guandan import paths
+    from guandan.advice import advise
+
+    got = advise.resolve_weights()
+    assert got is None or got == str(paths.BEST), "默认只认 models/best.pt"
+    monkeypatch.setenv("GUANDAN_WEIGHTS", str(tmp_path / "x.pt"))
+    assert advise.resolve_weights() == str(tmp_path / "x.pt")
+    assert advise.resolve_weights("yy.pt") == "yy.pt"
 
 
 def test_prune_keeps_the_newest_and_reports_what_it_dropped(tmp_path):

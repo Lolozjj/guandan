@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from net import cards
-from net.sim import env, meld, rules
+from guandan.capture import cards
+from guandan.sim import env, meld, rules
 
 A = meld.cid_from_name
 
@@ -26,7 +26,7 @@ def test_pass_action_is_all_zeros_and_single_card_is_not():
 def test_joker_bomb_gets_its_own_size_slot():
     """天王炸 4 张，但张数那一格**必须与「4 张炸弹」区分开**
     （spec §4.2 把天王炸单列成一格）。"""
-    from net.sim import meld as M
+    from guandan.sim import meld as M
     jb = M.Meld(M.BOMB, 4, 0, (A("JOKER_B"), A("JOKER_B", deck=2),
                                A("JOKER_S"), A("JOKER_S", deck=2)))
     v = env.encode_action(jb, 2)

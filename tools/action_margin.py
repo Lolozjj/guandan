@@ -13,7 +13,7 @@ Q 对动作的区分度就该变大。
 （评审 M8）—— 所以它必须住在 `tools/` 里。
 
 用法：
-    .venv/Scripts/python.exe -m tools.action_margin runs/rl/20260926-1407/best.pt
+    .venv/Scripts/python.exe -m tools.action_margin models/best.pt
 """
 from __future__ import annotations
 
@@ -23,8 +23,9 @@ import sys
 
 import torch
 
-from train.net import QNet, q_values
-from train.selfplay import generate_batch
+from guandan import paths
+from guandan.rl.net import QNet, q_values
+from guandan.rl.selfplay import generate_batch
 from tools.accept_meld import _utf8_stdout
 
 
@@ -67,7 +68,7 @@ def measure(net, games: int = 32, seed: int = 0):
 def main(argv=None) -> int:
     _utf8_stdout()
     argv = sys.argv[1:] if argv is None else argv
-    for p in (argv or ["runs/rl/20260926-1407/best.pt"]):
+    for p in (argv or [str(paths.BEST)]):
         d = torch.load(p, map_location="cpu", weights_only=False)
         net = QNet()
         net.load_state_dict(d["net"])

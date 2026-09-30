@@ -17,9 +17,9 @@
 import io
 import os
 
-from net import protocol
-from net.panel import apply_event
-from net.state import GameState
+from guandan.capture import protocol
+from guandan.ui.panel import apply_event
+from guandan.capture.state import GameState
 
 FIX = os.path.join(os.path.dirname(__file__), "fixtures")
 

@@ -7,9 +7,9 @@
 ⚠️ 它仍然是**粗估**（贪心、不认逢人配），只用来跟 2/3 比大小，
 **不是**「这手牌最少几手走完」的精确答案。
 """
-from net.sim import meld
+from guandan.sim import meld
 from tests.test_rule_policy import C
-from train import rule_policy as rp
+from guandan.rl import rule_policy as rp
 
 
 def _kinds(hands):

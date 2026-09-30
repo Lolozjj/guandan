@@ -12,8 +12,8 @@ import random
 import pytest
 import torch
 
-from train import selfplay
-from train.net import QNet
+from guandan.rl import selfplay
+from guandan.rl.net import QNet
 
 
 def test_plan_step_dispatches_by_who_acts():

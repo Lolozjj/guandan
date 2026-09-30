@@ -1,5 +1,5 @@
-from net.sim import meld
-from net import cards
+from guandan.sim import meld
+from guandan.capture import cards
 
 _TABLE = {}
 for _cid in range(1, 334):

@@ -16,11 +16,11 @@
 
 用法：
 
-    # 默认量 runs/ab/*/best.pt，4 个种子
+    # 默认量 runs/*/best.pt，4 个种子
     .venv/Scripts/python.exe -m tools.ruler
-    .venv/Scripts/python.exe -m tools.ruler runs/ab/R8_rule/best.pt runs/ab/R10_rule/best.pt
-    .venv/Scripts/python.exe -m tools.ruler --ckpt-name pool/snap_300000.pt runs/ab/R10_rule
-    .venv/Scripts/python.exe -m tools.ruler --base runs/ab/R8_rule/best.pt <ckpts...>
+    .venv/Scripts/python.exe -m tools.ruler runs/R8_rule/best.pt runs/R10_rule/best.pt
+    .venv/Scripts/python.exe -m tools.ruler --ckpt-name pool/snap_300000.pt runs/R10_rule
+    .venv/Scripts/python.exe -m tools.ruler --base runs/R8_rule/best.pt <ckpts...>
 """
 from __future__ import annotations
 
@@ -33,10 +33,10 @@ import sys
 
 import torch
 
-from train.eval import match
-from train.net import QNet
-from train.rule_policy import rule_policy
-from train.selfplay import net_play
+from guandan.rl.eval import match
+from guandan.rl.net import QNet
+from guandan.rl.rule_policy import rule_policy
+from guandan.rl.selfplay import net_play
 from tools.accept_meld import _utf8_stdout
 
 #: 默认种子。1002 是历史沿用的那把（与 `ab_compare` / 台账全部旧数同源），
@@ -54,7 +54,7 @@ def load(path: str):
 
 
 def label_of(path: str) -> str:
-    """`runs/ab/R8_rule/best.pt` -> `R8_rule/best.pt`。
+    """`runs/R8_rule/best.pt` -> `R8_rule/best.pt`。
 
     `pool/` 是中间层，去掉它 —— 快照的标签要留住**臂名**
     （`R10_rule/snap_300000.pt`），不然混着看时分不清是哪条臂的。
@@ -124,7 +124,7 @@ def report(rows, seeds, base):
 def main(argv=None):
     _utf8_stdout()
     ap = argparse.ArgumentParser(description="多臂 × 多种子配对测量（vs 规则式）")
-    ap.add_argument("ckpts", nargs="*", help="权重路径；留空 = runs/ab/*/best.pt")
+    ap.add_argument("ckpts", nargs="*", help="权重路径；留空 = runs/*/best.pt")
     ap.add_argument("--seeds", default=",".join(map(str, DEFAULT_SEEDS)),
                     help="逗号分隔的种子（配对靠它，别只给一个）")
     ap.add_argument("--games", type=int, default=400,
@@ -135,7 +135,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     paths = []
-    for c in (a.ckpts or sorted(glob.glob("runs/ab/*/best.pt"))):
+    for c in (a.ckpts or sorted(glob.glob("runs/*/best.pt"))):
         if os.path.isdir(c):
             c = os.path.join(c, a.ckpt_name)
         if not os.path.exists(c):

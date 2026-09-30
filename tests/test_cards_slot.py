@@ -1,4 +1,4 @@
-from net import cards
+from guandan.capture import cards
 
 
 def test_slot_is_a_bijection_over_the_108_cards():
@@ -10,7 +10,7 @@ def test_slot_is_a_bijection_over_the_108_cards():
 
 def test_slot_known_values():
     """钉住几张具体的牌，防止基址被改。"""
-    from net.sim import meld
+    from guandan.sim import meld
     A = meld.cid_from_name
     assert cards.slot(A("SA")) == 0             # 第一副 ♠A
     assert cards.slot(A("SK")) == 12            # 花色内按点数排

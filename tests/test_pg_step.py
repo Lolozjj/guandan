@@ -5,8 +5,8 @@ import pytest
 import torch
 
 from tests.test_pg_logprob import _samples
-from train.net import DEVICE, QNet
-from train.selfplay import BETA_ENT, _pg_step, _RunningMean
+from guandan.rl.net import DEVICE, QNet
+from guandan.rl.selfplay import BETA_ENT, _pg_step, _RunningMean
 
 
 def test_running_mean_moves_toward_the_data():
@@ -62,7 +62,7 @@ def test_pg_step_raises_when_the_policy_collapses(monkeypatch):
     # ⚠️ 第一版是 `net.mlp[-1].weight.mul_(1e4)` —— **依赖初始化**：主干输出若恰好
     # 接近 0，logits 就摊平了、根本不会塌 ⇒ 单跑绿、全量红（随机种子不同）。
     # 改成 monkeypatch 直接造极端 logits ⇒ 完全确定，与初始化无关。
-    import train.net as net_mod
+    import guandan.rl.net as net_mod
 
     def _extreme(_net, pending, grad=False):
         """每个局面都把**最后一个候选**抬到 200 ⇒ one-hot ⇒ 熵≈0。

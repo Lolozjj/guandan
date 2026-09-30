@@ -1,10 +1,12 @@
 """面板接线：事件进来 -> 状态机 -> 影子记录器。**不开窗口**（只测接线本身）。"""
 import json
 
-from net import panel, shadow
-from net.sim.meld import cid_from_name as A
-from net.state import GameState
-from train.net import QNet
+from guandan.ui import panel
+
+from guandan.advice import shadow
+from guandan.sim.meld import cid_from_name as A
+from guandan.capture.state import GameState
+from guandan.rl.net import QNet
 
 
 def test_apply_event_then_shadow_writes_a_decision(tmp_path):

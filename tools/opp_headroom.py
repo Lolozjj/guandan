@@ -1,6 +1,6 @@
 """**「换个更强的对手 / 拿规则式当老师」还剩多少可换** —— 一条探针，答值不值得跑训练。
 
-为什么要有它：分析（`plans/2026-09-30-r7-r10-analysis.md` §4.3）里挂着一条
+为什么要有它：分析（R7→R10 分析（已归档到 `master` 分支） §4.3）里挂着一条
 「换更强的对手 / 模仿学习」，它当初被否的依据是「规则式太弱」，而那个数是
 **尺子 bug** 造成的 —— 前提塌了，路线回到「待评估」。
 但「待评估」不等于「值得跑」：跑一条臂要 2.5~9 小时。
@@ -24,7 +24,7 @@
 
     .venv/Scripts/python.exe -m tools.opp_headroom
     .venv/Scripts/python.exe -m tools.opp_headroom --games 400 --seed 1002
-    .venv/Scripts/python.exe -m tools.opp_headroom --weights runs/ab/R10_rule/pool/snap_200000.pt
+    .venv/Scripts/python.exe -m tools.opp_headroom --weights models/best.pt
 """
 from __future__ import annotations
 
@@ -37,13 +37,13 @@ import sys
 
 import torch
 
-from net import advise
-from net.sim import env, rules
-from train.eval import match
-from train.net import QNet, q_values
-from train.policies import greedy_policy, random_policy
-from train.rule_policy import rule_choose, rule_policy
-from train.selfplay import net_play
+from guandan.advice import advise
+from guandan.sim import env, rules
+from guandan.rl.eval import match
+from guandan.rl.net import QNet, q_values
+from guandan.rl.policies import greedy_policy, random_policy
+from guandan.rl.rule_policy import rule_choose, rule_policy
+from guandan.rl.selfplay import net_play
 from tools.accept_meld import _utf8_stdout
 
 #: 反事实那一层：**正 = 听规则式的更好**。0.05 点 ≈ 一局典型价值的 2.4%

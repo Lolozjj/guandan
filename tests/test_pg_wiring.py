@@ -8,9 +8,9 @@ import random
 import pytest
 import torch
 
-import train.selfplay as sp
-from train.net import QNet
-from train.selfplay import generate_batch
+import guandan.rl.selfplay as sp
+from guandan.rl.net import QNet
+from guandan.rl.selfplay import generate_batch
 
 
 def test_pg_mode_completely_ignores_eps():
@@ -28,7 +28,7 @@ def test_pg_mode_completely_ignores_eps():
 
 def test_pg_mode_actually_samples():
     """行为策略必须**不是** argmax（否则等于没换）：同一批牌，采样与 argmax 不能逐点全同。"""
-    from train.net import q_argmax_batch
+    from guandan.rl.net import q_argmax_batch
     net = QNet().eval()
     caps, chosen = [], []
     for _rec, pts, _y in generate_batch(net, random.Random(3), 0.0, 4, capture=True,

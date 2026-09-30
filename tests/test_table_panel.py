@@ -10,11 +10,11 @@
 import ast
 import inspect
 import textwrap
-from net import shadow
-from net.sim.meld import cid_from_name as A
-from net.state import GameState
-from net import table
-from train.net import QNet
+from guandan.advice import shadow
+from guandan.sim.meld import cid_from_name as A
+from guandan.capture.state import GameState
+from guandan.ui import table
+from guandan.rl.net import QNet
 
 
 def test_wrap_chunks_long_melds():
@@ -50,7 +50,7 @@ def test_the_recorder_hands_the_panel_structured_advice(tmp_path):
 def test_drawing_the_advice_panel_does_not_crash(tmp_path):
     """真开一个窗口，把三种情况都画一遍：有建议 / 过 / 没建议。
 
-    视觉只能靠离线冒烟看（`python -m net.table --replay`），这里守的是「别崩」。
+    视觉只能靠离线冒烟看（`python -m guandan.ui.table --replay`），这里守的是「别崩」。
     """
     import tkinter as tk
     try:

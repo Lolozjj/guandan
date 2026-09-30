@@ -3,10 +3,10 @@ import random
 
 import torch
 
-from net.sim import env
-from train.net import QNet, q_argmax_batch, q_values
-from train.policies import greedy_policy
-from train import replay
+from guandan.sim import env
+from guandan.rl.net import QNet, q_argmax_batch, q_values
+from guandan.rl.policies import greedy_policy
+from guandan.rl import replay
 
 
 def test_batched_argmax_equals_one_by_one():

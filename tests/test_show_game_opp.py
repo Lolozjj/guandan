@@ -12,8 +12,8 @@
 """
 import pytest
 
-from net.cards import names_sorted
-from net.sim import rules
+from guandan.capture.cards import names_sorted
+from guandan.sim import rules
 from tools.game_viewer import _View
 from tools.show_game import (OPP_KIND_CN, frame_hint, policy_name,
                              replay_game, seat_label)

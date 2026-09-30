@@ -3,8 +3,8 @@
 ⚠️ 这一份流水**不是**「把事件抄一遍」：我自己「要不起」时服务器**不发事件**
 （实测，见计划文档「本次实测到的既有事实」第 2 条），只能从轮转推出来。
 """
-from net.sim import meld
-from net.state import GameState
+from guandan.sim import meld
+from guandan.capture.state import GameState
 
 A = meld.cid_from_name
 

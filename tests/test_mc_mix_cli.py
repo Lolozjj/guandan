@@ -1,7 +1,7 @@
 """`--mc-mix` 等开关必须真的透传到训练函数（写错了在日志里看不出来）。"""
 import inspect
 
-import train.selfplay as sp
+import guandan.rl.selfplay as sp
 
 
 def test_cli_forwards_the_bootstrap_knobs(monkeypatch):

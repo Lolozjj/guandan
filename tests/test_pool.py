@@ -1,6 +1,6 @@
 """对手池的记账与采样 —— 纯函数，不碰进程、不碰 torch。
 
-规格：`docs/superpowers/specs/2026-09-27-opponent-pool-design.md` §3.2。
+规格：对手池设计（已归档到 `master` 分支） §3.2。
 
 **为什么是 `p·(1−p)`**：`p` 是学习者对该成员的胜率。`p → 1`（已经打穿）没信息，
 `p → 0`（完全打不过）没梯度，**只有接近五五开才学得到东西**。
@@ -10,7 +10,7 @@ import random
 
 import pytest
 
-from train import pool
+from guandan.rl import pool
 
 
 def test_pfsp_peaks_at_even_matchups():
@@ -82,8 +82,8 @@ def test_record_carries_the_opponent():
     所以判类型要先看 `opp[0]`。
     """
     import torch
-    from train import selfplay
-    from train.net import QNet
+    from guandan.rl import selfplay
+    from guandan.rl.net import QNet
     torch.manual_seed(0)
     out = selfplay.generate_batch(QNet().eval(), random.Random(0), eps=0.0, n_games=8,
                                   capture=False, opp_mix=1.0, greedy_share=1.0)

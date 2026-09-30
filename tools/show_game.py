@@ -1,7 +1,7 @@
 """把一局**自对弈**打成人类可读的战报 —— 看模型到底怎么打的。
 
 为什么要有这个：所有判据都是数字（胜率、浪费率、动作边际），但「牌打得好不好」
-最终得靠会打牌的人看几局。影子日志（`net/shadow.jsonl`）记的是**真实对局**里
+最终得靠会打牌的人看几局。影子日志（`runtime/shadow.jsonl`）记的是**真实对局**里
 模型的建议，这个脚本看的是**自对弈** —— 两者互补。
 
 用法：
@@ -16,7 +16,7 @@
 （那个分数不代表规则式在想什么），比不打分有害得多 —— 所以对手帧的候选是空的，
 画面/战报上写明「谁出的」。默认 None = 四家都是网络（老行为，一行不变）。
 
-⚠️ **权重口径复用 `net/advise.py::resolve_weights`**，不另写一份 ——
+⚠️ **权重口径复用 `guandan/advice/advise.py::resolve_weights`**，不另写一份 ——
 不然「面板用哪个模型」与「这个脚本看哪个模型」会漂。
 
 ⚠️ **重放逻辑只此一份**：`replay_game()` 产出 `Frame` 列表，文字版
@@ -31,15 +31,15 @@ from dataclasses import dataclass, field
 
 import torch
 
-from net import advise
-from net.cards import names_sorted
-from net.sim import env, meld, rules
-from net.state import Play
-from train.eval import bomb_opportunity, is_wasted_bomb
-from train.net import QNet, q_values
-from train.policies import greedy_policy
-from train.rule_policy import rule_choose
-from train.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型的唯一产地，不另写一份
+from guandan.advice import advise
+from guandan.capture.cards import names_sorted
+from guandan.sim import env, meld, rules
+from guandan.capture.state import Play
+from guandan.rl.eval import bomb_opportunity, is_wasted_bomb
+from guandan.rl.net import QNet, q_values
+from guandan.rl.policies import greedy_policy
+from guandan.rl.rule_policy import rule_choose
+from guandan.rl.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型的唯一产地，不另写一份
 from tools.accept_meld import _utf8_stdout
 
 TEAM_NAME = {0: "甲", 1: "乙"}
@@ -110,7 +110,7 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
         raise ValueError(f"opp_team 只能是 0/1，给的是 {opp_team!r}")
     p = path or advise.resolve_weights()
     if not p:
-        raise SystemExit("找不到权重：设 GUANDAN_WEIGHTS，或先训练出一份 runs/rl/*/best.pt")
+        raise SystemExit("找不到权重：设 GUANDAN_WEIGHTS，或把权重放到 models/best.pt")
     ck = torch.load(p, map_location="cpu", weights_only=False)
     net = QNet()
     net.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
@@ -140,7 +140,7 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
         step += 1
         if m is not None and m.is_bomb:
             bombs += 1
-        # 「白炸」用 train/eval.py 的**唯一判定**，不另写一份。
+        # 「白炸」用 guandan/rl/eval.py 的**唯一判定**，不另写一份。
         # ⚠️ 只数**模型自己**的着法 —— 对手的白炸也记进来的话，
         # 战报末尾那个数就变成两个策略混在一起，没法读
         hit_chance = (not is_opp) and bomb_opportunity(e.hand.table, acts)

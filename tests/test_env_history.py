@@ -1,7 +1,7 @@
 import numpy as np
 
-from net import cards
-from net.sim import env, meld, rules
+from guandan.capture import cards
+from guandan.sim import env, meld, rules
 
 A = meld.cid_from_name
 

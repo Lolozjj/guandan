@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from net import protocol
+from guandan.capture import protocol
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "fixtures", "msg3008_levels.hex")

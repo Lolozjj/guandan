@@ -9,10 +9,10 @@
 """
 import random
 
-from net import cards
-from net.sim import env, meld
-from train.eval import match
-from train.policies import greedy_policy, random_policy
+from guandan.capture import cards
+from guandan.sim import env, meld
+from guandan.rl.eval import match
+from guandan.rl.policies import greedy_policy, random_policy
 
 A = meld.cid_from_name
 
@@ -100,9 +100,9 @@ def test_batched_net_policy_matches_the_per_decision_one():
     """评测器的批量路径必须与逐个路径给出**同样的胜率** ——
     不然「胜率」这个数就取决于走哪条代码路径了（而且不报错）。"""
     import torch
-    from train.net import QNet
-    from train.policies import batch_net_policy, net_policy
-    from train.net import q_argmax_batch, q_values
+    from guandan.rl.net import QNet
+    from guandan.rl.policies import batch_net_policy, net_policy
+    from guandan.rl.net import q_argmax_batch, q_values
 
     torch.manual_seed(0)
     net = QNet()
@@ -122,8 +122,8 @@ def test_greedy_never_wastes_a_bomb():
 
     这是这个指标的自检 —— 分母（能用普通牌压的局面）得真的出现过。
     """
-    from train.eval import bomb_waste
-    from train.policies import greedy_policy
+    from guandan.rl.eval import bomb_waste
+    from guandan.rl.policies import greedy_policy
     waste, chance = bomb_waste(greedy_policy, games=6, seed=0)
     assert chance > 0, "这些局里一次「能用普通牌压」的局面都没出现，指标没意义"
     assert waste == 0, f"贪心不该有浪费，实际 {waste}/{chance}"
@@ -136,7 +136,7 @@ def test_a_bomb_happy_policy_wastes_more_than_greedy():
     的局面天然不多 —— 桩自己也只有 4%（2026-09-26 实测），模型 5~6%。
     这个指标是**相对**的尺子（同一批种子下比大小），不是「理想值接近 0」那种。
     """
-    from train.eval import bomb_waste
+    from guandan.rl.eval import bomb_waste
 
     def bombs_first(obs, acts, hist=None):
         bombs = [(i, m) for i, m in enumerate(acts) if m is not None and m.is_bomb]

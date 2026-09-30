@@ -18,12 +18,12 @@
     `g.plays[i]` 现取 —— `decision_points()` 每手一个快照、顺序与 plays 一一对应。
 
 终审修复（Task 8 之后）：
-  - `as_meld` / `_stronger` 已**上收进 `net/sim/meld.py`**（`meld.as_meld` /
+  - `as_meld` / `_stronger` 已**上收进 `guandan/sim/meld.py`**（`meld.as_meld` /
     `meld.strongest`）。理由不是「DRY 好看」：`as_meld` 是生产推理链
-    （spec §3/§8.1 `net/advise.py -> legal_moves(hand, table=…)`）**必须**用的
+    （spec §3/§8.1 `guandan/advice/advise.py -> legal_moves(hand, table=…)`）**必须**用的
     原语 —— 桌上的 `Play.cards` 是一串牌 ID，喂 `beats()` 前得先判成带 rank 的
     Meld。留在离线验收目录里会让 Plan 3/4 走错方向地 import，或者再抄出第三份；
-    而 live/rules.py 里那份**逐字相同**的副本已经漂过一次（`9♣10♣J♣Q♣+♥2`
+    而老 YOLO 适配层（`live/rules.py`，已删）里那份**逐字相同**的副本已经漂过一次（`9♣10♣J♣Q♣+♥2`
     应当是同花顺而不是顺子）。
   - `Result.ok` 现在要求 `total > 0`，②另记「炸弹 vs 炸弹」的条数，
     ①② 另有语料地板 —— 见各自 docstring：这三处都是「什么都没跑也算全绿」
@@ -34,7 +34,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 
-from net.sim import meld
+from guandan.sim import meld
 from tools.decision_points import decision_points
 from tools import game_log
 from tools.game_log import load_corpus
@@ -111,7 +111,7 @@ def _card_type(g, i) -> str:
     """第 i 手服务器自己标的 card_type（仅供报错信息用）。
 
     `Snapshot` 不带这个字段（decision_points 刻意不把「牌型」的概念引进来，
-    否则与 net/sim/meld.py 循环依赖）。但报错时它有用：手牌/真实牌是真值，
+    否则与 guandan/sim/meld.py 循环依赖）。但报错时它有用：手牌/真实牌是真值，
     card_type 是游戏自己的判据，两边摆一起就能分辨「我们枚举漏了牌型」还是
     「这一手数据本身怪」。快照与 `g.plays` 顺序一一对应（对不上时
     `decision_points()` 会直接 raise），下标可以直取；越界返回 '?'。
@@ -201,7 +201,7 @@ def check_beats_from_records(games=None) -> Result:
 
     专门验用户口述的炸弹顺序（完整阶梯：
         4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 9炸 < 10炸 < 天王炸，
-    9炸/10炸 是自然延伸、只有「存在」证据，见 net/sim/meld.py 的
+    9炸/10炸 是自然延伸、只有「存在」证据，见 guandan/sim/meld.py 的
     `_BOMB_CLASS_BY_SIZE`）。注意「同花顺夹在 5炸与 6炸之间」那半边**用户口述时
     数据没覆盖**（spec §2.1）—— 跑出来的条数要报出来，是 0 条就说明这段仍未验到。
 

@@ -1,21 +1,24 @@
 """面板**入口**那条路（实机体上会走的就是它）：签名、接线、别崩。
 
 ⚠️ 独立评审抓出来的：Task 4 只改了函数体、没改签名（一次失败的补丁脚本把前面
-三次成功替换一起丢掉了），于是 `python -m net.panel --replay` 一启动就
-`TypeError`；而**实机入口 `net.launcher` 起面板时压根没传记录器** ——
+三次成功替换一起丢掉了），于是 `python -m guandan.ui.panel --replay` 一启动就
+`TypeError`；而**实机入口 `guandan.launcher` 起面板时压根没传记录器** ——
 用户按交付台账打几十局会得到空文件。原来的接线测试只测
 `apply_event + after_event`，所以 324 个测试全绿也照样漏。
 """
 import json
 import os
 
-from net import panel, shadow
-from net.sim.meld import cid_from_name as A
-from net.state import GameState
-from train.net import QNet
+from guandan import paths
+from guandan.ui import panel
+
+from guandan.advice import shadow
+from guandan.sim.meld import cid_from_name as A
+from guandan.capture.state import GameState
+from guandan.rl.net import QNet
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RAW = os.path.join(PROJ, "net", "raw.jsonl")
+RAW = str(paths.RAW)
 
 
 def _recorder(tmp_path, **kw):
@@ -80,14 +83,14 @@ def test_text_panel_live_takes_shadow_log_and_stops_after_seconds(tmp_path,
 
 
 def test_text_panel_replay_runs_with_level_and_shadow(tmp_path):
-    """`python -m net.panel --replay` 这条命令要能跑通并真的落盘。
+    """`python -m guandan.ui.panel --replay` 这条命令要能跑通并真的落盘。
 
     评审实测它的失败长这样：`TypeError: run_replay() got an unexpected keyword
     argument 'level'`（签名没改）。
     """
     if not os.path.exists(RAW):
         import pytest
-        pytest.skip("没有全量抓包（net/raw.jsonl）")
+        pytest.skip("没有全量抓包（runtime/raw.jsonl）")
     cap = tmp_path / "cap.jsonl"
     n = 0
     with open(RAW, encoding="utf-8") as src, open(cap, "w", encoding="utf-8") as dst:

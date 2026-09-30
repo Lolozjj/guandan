@@ -16,10 +16,10 @@ protobuf **省略 0** ⇒ 字段缺席即座位 0（段2 第一局实测如此�
 import io
 import os
 
-import net.protocol as protocol
-import net.state as state_mod
-from net.state import GameState
-from net.panel import apply_event
+import guandan.capture.protocol as protocol
+import guandan.capture.state as state_mod
+from guandan.capture.state import GameState
+from guandan.ui.panel import apply_event
 
 FIX = os.path.join(os.path.dirname(__file__), "fixtures")
 

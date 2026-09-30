@@ -16,9 +16,9 @@
 """
 import pytest
 
-from net.sim import meld
+from guandan.sim import meld
 from tests.test_rule_policy import C, _acts, _follow_obs, _idx, _obs
-from train import rule_policy as rp
+from guandan.rl import rule_policy as rp
 
 
 def d2(name: str) -> int:

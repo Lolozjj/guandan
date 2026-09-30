@@ -1,5 +1,5 @@
 """缓存的正确性契约（不是「快不快」，是「会不会给旧答案」）。"""
-from net.sim import meld
+from guandan.sim import meld
 
 
 def test_enumeration_is_not_stale_after_the_hand_changes_in_place():

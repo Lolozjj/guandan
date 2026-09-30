@@ -13,7 +13,7 @@ def test_tribute_records_parse_and_every_return_is_at_most_10():
 
     A=1 不在里面 —— `idx <= 10` 会把 A 也算成「≤10」，那正是最难还出去的牌。
     """
-    from net import cards
+    from guandan.capture import cards
     recs = game_log.load_tributes()
     assert len(recs) >= 10, f"只解析出 {len(recs)} 条进贡记录，太少了（格式变了？）"
     bad = [(r.giver, cards.decode(r.card)) for r in recs

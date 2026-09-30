@@ -3,10 +3,10 @@ import random
 
 import torch
 
-from train import replay
-from train.net import QNet
-from train.policies import greedy_policy
-from train.selfplay import _learn_step, build_samples
+from guandan.rl import replay
+from guandan.rl.net import QNet
+from guandan.rl.policies import greedy_policy
+from guandan.rl.selfplay import _learn_step, build_samples
 
 
 def _buffer(n=8, seed=0):

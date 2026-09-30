@@ -1,26 +1,24 @@
-"""Task 7 Step 3：三臂在同一把尺子上的对比。
+"""A/B 臂体检：同一把尺子上量 `vs 贪心` / `vs 规则式` / 白炸 / 用炸率。
 
-尺子（三臂**共用同一批牌 / 同一组对手**，否则不可比）：
+尺子（各臂**共用同一批牌 / 同一组对手**，否则不可比）：
 
-- `vs 贪心`：`match(400 局, seed=1002)` —— 种子固定，所以三臂评的是**同一批牌**，
-  也保住了与历史跑（0033 / 0940 / 1407）的可比性
-- `炸弹浪费`：对**若干代表成员分别量**（`bomb_waste` 一次只吃一个对手），取中位。
-  ⚠️ 只对贪心量是不够的 —— 那把尺子已经饱和（95.2%），对它的数不会动
+- `vs 贪心`：`match(400 局, seed=1002)` —— 种子固定，所以各臂评的是**同一批牌**
+- `vs 规则式`：同口径。**这是现在的主尺子** —— `vs 贪心` 早已饱和（90%+），
+  量不出代差；规则式「像人」（不压队友、留炸、算剩牌），还留着几十个百分点的余量
+- `炸弹浪费` / `用炸率`：对**若干代表成员分别量**（`bomb_waste` 一次只吃一个对手），取中位。
+  ⚠️ 只对贪心量是不够的 —— 那把尺子已经饱和，对它的数不会动
 - `炸弹浪费 · 自对弈`那个数也报：`bomb_waste` 的 docstring 说两个都要看
 
 用法：
-    .venv/Scripts/python.exe -m tools.ab_compare runs/ab/A_old runs/ab/C_fix runs/ab/B_pool
+
+    .venv/Scripts/python.exe -m tools.ab_compare runs/A_old runs/B_new
 
     # 按**同局数快照**比（预登记的配对点就是这么比的）——
     # 默认找 `last.pt`，但**被中断过的臂没有 last.pt**，所以这里得指快照：
-    .venv/Scripts/python.exe -m tools.ab_compare runs/ab/R8_rule runs/ab/R9_rule --ckpt pool/snap_540000.pt
+    .venv/Scripts/python.exe -m tools.ab_compare runs/A_old runs/B_new --ckpt pool/snap_540000.pt
 
-（原来它躺在 `.superpowers/` 里 —— 那是 gitignore 的临时目录，清理后台账里的数字
-  就不可复现了。评审的 M8 提的这件事，搬进 `tools/` 解决。）
-⚠️ **2026-09-30**：示例原来指的是 `R4_b10` / `R4_b05` —— 那两个臂（连同 `R6_pg`）已按
-「结论都进台账了」清掉，**这里不能指不存在的路径**，换成现存的两臂。
-它们当年的数字仍在 `plans/2026-09-28-nstep-bootstrap-delivery.md` 与
-`plans/2026-09-29-policy-gradient.md` 里。
+    # 「对池」那几行默认拿面板在用的 models/best.pt 当对手，要换就 --member（可重复）
+    .venv/Scripts/python.exe -m tools.ab_compare runs/B_new --member models/best.pt
 """
 import os
 import statistics
@@ -28,22 +26,19 @@ import sys
 
 import torch
 
-from train.eval import bomb_rate, bomb_waste, match
-from train.net import QNet
-from train.policies import greedy_policy
-from train.rule_policy import rule_policy
-from train.selfplay import net_play
+from guandan import paths
+from guandan.rl.eval import bomb_rate, bomb_waste, match
+from guandan.rl.net import QNet
+from guandan.rl.policies import greedy_policy
+from guandan.rl.rule_policy import rule_policy
+from guandan.rl.selfplay import net_play
 from tools.accept_meld import _utf8_stdout
 
 _utf8_stdout()
 
-#: 对池量炸弹浪费用的代表成员 —— **三臂共用这一批**。
-#: ⚠️ 括号里的数是**本脚本这把尺子**上的（400 局、`seed=1002`），不是存档自报的 ——
-#: 两者口径不同（0033 自报 91.0%，同尺子 87.8%）。引用时别混。
-MEMBERS = [
-    "runs/rl/20260926-1407/best.pt",   # 热启动的起点（同尺子 95.2%）
-    "runs/rl/20260926-0033/best.pt",   # 上一代纯自对弈（同尺子 87.8%）
-]
+#: 「对池」量浪费率用的对手。**留空 = 用面板在用的那份权重**（`models/best.pt`）；
+#: 要指定别的对手就 `--member <路径>`（可重复）。
+MEMBERS: list[str] = []
 GAMES_WASTE = 60
 
 
@@ -86,7 +81,7 @@ def main(arm, ckpt="last.pt"):
     # （不压队友、留炸、算剩牌），现役对它只有 **54.8%** —— 多 45pp 余量，
     # ⚠️ 2026-09-29 之前是 88.2%：规则式当时有个「拆自己炸」的 bug（修完它自己
     # 对贪心也从 67.0% 涨到 84.2%）。**修复前后的这个数不可直接比**，见
-    # `docs/superpowers/plans/2026-09-29-rule-ruler-fix.md`。
+    # 规则式尺子修正台账（已归档到 `master` 分支）。
     # 而且量的是「对面会像人一样打时你还行不行」。
     # ⚠️ 它比贪心慢（每个决策点要枚举+估风险，纯 Python），一次约 20~40 秒。
     wr_r = match(pol, rule_policy(), games=400, seed=1002)
@@ -98,7 +93,7 @@ def main(arm, ckpt="last.pt"):
     print(f"   用炸率   · 自对弈          {b:3d}/{g:3d} = {br:5.2f} 手/局")
 
     rs, brs = [], []
-    for mp in MEMBERS:
+    for mp in (MEMBERS or [str(paths.BEST)]):
         mp_pol, _ = load(mp)
         w, c, r = waste(pol, mp_pol)
         b, g, br = rate(pol, mp_pol)
@@ -119,6 +114,10 @@ if __name__ == "__main__":
     if "--ckpt" in argv:
         i = argv.index("--ckpt")
         ckpt = argv[i + 1]
+        del argv[i:i + 2]
+    while "--member" in argv:
+        i = argv.index("--member")
+        MEMBERS.append(argv[i + 1])
         del argv[i:i + 2]
     for a in argv:
         main(a, ckpt)

@@ -1,7 +1,7 @@
 """`blend` —— MC 标签与自举值的混合（spec §3.1）。"""
 import pytest
 
-from train import replay
+from guandan.rl import replay
 
 
 def test_beta_one_is_exactly_the_old_labels():

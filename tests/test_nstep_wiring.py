@@ -8,15 +8,15 @@ import random
 import pytest
 import torch
 
-from train.net import QNet
-import train.selfplay as sp
-from train.selfplay import _learn_step, _targets, build_samples, sync_target
+from guandan.rl.net import QNet
+import guandan.rl.selfplay as sp
+from guandan.rl.selfplay import _learn_step, _targets, build_samples, sync_target
 
 from tests.test_learn_step import _buffer
 
 def test_beta_one_never_computes_a_bootstrap_value():
     """**默认行为不变**：β=1 时一次都不该去算 `V`（省掉那次昂贵的前向）。"""
-    import train.selfplay as sp
+    import guandan.rl.selfplay as sp
     calls = []
     orig = sp.q_max_batch
     sp.q_max_batch = lambda n, p: calls.append(p) or orig(n, p)
@@ -33,7 +33,7 @@ def test_beta_one_never_computes_a_bootstrap_value():
 
 def test_beta_half_actually_bootstraps():
     """β<1 且给了目标网络时，**真的走了自举那一支**（boot 非空）。"""
-    import train.selfplay as sp
+    import guandan.rl.selfplay as sp
     calls = []
     orig = sp.q_max_batch
     sp.q_max_batch = lambda n, p: calls.append(p) or orig(n, p)
@@ -50,7 +50,7 @@ def test_beta_half_actually_bootstraps():
 
 def test_beta_half_differs_from_the_mc_targets():
     """同一个种子下，β=0.5 与 β=1 的目标**必须不同** —— 否则旋钮是假的。"""
-    from train.selfplay import _targets
+    from guandan.rl.selfplay import _targets
     torch.manual_seed(0)
     net, tgt = QNet(), QNet()
     _s1, y1 = _targets(tgt, _buffer(), random.Random(0), 4, 0.0, 1.0, 2)

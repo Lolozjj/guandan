@@ -4,8 +4,8 @@ import random
 
 import torch
 
-from train import selfplay, worker
-from train.net import QNet
+from guandan.rl import selfplay, worker
+from guandan.rl.net import QNet
 
 
 def _fresh_net(seed=0):

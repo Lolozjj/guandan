@@ -4,9 +4,9 @@ import random
 import numpy as np
 import pytest
 
-from net.sim import env, rules
-from train import replay
-from train.policies import greedy_policy
+from guandan.sim import env, rules
+from guandan.rl import replay
+from guandan.rl.policies import greedy_policy
 
 
 def _rec(seed=0, level=5):

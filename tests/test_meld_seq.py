@@ -1,4 +1,4 @@
-from net.sim import meld
+from guandan.sim import meld
 from tests.test_meld_basic import C
 
 
@@ -10,7 +10,7 @@ def test_nat_values_ace_is_both_ends():
 
 
 def test_ace_low_straight_is_legal():
-    """A2345 是合法顺子（数据里有 2 手），这是 live/rules.py 的 bug #2。"""
+    """A2345 是合法顺子（数据里有 2 手），这是老 YOLO 适配层（已删）的 bug #2。"""
     hand = C("A♥", "2♦", "3♥", "4♠", "5♥")
     st = [m for m in meld.melds_from(hand, level=9) if m.kind == meld.STRAIGHT]
     assert len(st) == 1

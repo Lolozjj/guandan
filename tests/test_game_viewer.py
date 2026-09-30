@@ -9,13 +9,13 @@ import textwrap
 
 import pytest
 
-from net import table
-from net.sim import rules
-from net.state import GameState
+from guandan.ui import table
+from guandan.sim import rules
+from guandan.capture.state import GameState
 from tools.game_viewer import Cursor, _View
 from tools.show_game import advice_of, frame_hint, replay_game
 
-_has_weights = bool(__import__("glob").glob("runs/rl/*/best.pt"))
+_has_weights = bool(__import__("glob").glob("models/*.pt"))
 
 
 def test_cursor_clamps_at_both_ends():
@@ -66,7 +66,7 @@ def test_view_provides_everything_the_renderer_actually_touches():
     assert not missing, f"`_View` 少了渲染器要的字段：{missing}"
 
 
-@pytest.mark.skipif(not _has_weights, reason="还没训练出 runs/rl/*/best.pt")
+@pytest.mark.skipif(not _has_weights, reason="还没训练出 runs/*/best.pt")
 def test_replay_gives_one_frame_per_play_plus_a_final_one():
     """**真打一局**（约 5 秒）：帧数 = 手数 + 1，最后一帧是终局。"""
     meta, frames = replay_game(seed=61, top=3)
@@ -81,7 +81,7 @@ def test_replay_gives_one_frame_per_play_plus_a_final_one():
         sum(len(p.cards) for ps in f.played.values() for p in ps) == 108
 
 
-@pytest.mark.skipif(not _has_weights, reason="还没训练出 runs/rl/*/best.pt")
+@pytest.mark.skipif(not _has_weights, reason="还没训练出 runs/*/best.pt")
 def test_advice_is_the_shape_the_panel_wants():
     """右侧栏吃 `[{cards, q}, …]`，且**首选在前**（面板按 i==0 画大图）。"""
     _meta, frames = replay_game(seed=61, top=3)

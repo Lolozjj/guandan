@@ -1,10 +1,10 @@
 """影子记录器：一行一个决策点，回填我实际出了什么，局末补一行结果。"""
 import json
 
-from net import shadow
-from net.sim.meld import cid_from_name as A
-from net.state import GameState
-from train.net import QNet
+from guandan.advice import shadow
+from guandan.sim.meld import cid_from_name as A
+from guandan.capture.state import GameState
+from guandan.rl.net import QNet
 
 
 def _reader(path):
@@ -14,7 +14,7 @@ def _reader(path):
 def _new(tmp_path, **kw):
     # 随机初始化的网络就够 —— 这里测的是记录逻辑，不是模型的水平
     return shadow.ShadowLog(net=QNet().eval(), out_path=str(tmp_path / "shadow.jsonl"),
-                            weights="runs/rl/test/best.pt", **kw)
+                            weights="runs/test/best.pt", **kw)
 
 
 def _play(st, seat, nxt, played, rest, mine=False):
@@ -48,7 +48,7 @@ def test_a_decision_point_is_recorded_once_and_backfilled_with_what_i_played(tmp
     assert [t["q"] for t in tops] == sorted((t["q"] for t in tops), reverse=True),         "前几名必须按 Q 降序"
     assert all(bool(t["names"]) == bool(t["cards"]) for t in tops),         "有牌就该有牌面名（「过」的两样都空）"
     sess = [r for r in _reader(log.out_path) if r["type"] == "session"]
-    assert sess and sess[0]["weights"] == "runs/rl/test/best.pt"
+    assert sess and sess[0]["weights"] == "runs/test/best.pt"
 
 
 def test_my_silent_pass_is_backfilled_as_an_empty_actual(tmp_path):
@@ -137,7 +137,7 @@ def test_it_stays_silent_when_the_model_is_missing(tmp_path):
     """权重没有/坏了：不许崩，也不许假装在记 —— 面板会显示这句话。"""
     out = tmp_path / "s.jsonl"
     log = shadow.ShadowLog(net=None, out_path=str(out),
-                           weights_note="找不到权重（runs/rl/*/best.pt）")
+                           weights_note="找不到权重（runs/*/best.pt）")
     st = GameState()
     st.level = 9
     _play(st, 1, 0, [A("S3")], [A("S4")], mine=True)
@@ -195,7 +195,7 @@ def test_deal_end_says_null_when_the_deal_was_not_seen_whole(tmp_path):
 def test_close_is_idempotent(tmp_path):
     """`close()` 必须幂等 —— 回放那条路每个 tick 都会调它一次。
 
-    `net/table.py` 的 `run_replay` 在回放喂完后**窗口还开着**，每个 tick 都进
+    `guandan/ui/table.py` 的 `run_replay` 在回放喂完后**窗口还开着**，每个 tick 都进
     `StopIteration` 分支再调一次 `close()`；原来 `close()` 无条件走 `_finish_deal`，
     于是每 260 毫秒往 shadow.jsonl 追一行同样的 `deal_end`（放一晚几千行）。
     """

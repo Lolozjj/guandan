@@ -1,6 +1,6 @@
 """动作计价（炸弹代价）—— 标签的唯一实现。
 
-规格：`docs/superpowers/specs/2026-09-27-bomb-cost-shaping-design.md`。
+规格：炸弹代价塑形设计（已归档到 `master` 分支）。
 
 **为什么这条路**：一局 ~132 个决策点共享同一个终局标签 ⇒ 动作那一维只剩残差
 （实测首选次选之差中位 0.123，标签尺度 ±3）。把代价**挂在动作上**才能造出
@@ -8,8 +8,8 @@
 """
 import pytest
 
-from net.sim import meld, rules
-from train import replay
+from guandan.sim import meld, rules
+from guandan.rl import replay
 
 #: 真炸弹：5♠5♥5♣5♦（同副四张同点），`is_bomb` 为 True。
 #: ⚠️ **同花顺也算 `is_bomb=True`**（掼蛋里它本来就是炸），代价会一并计上它。
@@ -75,8 +75,8 @@ def test_the_two_label_producers_agree_bit_for_bit():
 
     import torch
 
-    from train import selfplay
-    from train.net import QNet
+    from guandan.rl import selfplay
+    from guandan.rl.net import QNet
 
     torch.manual_seed(0)
     for lam in (0.0, 0.2):
@@ -97,7 +97,7 @@ def test_play_capturing_also_uses_the_single_label_source():
     """
     import random
 
-    from train.policies import greedy_policy
+    from guandan.rl.policies import greedy_policy
 
     rec, _pts, y = replay.play_capturing(greedy_policy, random.Random(0), level=5,
                                          capture=True, bomb_cost=0.2)
@@ -115,8 +115,8 @@ def test_lambda_zero_generates_the_same_games_bit_for_bit():
 
     import torch
 
-    from train import selfplay
-    from train.net import QNet
+    from guandan.rl import selfplay
+    from guandan.rl.net import QNet
 
     torch.manual_seed(0)
     net = QNet().eval()          # ⚠️ **同一个**网络：每次新建会取到不同的随机初始化
@@ -134,8 +134,8 @@ def test_bomb_cost_reaches_both_training_routes(tmp_path):
     ⚠️ 池子那一轮的同款坑：开关只接了单进程那条路，`--workers 2` 时**完全不生效**，
     而 A/B 正好是用 `--workers 2` 跑的。
     """
-    from train import selfplay
-    from train.worker import worker_cfg
+    from guandan.rl import selfplay
+    from guandan.rl.worker import worker_cfg
 
     assert worker_cfg(0, 0.0, 0.5, 0.8, 2)["bomb_cost"] == 0.0
     # 单进程那条路要能收下这个形参（跑 0 秒，不真训）

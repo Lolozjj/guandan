@@ -8,9 +8,9 @@ import random
 
 import numpy as np
 
-from net.sim import env, rules
-from train import replay
-from train.policies import greedy_policy
+from guandan.sim import env, rules
+from guandan.rl import replay
+from guandan.rl.policies import greedy_policy
 
 
 def test_expand_reproduces_the_live_trajectory():

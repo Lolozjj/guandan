@@ -5,9 +5,9 @@
 """
 import numpy as np
 
-from net import advise
-from net.sim import env, meld, rules
-from net.state import GameState
+from guandan.advice import advise
+from guandan.sim import env, meld, rules
+from guandan.capture.state import GameState
 
 A = meld.cid_from_name
 LEVEL = 9
@@ -115,6 +115,6 @@ def test_every_uncomputable_case_returns_a_reason_and_never_raises():
     assert advise.build(st).reason == advise.SKIP_LEVEL, "14 是日志里 A 的另一种写法，越界"
     st.level = LEVEL
     # 桌面这两张牌组不成任何合法牌型（不是对子、不是顺子）—— 不许当成「桌上无牌」
-    from net.state import Play
+    from guandan.capture.state import Play
     st.table = Play(seat=0, cards=[A("S3"), A("S5")], card_type=0, next_seat=0, left=26)
     assert advise.build(st).reason == advise.SKIP_TABLE

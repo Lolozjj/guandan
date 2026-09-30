@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import sys
 
-from net import cards
-from net.sim import meld, rules
+from guandan.capture import cards
+from guandan.sim import meld, rules
 from tools.accept_meld import Result, _utf8_stdout
 from tools.decision_points import initial_hands
 from tools.game_log import load_corpus, load_corpus_tributes

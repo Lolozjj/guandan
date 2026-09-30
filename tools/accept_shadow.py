@@ -1,6 +1,6 @@
 """第三层验收：影子模式（spec §8.2）—— 拿**真机素材**离线验整条推理链。
 
-素材：`net/raw.jsonl`（全量载荷抓包，2026-09-25 11:11:13~11:18:55，两局）
+素材：`runtime/raw.jsonl`（全量载荷抓包，2026-09-25 11:11:13~11:18:55，两局）
 真值：同一时段的游戏日志（两局都有结算）—— 能一手不落地重建出明牌对局。
 
 与另两个验收的分工：`accept_meld` 验牌型引擎，`accept_sim` 验牌局引擎；
@@ -32,15 +32,20 @@ import tempfile
 
 import numpy as np
 
-from net import addon, advise, cards as cardmod, panel, shadow
-from net.sim import env, rules
-from net.state import GameState
+from guandan import paths
+from guandan.capture import addon, cards as cardmod
+
+from guandan.advice import advise, shadow
+
+from guandan.ui import panel
+from guandan.sim import env, rules
+from guandan.capture.state import GameState
 from tools import accept_sim, decision_points, game_log as gl
 from tools.accept_meld import Result, _utf8_stdout
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = gl.LOG_DIR
-DEFAULT_CAPTURE = os.path.join(PROJ, "net", "raw.jsonl")
+DEFAULT_CAPTURE = str(paths.RAW)
 
 #: 地板：验到的量不到这个数，「全过」不足以称为结论（与 accept_meld / accept_sim 同口径）。
 _MIN_DECISIONS = 30
@@ -174,7 +179,7 @@ def run(capture=None, log_dir=None) -> list:
     if not os.path.exists(capture):
         return [Result("影子模式验收的素材",
                        floor=f"找不到抓包文件 {capture}"
-                             f"（全量抓包要 GUANDAN_RAW=1 跑一次 net.launcher）")]
+                             f"（全量抓包要 GUANDAN_RAW=1 跑一次 guandan.launcher）")]
     frames = load_frames(capture)
     if not frames:
         return [Result("影子模式验收的素材",
@@ -212,7 +217,7 @@ def run(capture=None, log_dir=None) -> list:
     deals = sorted(steps_by_deal)
     per_deal = {}
     levels = {}
-    # **按时间配对，不用 zip。** `net/raw.jsonl` 是**累积**的（不同场次的帧会追加在
+    # **按时间配对，不用 zip。** `runtime/raw.jsonl` 是**累积**的（不同场次的帧会追加在
     # 一起），zip 会按位置硬配 —— 配不上的那些局就被**静默丢掉**（实测：今天那一局
     # 的 11 个决策点因此没进 ②④⑥）。配不上的要报出来，不许装作没有。
     if len(deals) != len(games):
@@ -293,7 +298,7 @@ def run(capture=None, log_dir=None) -> list:
         if not ct:
             r4.bad.append(f"局 {rec['deal']} 位置 {rec['pos']}：真值侧枚举不出候选")
             continue
-        from train.net import q_values
+        from guandan.rl.net import q_values
         pick_t = ct[int(q_values(net, tp["obs"], ct, tp["hist"]).argmax())]
         top = rec.get("top") or []
         pick_w = sorted(top[0]["cards"]) if top else None

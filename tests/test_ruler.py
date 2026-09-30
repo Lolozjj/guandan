@@ -44,6 +44,6 @@ def test_paired_calls_a_consistent_loss_a_loss():
 
 
 def test_label_of_keeps_the_arm_and_the_file():
-    """`runs/ab/R8_rule/best.pt` -> `R8_rule/best.pt`（报告里两臂要能分开）。"""
-    assert label_of("runs/ab/R8_rule/best.pt") == "R8_rule/best.pt"
+    """`runs/R8_rule/best.pt` -> `R8_rule/best.pt`（报告里两臂要能分开）。"""
+    assert label_of("runs/R8_rule/best.pt") == "R8_rule/best.pt"
     assert label_of(r"runs\ab\R10_rule\pool\snap_300000.pt") == "R10_rule/snap_300000.pt"

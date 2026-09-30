@@ -1,7 +1,7 @@
 """`--opp-kind`：固定对手用哪种「强」。
 
 2026-09-28 加：贪心**不像人**（100% 压自己队友、从不主动炸、不算剩牌），
-所以多一个 `rule`（`train/rule_policy.py`，实测 vs 贪心 67.0%）。
+所以多一个 `rule`（`guandan/rl/rule_policy.py`，实测 vs 贪心 67.0%）。
 
 ⚠️ **日志必须说实话**（本仓库纪律：换源必须可见）—— 两臂只差这一个开关，
 如果日志都写「其中贪心 80%」，事后根本分不清哪一臂是谁。
@@ -10,12 +10,12 @@ import random
 
 import pytest
 
-import train.selfplay as sp
-from net.sim import meld
+import guandan.rl.selfplay as sp
+from guandan.sim import meld
 from tests.test_rule_policy import C, _acts, _follow_obs
-from train.net import QNet
-from train.rule_policy import rule_choose
-from train.selfplay import _fixed_pick, generate_batch
+from guandan.rl.net import QNet
+from guandan.rl.rule_policy import rule_choose
+from guandan.rl.selfplay import _fixed_pick, generate_batch
 
 
 def test_fixed_pick_rule_branch_calls_the_rule_policy():

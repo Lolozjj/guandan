@@ -9,10 +9,10 @@ import random
 import pytest
 import torch
 
-from train import replay
-from train.net import (ENT_FLOOR_FRAC, QNet, check_entropy, check_logits,
+from guandan.rl import replay
+from guandan.rl.net import (ENT_FLOOR_FRAC, QNet, check_entropy, check_logits,
                        log_prob_and_entropy, q_argmax_batch, q_values)
-from train.policies import greedy_policy
+from guandan.rl.policies import greedy_policy
 
 
 def _samples(n=3, seed=0, level=5):
@@ -92,7 +92,7 @@ def test_gradient_contrasts_the_chosen_action_against_the_others(monkeypatch):
     对比正是策略梯度与回归的分水岭：回归把所有候选都往同一个 `R` 拉 ⇒ 梯度**同号**
     ⇒ 没有对比 ⇒ 就是"标签不区分动作"的数学形态。
     """
-    import train.net as net_mod
+    import guandan.rl.net as net_mod
     z = torch.tensor([0.5, 1.0, 2.0], requires_grad=True)
     monkeypatch.setattr(net_mod, "_flat_scores",
                         lambda net, pending, grad=False: (z, [3]))
@@ -109,7 +109,7 @@ def test_gradient_contrasts_the_chosen_action_against_the_others(monkeypatch):
 
 def test_grad_depends_on_which_action_was_taken(monkeypatch):
     """换个「实际出的那一手」，梯度必须不同 —— **回归做不到这一点**（所有候选同目标）。"""
-    import train.net as net_mod
+    import guandan.rl.net as net_mod
     grads = []
     for take in (0, 2):
         z = torch.tensor([0.5, 1.0, 2.0], requires_grad=True)

@@ -21,8 +21,8 @@ import os
 import pytest
 import torch
 
-from train import pool, selfplay, worker
-from train.net import QNet
+from guandan.rl import pool, selfplay, worker
+from guandan.rl.net import QNet
 
 
 # ---------------------------------------------------------------- C1：剂量
@@ -64,7 +64,7 @@ def test_warmup_members_get_exactly_the_uniform_share():
     """预热成员拿的就是**均匀那一份**（1/K），不是 PFSP 的最大项。
 
     原实现给它 p=0.5 —— 那是 `p(1−p)` 的**最大**值，等于让没测过的成员
-    比健康成员重 4 倍。实测（`runs/ab/B_pool.log`）：一个 0 局的新成员
+    比健康成员重 4 倍。实测（`runs/B_pool.log`）：一个 0 局的新成员
     吃掉了 **38.4%** 的采样权重。
 
     ⚠️ 健康成员的 p **不能取 0.5** —— 那样「最大项」与「均匀」在数值上撞在一起，

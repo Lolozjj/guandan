@@ -6,8 +6,8 @@
 ⚠️ **`bomb_waste` 的签名与语义不许变** —— 全项目都在用它的 `(浪费数, 机会数)`。
 所以「用炸率」是新函数，两者**共用同一次走局**（各写一份走局就是「副本会漂」）。
 """
-from train.eval import _bomb_stats, bomb_rate, bomb_waste
-from train.policies import greedy_policy
+from guandan.rl.eval import _bomb_stats, bomb_rate, bomb_waste
+from guandan.rl.policies import greedy_policy
 
 
 def test_bomb_rate_counts_bombs_and_games():
@@ -46,7 +46,7 @@ class _M:
 def test_waste_needs_a_plain_alternative():
     """**「白炸」的判定**（`bomb_opportunity` / `is_wasted_bomb`）—— 只此一份，
     `_bomb_stats` 的统计与战报里标出的那一手都走它。四种情形逐个钉。"""
-    from train.eval import bomb_opportunity, is_wasted_bomb
+    from guandan.rl.eval import bomb_opportunity, is_wasted_bomb
     plain, bomb = _M(False), _M(True)
 
     # 领出（桌上没牌要压）：炸不是浪费，是出牌

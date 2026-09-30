@@ -1,7 +1,7 @@
 """**规则式的尺子** —— 强度 + 三条行为护栏，一次全量出来。
 
 为什么要有它：台账里那张「vs 贪心 / 压队友 / 用炸率 / 白炸」的表是
-**一次性脚本**量出来的（`plans/2026-09-28-nstep-bootstrap-delivery.md` §7），
+**一次性脚本**量出来的（n 步自举交付台账（已归档到 `master` 分支） §7），
 没留工具。调规则式时每次都要量这四样 —— 不留工具就每次重写一份，
 而「副本会漂」这个仓库已经吃过一次亏了。
 
@@ -18,7 +18,7 @@
 
     .venv/Scripts/python.exe -m tools.rule_bench
     .venv/Scripts/python.exe -m tools.rule_bench --seeds 1002,1003,1004
-    .venv/Scripts/python.exe -m tools.rule_bench --opp runs/rl/20260926-1407/best.pt
+    .venv/Scripts/python.exe -m tools.rule_bench --opp models/best.pt
     .venv/Scripts/python.exe -m tools.rule_bench --behavior-opp ckpt
 """
 from __future__ import annotations
@@ -30,12 +30,12 @@ import sys
 
 import torch
 
-from net import advise
-from net.sim import env, rules
-from train.eval import bomb_rate, bomb_waste, match
-from train.net import DEVICE, QNet, q_values
-from train.policies import greedy_policy
-from train.rule_policy import ally_of, rule_choose, rule_policy, table_owner
+from guandan.advice import advise
+from guandan.sim import env, rules
+from guandan.rl.eval import bomb_rate, bomb_waste, match
+from guandan.rl.net import DEVICE, QNet, q_values
+from guandan.rl.policies import greedy_policy
+from guandan.rl.rule_policy import ally_of, rule_choose, rule_policy, table_owner
 from tools.accept_meld import _utf8_stdout
 
 
@@ -52,7 +52,7 @@ def net_pol(path: str):
 def behavior(opp, games: int, seed: int, rule_team: int = 0) -> dict:
     """跑 `games` 局，量**行为护栏**（压队友 / 用炸 / 白炸）。
 
-    ⚠️ 白炸与用炸率不在这里数 —— 那两样走 `train/eval.py` 的**唯一判定**
+    ⚠️ 白炸与用炸率不在这里数 —— 那两样走 `guandan/rl/eval.py` 的**唯一判定**
     （`bomb_waste` / `bomb_rate`），不另写一份。
     """
     rng = random.Random(seed)
@@ -89,7 +89,7 @@ def main(argv=None) -> int:
     path = a.opp or advise.newest_weights()
     opp, games = net_pol(path)
     print(f"对手：{path}" + (f"（{games:,} 局）" if games else ""))
-    print(f"规则式：train/rule_policy.py" + (f"（{games:,} 局）" if games else ""))
+    print(f"规则式：guandan/rl/rule_policy.py" + (f"（{games:,} 局）" if games else ""))
     print()
 
     r = rule_policy()

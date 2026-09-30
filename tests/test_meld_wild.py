@@ -1,4 +1,4 @@
-from net.sim import meld
+from guandan.sim import meld
 from tests.test_meld_basic import C
 
 
@@ -97,7 +97,7 @@ def test_wild_assisted_meld_reports_concrete_cards():
 def test_wild_fills_triple_pair_pair_half():
     """三张齐、对子差一张：逢人配补对子那一半。
 
-    真实数据（net/events.jsonl）里的一手 card_type=5：
+    真实数据（runtime/events.jsonl）里的一手 card_type=5：
         6♠(二副) 6♥ 6♥(二副) 4♦(二副) + ♥2（打 2）
     「三张已齐、只缺对子」是最常见的一种，不能被补牌条件挡掉。
     """

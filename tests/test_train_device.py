@@ -1,12 +1,12 @@
-"""训练必须把网络放到 `train.net.DEVICE` 上 —— 这个坑真踩过。
+"""训练必须把网络放到 `guandan.rl.net.DEVICE` 上 —— 这个坑真踩过。
 
 实测（2026-09-26）：Plan 3 那 5 万局与这一次的 9 小时跑，日志第一行都是
 `device=cpu`，而 `torch.cuda.is_available()` 从始至终是 True —— 也就是
 **GPU 从来没被训练用上**（`net = QNet()` 后面漏了 `.to(DEVICE)`）。
 训练步的瓶颈本来就是网络前向（spec §14.3），落在 CPU 上等于白等。
 """
-from train import net as netmod
-from train import selfplay
+from guandan.rl import net as netmod
+from guandan.rl import selfplay
 
 
 def test_training_puts_the_net_on_the_configured_device(tmp_path):

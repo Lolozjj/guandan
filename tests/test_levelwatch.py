@@ -16,7 +16,7 @@
 """
 import os
 
-from net.levelwatch import LevelWatcher
+from guandan.capture.levelwatch import LevelWatcher
 
 #: 今天那一局真实的结算行（截掉无关字段，保留 UpgradeInfo）
 SETTLE = ('2026-09-26|06:51:35:064|INFO|G|GameLogger|520|520|3222027089|'

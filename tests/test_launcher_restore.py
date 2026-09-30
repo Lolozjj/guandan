@@ -1,6 +1,6 @@
 """还原路径：**演示结束关面板时不许卡、不许弹 traceback、不许报假成功**。
 
-2026-09-29 用 `net.launcher --selftest 30` 实机自检抓到：
+2026-09-29 用 `guandan.launcher --selftest 30` 实机自检抓到：
 
     subprocess.TimeoutExpired: Command '['certutil', '-user', '-delstore', 'Root',
     '20B1DD17...']' timed out after 60 seconds
@@ -17,7 +17,7 @@ mitmdump 已退出）—— 是 `certutil` 删完**自己卡住不退**（删不
 import subprocess
 import time
 
-import net.launcher as launch
+import guandan.launcher as launch
 
 
 class _Stuck:

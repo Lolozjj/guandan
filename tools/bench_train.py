@@ -5,7 +5,7 @@
 
 **量的是「训练阶段」的吞吐**（`train_parallel` 返回的 `elapsed` 在收尾评测之前取），
 所以短跑不会被固定开销（两次 200 局评测 + 炸弹指标）淹没。判据见
-`docs/superpowers/specs/2026-09-26-multiprocess-selfplay-design.md` §5②。
+多进程自对弈设计（已归档到 `master` 分支） §5②。
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import os
 import sys
 import tempfile
 
-from train.selfplay import train_parallel
+from guandan.rl.selfplay import train_parallel
 from tools.accept_meld import _utf8_stdout
 
 

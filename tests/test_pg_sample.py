@@ -6,9 +6,9 @@ import random
 
 import torch
 
-import train.net as net_mod
+import guandan.rl.net as net_mod
 from tests.test_pg_logprob import _samples
-from train.net import QNet, policy_sample_batch
+from guandan.rl.net import QNet, policy_sample_batch
 
 
 def test_sample_follows_pi(monkeypatch):

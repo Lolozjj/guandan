@@ -279,7 +279,7 @@ def load_corpus_tributes(log_dir: str = None, snapshot: str = SNAPSHOT) -> list:
 #   TributeService NotifyTribute localId=N Card=N          -> 谁贡出了哪张（进贡）
 #   TributeSectionEndService NotifyTributeSectionEnd
 #       fromLocalId=N destLocalId=M card=N                 -> 谁还给谁哪张（还贡）
-# `card=` 是**牌 ID**，与 net/cards.py 的编码一致（>255 = 第二副），可直接喂 meld.py。
+# `card=` 是**牌 ID**，与 guandan/capture/cards.py 的编码一致（>255 = 第二副），可直接喂 meld.py。
 
 _TRIB_GIVE = re.compile(r"TributeService NotifyTribute localId=(\d+) Card=(\d+)")
 _TRIB_RETURN = re.compile(

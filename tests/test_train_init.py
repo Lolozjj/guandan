@@ -12,8 +12,8 @@ import pytest
 
 import torch
 
-from train import selfplay
-from train.net import QNet
+from guandan.rl import selfplay
+from guandan.rl.net import QNet
 
 
 def test_init_warm_starts_from_the_checkpoint(tmp_path):
@@ -55,16 +55,16 @@ def test_resolve_eps_start_lowers_it_for_a_warm_start():
     1407 那版 95.2% 的模型，热启动之后 ε 仍从 1.0 起 —— 头一万多局近乎随机，
     把热启动冲掉了。**不修它，任何「从 1407 出发」的实验都测不出别的东西。**
     """
-    from train.selfplay import EPS_END, EPS_START, EPS_START_WARM, resolve_eps_start
+    from guandan.rl.selfplay import EPS_END, EPS_START, EPS_START_WARM, resolve_eps_start
     assert resolve_eps_start(init=None) == EPS_START
-    assert resolve_eps_start(init="runs/rl/x/best.pt") == EPS_START_WARM
+    assert resolve_eps_start(init="runs/x/best.pt") == EPS_START_WARM
     assert EPS_END < EPS_START_WARM < EPS_START, "要落在「退到底」与「全新开跑」之间"
     assert resolve_eps_start(init="x.pt", explicit=0.5) == 0.5, "显式给了就用显式的"
     assert resolve_eps_start(init=None, explicit=0.5) == 0.5
 
 
 def test_eps_for_honours_an_explicit_start():
-    from train.selfplay import EPS_END, eps_for
+    from guandan.rl.selfplay import EPS_END, eps_for
     assert eps_for(0, 1000, start=0.3) == pytest.approx(0.3)
     assert eps_for(1000, 1000, start=0.3) == pytest.approx(EPS_END)
     assert eps_for(500, 1000, start=0.3) < 0.3, "中途要真的在退"

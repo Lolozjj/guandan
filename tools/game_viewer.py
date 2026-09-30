@@ -1,7 +1,7 @@
 """自对弈回放的**图形版** —— 点「上一步 / 下一步」逐步看模型是怎么打的。
 
 - **共用同一份重放**：`tools/show_game.py::replay_game`（文字版也是它）
-- **共用同一个渲染器**：`net/table.py::TableWindow` —— 所以这里的牌桌跟**实机面板
+- **共用同一个渲染器**：`guandan/ui/table.py::TableWindow` —— 所以这里的牌桌跟**实机面板
   长得一模一样**，而且不存在「两份画牌代码」
 - 与实机面板的唯一区别：候选**写出 Q 值**（用户 2026-09-28 定）。那是离线复盘，
   看的就是「当时每个候选打了多少分」；实机面板仍然不写数字（建议上屏会影响人打牌）
@@ -22,13 +22,15 @@ from __future__ import annotations
 import argparse
 import sys
 
-from net import cards, table
-from net.state import GameState
-from net.sim import rules
+from guandan.capture import cards
+
+from guandan.ui import table
+from guandan.capture.state import GameState
+from guandan.sim import rules
 from tools.accept_meld import _utf8_stdout
 from tools.show_game import (TEAM_NAME, advice_of, frame_hint, policy_name,
                              replay_game, seat_label)
-from train.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型唯一产地
+from guandan.rl.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型唯一产地
 
 BAR_H = 56                       # 底部按钮条的高度（画布往下拉这么多）
 
@@ -65,7 +67,7 @@ class _View:
 
     ⚠️ **这不是复制 `GameState` 的逻辑**，只是把渲染器要的那十来个成员拼出来：
     能用真的 `GameState`（借它的 `level_name` / `hand_grouped`）、真的
-    `net.state.Play`（装出牌与台面，借它的 `names`）。所以「牌按掼蛋大小排」
+    `guandan.capture.state.Play`（装出牌与台面，借它的 `names`）。所以「牌按掼蛋大小排」
     这件事仍然只有一份实现。
     渲染器将来要是多要一个字段，这里会**当场 AttributeError** —— 不会静默画错。
     """
@@ -98,7 +100,7 @@ class _View:
         self._gs = GameState(level=f.level, hand=sorted(f.hands[_whose(f)]))
 
     def hand_of(self, seat):
-        """这一家的手牌（`net/table.py::_seat_area` 会问它）。"""
+        """这一家的手牌（`guandan/ui/table.py::_seat_area` 会问它）。"""
         if seat not in self._hands:
             return None
         return sorted(self._hands[seat])

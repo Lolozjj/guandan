@@ -3,33 +3,18 @@
 __pycache__/
 *.pyc
 
-# ---- 大体量数据（可重新生成，合计约 2.3 GB）----
-dataset/
-dataset_v2/
-# 实验产物一律不入库（检查点是 *.pt，见下）。
-# ⚠️ 已经跟踪的那几个小文本（runs/detect/*/results.csv、runs/games/*.txt）
-#    **不受本行影响**，仍会继续跟踪 —— gitignore 管不到已跟踪文件。
-runs/
-snapshots/
-audit/
-assets/
-shots/
-results/
-live/frames/
-
-# ---- 权重与图像、日志 ----
-# 训练/预训练权重一律不入库（含根目录的 yolo11n.pt，5.6 MB）。
-# 要复现权重请照 README / 交付文档重新训练或下载，别把二进制提交进来。
+# ---- 权重：**不入库** ----
+# 文件大（一份 7.8 MB），而且能从 runs/ 再生成。面板加载的那份是 models/best.pt，
+# README 写了怎么训练、怎么替换。别把二进制提交进来。
 *.pt
 *.onnx
-*.png
-*.jpg
+
+# ---- 训练产出与运行时产物 ----
+# runs/    训练存档（best.pt / pool/snap_*.pt / 日志）
+# runtime/ 抓包事件流、影子日志、mitmproxy 日志（追加写、会一直长大）
+runs/
+runtime/
 *.log
 
-# ---- 运行时产物（追加写、会一直长大）----
-net/events.jsonl
-net/mitm.log
-live/panel.log
-.superpowers/
-net/raw.jsonl
-net/shadow.jsonl
+# ---- 日志语料快照**要入库** ----
+# data/game_corpus.json 是验收的真值：游戏日志只留两天，被轮转掉之后就没素材了。

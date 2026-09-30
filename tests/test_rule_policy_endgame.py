@@ -12,9 +12,9 @@
 
 ⚠️ 另两条是**护栏**：喂队友优先于卡对手、能卡形状时仍按形状卡。
 """
-from net.sim import meld
+from guandan.sim import meld
 from tests.test_rule_policy import C, _idx, _obs
-from train import rule_policy as rp
+from guandan.rl import rule_policy as rp
 
 
 def _lead_acts(hand):

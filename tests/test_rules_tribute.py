@@ -1,7 +1,7 @@
 import pytest
 
-from net import cards
-from net.sim import meld, rules
+from guandan.capture import cards
+from guandan.sim import meld, rules
 
 A = meld.cid_from_name
 BIG1, BIG2 = A("JOKER_B"), A("JOKER_B", deck=2)          # 两张大王

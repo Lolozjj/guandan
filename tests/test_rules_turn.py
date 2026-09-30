@@ -1,7 +1,7 @@
 import pytest
 
-from net import cards
-from net.sim import meld, rules
+from guandan.capture import cards
+from guandan.sim import meld, rules
 
 A = meld.cid_from_name
 

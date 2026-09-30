@@ -12,7 +12,7 @@
 **因此本脚本不验进贡**（那在 `tools/accept_tribute.py` 里单独验，用的另一份证据）。
 
 比对口径是**形状**（`(kind, size, rank)`）而不是牌张集合 —— 因为 `melds_from` 的契约是
-「每个形状一条代表」（见 `net/sim/meld.py` 的 docstring）。真人打出的可能是 ♥5♥5，
+「每个形状一条代表」（见 `guandan/sim/meld.py` 的 docstring）。真人打出的可能是 ♥5♥5，
 枚举给的代表可能是 ♠5♠5，形状相同就是对的。**这与 `accept_meld` 的验收①同口径。**
 
 **两路独立校验**（不经过 `meld.py` 的枚举）：
@@ -30,7 +30,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 
-from net.sim import meld, rules
+from guandan.sim import meld, rules
 # `_utf8_stdout` 直接复用 accept_meld 那份，**不复制**：它就是为「GBK 控制台下
 # 打不出 ✓ 会让全绿的脚本返回 1」写的（Plan 1 踩过）。复制一份就是第二份真源，
 # 本仓库为「副本会漂」吃过亏。

@@ -2,7 +2,7 @@
 import torch
 
 from tools.action_margin import margins_of, measure
-from train.net import QNet
+from guandan.rl.net import QNet
 
 
 def test_untrained_net_has_no_margin():

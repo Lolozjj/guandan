@@ -3,8 +3,8 @@ import collections
 
 import pytest
 
-from net import cards
-from net.sim import rules
+from guandan.capture import cards
+from guandan.sim import rules
 
 
 def test_full_deck_is_two_complete_decks():

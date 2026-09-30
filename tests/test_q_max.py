@@ -4,11 +4,11 @@ import random
 import pytest
 import torch
 
-from net.sim import env
-from train import replay
-from train.net import (QNet, check_q_scale, q_argmax_batch, q_max_batch,
+from guandan.sim import env
+from guandan.rl import replay
+from guandan.rl.net import (QNet, check_q_scale, q_argmax_batch, q_max_batch,
                        q_values)
-from train.policies import greedy_policy
+from guandan.rl.policies import greedy_policy
 
 
 def _pending(games=2, seed=0):

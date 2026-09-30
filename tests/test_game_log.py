@@ -16,7 +16,7 @@ def test_loads_games():
     assert len(games) > 0, "日志目录在，却一局都没解出来 —— 不要静默通过"
     for g in games[:5]:
         assert len(g.my_cards) == 27
-        # 日志偶尔用 14 表示 A（net/cards.py 里也踩过这条），所以上限放到 14
+        # 日志偶尔用 14 表示 A（guandan/capture/cards.py 里也踩过这条），所以上限放到 14
         assert 1 <= g.trump <= 14
 
 

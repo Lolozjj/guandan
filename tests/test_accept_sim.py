@@ -5,8 +5,8 @@
 """
 import copy
 
-from net import cards
-from net.sim import meld, rules
+from guandan.capture import cards
+from guandan.sim import meld, rules
 from tools import accept_sim
 from tools.game_log import load_corpus
 

@@ -13,8 +13,8 @@ import random
 
 import torch
 
-from train import replay, selfplay
-from train.net import QNet
+from guandan.rl import replay, selfplay
+from guandan.rl.net import QNet
 
 
 def _fresh_net(seed=0):

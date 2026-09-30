@@ -1,6 +1,6 @@
 def test_package_importable():
-    from net import cards
-    from net.sim import meld  # noqa: F401
+    from guandan.capture import cards
+    from guandan.sim import meld  # noqa: F401
     assert cards.decode(77) == "K♦"
 
 
@@ -13,7 +13,7 @@ def test_package_importable():
 def test_opp_mix_only_trains_on_the_learner_team():
     """混入固定对手时，**只记学习那一队的决策点** —— 固定对手的着法不是网络选的，
     记进去等于拿它当训练目标（把网络往贪心上带）。"""
-    from train import selfplay
+    from guandan.rl import selfplay
     import random as _r
 
     class Net:                     # 空壳：opp_mix=1.0 时轮不到它出手
@@ -35,8 +35,8 @@ def test_opp_mix_only_trains_on_the_learner_team():
 
 def test_opp_mix_zero_is_still_pure_selfplay():
     """`opp_mix=0`（默认）必须与老行为一致：四家都记（两队都学到）。"""
-    from train import selfplay
-    from train.net import QNet
+    from guandan.rl import selfplay
+    from guandan.rl.net import QNet
     import random as _r
     out = selfplay.generate_batch(QNet(), _r.Random(0), eps=1.0, n_games=32,
                                   opp_mix=0.0)
@@ -51,7 +51,7 @@ def test_eps_anneals_by_games_not_by_time():
     近乎随机的探索，真正的学习挤在最后。上一轮「加时长收益越来越小」不是撞墙，
     是探索没退下去。按局数退，出数快的机器自然学得快。
     """
-    from train.selfplay import EPS_START, EPS_END, EPS_GAMES, eps_for
+    from guandan.rl.selfplay import EPS_START, EPS_END, EPS_GAMES, eps_for
     assert eps_for(0) == EPS_START
     assert abs(eps_for(EPS_GAMES) - EPS_END) < 1e-9, "退完该正好到底（浮点近似）"
     assert eps_for(EPS_GAMES * 10) <= EPS_END + 1e-9, "退完就到底，不许反弹"
