@@ -6,7 +6,7 @@ __pycache__/
 # ---- 大体量数据（可重新生成，合计约 2.3 GB）----
 dataset/
 dataset_v2/
-runs/
+#runs/
 snapshots/
 audit/
 assets/
