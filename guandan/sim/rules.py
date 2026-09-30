@@ -24,6 +24,21 @@
 **局终条件**（2026-09-25 在 55 局上核出，spec §13.5）：
     同一队包了前两名（双上） -> **只出完 2 家就终局**   25/25 局
     否则                     -> 出完 3 家才终局        30/30 局
+
+怎么读这份文件（按依赖顺序）：
+
+    1. 常量 `SEATS` / `TEAM` / `PARTNER` / `NEXT`
+                              —— 座位与出牌方向（就是上面 ① 那条实测规则）
+    2. `Hand`                 —— 一手牌的全部状态（字段逐个有注释）
+    3. `Hand.actions` / `play` / `pass_turn`
+                              —— 对外三个动作入口：校验 + 执行 + 推进
+    4. `_advance` / `_lead_after` / `is_over`
+                              —— 轮转、清桌、接风、终局（本文件最需要小心的一段）
+    5. `ranks` / `winner_team` / `points` / `reward`
+                              —— 结算与奖励（零和，且**从出牌人视角**）
+    6. `FULL_DECK` / `deal` / `new_hand`
+                              —— 牌堆与发牌（「给定 seed 永远一样」是硬要求）
+    7. `apply_tribute` 那一节  —— 进贡 / 还贡；**证据分级写在那一节的抬头**，别把基线当已验证
 """
 from __future__ import annotations
 
@@ -33,7 +48,7 @@ from typing import List, Optional, Set
 from guandan.capture import cards
 from guandan.sim import meld
 
-SEATS = (0, 1, 2, 3)
+SEATS = (0, 1, 2, 3)         # 四个座位（**绝对**座位号；相对化是 env 与面板的事）
 TEAM = (0, 1, 0, 1)          # TEAM[s]：座位 0、2 一队，1、3 一队
 PARTNER = (2, 3, 0, 1)       # 队友（在 NEXT 环上隔一个：0↔2、1↔3）
 
@@ -98,6 +113,18 @@ class Hand:
     # ------------------------------------------------------------ 行动
 
     def play(self, seat: int, m: Optional[meld.Meld]) -> Step:
+        """某人出这一手 `m`（`m=None` 直接转 `pass_turn`）。返回这一步的 `Step`。
+
+        校验三件事，任一不满足就抛 `IllegalPlay`（**不静默**）：轮到他了、
+        这些牌确实在他手上、这一手压得过桌面。
+
+        ⚠️ 「压得过」那条**先看手上这组牌的全部读法**（`melds_from(整手牌)` 里牌组
+        与之相同的那几条），只有一条都没有时才退回 `as_meld(这组牌)` —— 两条路对
+        同一套牌给出不同 rank 是真事，理由见下面那两段注释。
+
+        通过之后：扣牌 -> 出完了就记进 `order` -> **清空 `passed`（打出一手 = 重新开一轮）**
+        -> 交给 `_advance()` 定下一个该谁。
+        """
         if m is None:
             return self.pass_turn(seat)
         if self.over:
@@ -151,6 +178,11 @@ class Hand:
         return st
 
     def pass_turn(self, seat: int) -> Step:
+        """某人「要不起」（`play(m=None)` 转到这里）。返回这一步的 `Step`。
+
+        ⚠️ **领出不能过** —— 桌上没牌时必须出牌，这里会抛 `IllegalPlay`。
+        过这一步只是把座位记进 `passed`，然后同样交给 `_advance()` 定下一个该谁。
+        """
         if self.over:
             raise IllegalPlay("这一手已经结束了")
         if self.turn != seat:
@@ -166,7 +198,15 @@ class Hand:
     # ------------------------------------------------------------ 轮转
 
     def _advance(self) -> None:
-        """一步之后定下一个该谁。清桌与接风都在这里发生。"""
+        """一步之后定「下一个该谁」——**清桌与接风都在这里发生**。
+
+        从 `table_seat`（桌面那手是谁打的）的下家开始沿 `NEXT` 扫一圈，找第一个
+        「手上有牌、且本轮没要不起」的座位：
+
+        - 找到了、且不是桌面主人自己 -> 轮到他
+        - 一圈扫不到人接手（或扫回主人自己）-> **清桌**：`table=None`、`passed` 清空；
+          主人手上还有牌就他自己重新领出，否则把领出权交给队友（**接风**，`_lead_after`）
+        """
         if self.is_over():
             self.over = True
             return
@@ -257,7 +297,10 @@ def winner_team(ranks) -> int:
 
 
 def points(ranks) -> int:
-    """赢家这一手的升级点：双上 3 / 1、3 名 2 / 1、4 名 1。"""
+    """赢家这一手拿几个升级点：按**赢家队里较差的那个名次**查 `POINTS_BY_WORST_RANK`。
+
+    较差名次 2（双上，前两名都是自己队）-> 3 点；3 -> 2 点；4 -> 1 点。
+    """
     t = winner_team(ranks)
     worst = max(ranks[0], ranks[2]) if t == 0 else max(ranks[1], ranks[3])
     return POINTS_BY_WORST_RANK[worst]
@@ -299,7 +342,12 @@ def _check_level(level) -> None:
 
 
 def deal(rng, level=None, first=None) -> "Hand":
-    """洗牌发牌，每家 27 张。`first` 不给就随机定领出者。"""
+    """洗牌发牌，每家 27 张。
+
+    `FULL_DECK` 的顺序固定 + 用调用方给的 `rng` ⇒ **给定 seed，发牌结果永远一样**
+    （训练要可复现，评测也靠它做配对）。`first` 不给就随机定领出者。
+    `level` 先过 `_check_level`。
+    """
     _check_level(level)
     deck = list(FULL_DECK)
     rng.shuffle(deck)
@@ -352,7 +400,11 @@ class Tribute:
 
 
 def tributers(prev_ranks) -> List[int]:
-    """谁要进贡：上一手的第 4 名；若第 3、4 名**同队**则两人都要（双贡）。"""
+    """谁要进贡：上一手的**第 4 名**；若第 3、4 名**同队**，则两人都要（**双贡**）。
+
+    参数 `prev_ranks[seat] = 1..4`，来自上一手的 `Hand.ranks()`。
+    返回按座位升序的进贡方名单（1 或 2 个）。名次不合法直接抛 `IllegalPlay`。
+    """
     last = [s for s in SEATS if prev_ranks[s] == 4]
     third = [s for s in SEATS if prev_ranks[s] == 3]
     if len(last) != 1 or len(third) != 1:
@@ -372,6 +424,10 @@ def _value(cid: int, level) -> int:
 
 
 def _biggest(hand, level) -> int:
+    """手上**最大**的那张牌（进贡贡的就是它）。
+
+    大小走 `_value`（含级牌与王的口径）；**同大小按牌 ID 升序定序**，只为可复现。
+    """
     return max(sorted(hand), key=lambda c: (_value(c, level), c))
 
 
