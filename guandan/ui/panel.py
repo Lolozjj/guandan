@@ -17,6 +17,7 @@ from guandan.capture import cards, protocol
 from guandan.capture.addon import EVENTS
 from guandan.capture.levelwatch import LevelWatcher
 from guandan.capture.state import GameState
+from guandan.console import utf8_stdout
 
 CLEAR = "\033[2J\033[H"
 DIM = "\033[2m"
@@ -198,6 +199,9 @@ def run_replay(st: GameState, capture: str, delay: float, level: int = None,
 
 
 def main():
+    # 第一件事：把 stdout 切到 UTF-8。这个面板要打牌面（♠♥♣♦），而它们不在 GBK 里 ——
+    # stdout 接管道 / 重定向时（`| tee`、后台任务、CI）用 cp936 会直接 UnicodeEncodeError。
+    utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--replay", action="store_true", help="用抓包文件回放")
     ap.add_argument("--capture", default=r"C:\Users\17837\mitmtool\capture.jsonl")

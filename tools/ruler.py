@@ -37,7 +37,7 @@ from guandan.rl.eval import match
 from guandan.rl.net import QNet
 from guandan.rl.rule_policy import rule_policy
 from guandan.rl.selfplay import net_play
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 
 #: 默认种子。1002 是历史沿用的那把（与 `ab_compare` / 台账全部旧数同源），
 #: 所以它必须在里面 —— 换了就对不上历史。
@@ -122,7 +122,7 @@ def report(rows, seeds, base):
 
 
 def main(argv=None):
-    _utf8_stdout()
+    utf8_stdout()
     ap = argparse.ArgumentParser(description="多臂 × 多种子配对测量（vs 规则式）")
     ap.add_argument("ckpts", nargs="*", help="权重路径；留空 = runs/*/best.pt")
     ap.add_argument("--seeds", default=",".join(map(str, DEFAULT_SEEDS)),

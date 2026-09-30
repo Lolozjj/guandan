@@ -977,8 +977,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
 
 
 def main(argv=None) -> int:
-    from tools.accept_meld import _utf8_stdout
-    _utf8_stdout()          # 不调这个，GBK 控制台下打不出 ✓ 会丢退出码（踩过）
+    from guandan.console import utf8_stdout
+    utf8_stdout()          # 不调这个，GBK 控制台下打不出 ✓ 会丢退出码（踩过）
     argv = sys.argv[1:] if argv is None else argv
     seconds = float(argv[0]) if argv else 3600.0
     buf = BUFFER_GAMES

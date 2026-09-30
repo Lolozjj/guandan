@@ -103,7 +103,7 @@ def _bomb_game():
 def _run_main(monkeypatch, games) -> int:
     # main() 上来就把 stdout 切到 UTF-8；pytest 的捕获流不一定支持 reconfigure。
     # 这里测的是「门会不会红」，不是编码，所以把它换掉。
-    monkeypatch.setattr(accept, "_utf8_stdout", lambda: None)
+    monkeypatch.setattr(accept, "utf8_stdout", lambda: None)
     return accept.main(games=games)
 
 

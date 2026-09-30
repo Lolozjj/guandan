@@ -41,7 +41,8 @@ from guandan.ui import panel
 from guandan.sim import env, rules
 from guandan.capture.state import GameState
 from tools import accept_sim, decision_points, game_log as gl
-from tools.accept_meld import Result, _utf8_stdout
+from guandan.console import utf8_stdout
+from tools.accept_meld import Result
 
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = gl.LOG_DIR
@@ -379,7 +380,7 @@ def run(capture=None, log_dir=None) -> list:
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()
+    utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--capture", default=None)
     ap.add_argument("--log-dir", default=None)

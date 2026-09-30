@@ -26,7 +26,7 @@ import torch
 from guandan import paths
 from guandan.rl.net import QNet, q_values
 from guandan.rl.selfplay import generate_batch
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 
 
 def margins_of(net, pending):
@@ -66,7 +66,7 @@ def measure(net, games: int = 32, seed: int = 0):
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()
+    utf8_stdout()
     argv = sys.argv[1:] if argv is None else argv
     for p in (argv or [str(paths.BEST)]):
         d = torch.load(p, map_location="cpu", weights_only=False)

@@ -22,7 +22,8 @@ import sys
 
 from guandan.capture import cards
 from guandan.sim import meld, rules
-from tools.accept_meld import Result, _utf8_stdout
+from guandan.console import utf8_stdout
+from tools.accept_meld import Result
 from tools.decision_points import initial_hands
 from tools.game_log import load_corpus, load_corpus_tributes
 
@@ -167,7 +168,7 @@ def variant_scores(records, games) -> list:
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()
+    utf8_stdout()
     games = load_corpus()
     records = load_corpus_tributes()
     from tools import game_log

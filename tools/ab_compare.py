@@ -32,9 +32,9 @@ from guandan.rl.net import QNet
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import rule_policy
 from guandan.rl.selfplay import net_play
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 
-_utf8_stdout()
+utf8_stdout()
 
 #: 「对池」量浪费率用的对手。**留空 = 用面板在用的那份权重**（`models/best.pt`）；
 #: 要指定别的对手就 `--member <路径>`（可重复）。

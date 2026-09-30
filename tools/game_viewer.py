@@ -27,7 +27,7 @@ from guandan.capture import cards
 from guandan.ui import table
 from guandan.capture.state import GameState
 from guandan.sim import rules
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 from tools.show_game import (TEAM_NAME, advice_of, frame_hint, policy_name,
                              replay_game, seat_label)
 from guandan.rl.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型唯一产地
@@ -226,7 +226,7 @@ def open_viewer(meta: dict, frames: list, autoclose_s: float = 0.0) -> None:
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()
+    utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("weights", nargs="?", default=None)
     ap.add_argument("--seed", type=int, default=7)

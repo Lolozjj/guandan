@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 from guandan.rl.selfplay import train_parallel
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 
 
 def bench_run(workers: int, seconds: float = 45.0, out_dir: str = None,
@@ -31,7 +31,7 @@ def bench_run(workers: int, seconds: float = 45.0, out_dir: str = None,
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()
+    utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, nargs="+", default=[1, 2, 3, 4, 6])
     ap.add_argument("--seconds", type=float, default=45.0)

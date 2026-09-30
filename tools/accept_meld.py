@@ -34,6 +34,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 
+from guandan.console import utf8_stdout
 from guandan.sim import meld
 from tools.decision_points import decision_points
 from tools import game_log
@@ -340,28 +341,13 @@ CHECKS = [check_real_moves, check_beats_from_records, check_invariants,
 _LOG_FED = (check_real_moves, check_beats_from_records)
 
 
-def _utf8_stdout() -> None:
-    """把输出流切到 UTF-8。
-
-    **不改这里，全绿也会返回 1。** 最后那行「验收全绿 ✓」的 U+2713 不在 GBK 里：
-    stdout 直连控制台时 Python 走 Windows 控制台 API（PEP 528，本身 UTF-8）不受
-    影响，但**一旦被重定向或接管道**（CI、`> out.txt`、`| tee`）就退回本地编码
-    cp936，`print` 直接 `UnicodeEncodeError: 'gbk' codec can't encode character
-    '\\u2713'` —— 四项全绿却 exit 1。验收脚本报假红比报假绿好不到哪去，
-    而且恰恰在最需要留证据（存日志）的时候犯。
-    """
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
-
-
 def main(games=None) -> int:
     """跑完四项。返回进程退出码（0 = 全绿）。
 
     `games` 只为测试留的口子：不传就 load_games()。终审修复的回归测试要构造
     「语料太少 / 一项都查不到」的假语料来证明这个门会红 —— 不注入的话没法构造。
     """
-    _utf8_stdout()
+    utf8_stdout()
     games = load_corpus() if games is None else games
     settled = sum(1 for g in games if g.settle)
     print(f"载入对局 {len(games)} 局，其中有结算的 {settled} 局\n")

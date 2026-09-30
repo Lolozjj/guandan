@@ -31,10 +31,11 @@ from collections import Counter
 from dataclasses import dataclass
 
 from guandan.sim import meld, rules
-# `_utf8_stdout` 直接复用 accept_meld 那份，**不复制**：它就是为「GBK 控制台下
+# `utf8_stdout` 直接复用 accept_meld 那份，**不复制**：它就是为「GBK 控制台下
 # 打不出 ✓ 会让全绿的脚本返回 1」写的（Plan 1 踩过）。复制一份就是第二份真源，
 # 本仓库为「副本会漂」吃过亏。
-from tools.accept_meld import Result, _utf8_stdout
+from guandan.console import utf8_stdout
+from tools.accept_meld import Result
 from tools.decision_points import initial_hands
 from tools.game_log import load_corpus
 
@@ -184,7 +185,7 @@ def check_replay(games) -> Result:
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()          # 不调这个，GBK 控制台下「全绿 ✓」那行会抛 UnicodeEncodeError
+    utf8_stdout()          # 不调这个，GBK 控制台下「全绿 ✓」那行会抛 UnicodeEncodeError
     games = load_corpus()
     print(f"载入对局 {len(games)} 局，其中有结算的 "
           f"{sum(1 for g in games if g.settle)} 局\n")

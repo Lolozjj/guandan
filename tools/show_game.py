@@ -40,7 +40,7 @@ from guandan.rl.net import QNet, q_values
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import rule_choose
 from guandan.rl.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型的唯一产地，不另写一份
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 
 TEAM_NAME = {0: "甲", 1: "乙"}
 
@@ -264,7 +264,7 @@ def show(path: str = None, seed: int = 7, level: int = None, top: int = 3,
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()
+    utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("weights", nargs="?", default=None)
     ap.add_argument("--seed", type=int, default=7)

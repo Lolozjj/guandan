@@ -44,7 +44,7 @@ from guandan.rl.net import QNet, q_values
 from guandan.rl.policies import greedy_policy, random_policy
 from guandan.rl.rule_policy import rule_choose, rule_policy
 from guandan.rl.selfplay import net_play
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 
 #: 反事实那一层：**正 = 听规则式的更好**。0.05 点 ≈ 一局典型价值的 2.4%
 #: （实测每座位终局 |reward| 均值 2.05 点）。
@@ -136,7 +136,7 @@ def ladder(pol, games: int, seed: int) -> list:
 
 
 def main(argv=None):
-    _utf8_stdout()
+    utf8_stdout()
     ap = argparse.ArgumentParser(description="「换更强的对手 / 拿规则式当老师」还剩多少可换")
     ap.add_argument("--weights", default=None, help="默认挑面板会加载的那份")
     ap.add_argument("--games", type=int, default=300)

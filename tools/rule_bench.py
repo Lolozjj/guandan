@@ -36,7 +36,7 @@ from guandan.rl.eval import bomb_rate, bomb_waste, match
 from guandan.rl.net import DEVICE, QNet, q_values
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import ally_of, rule_choose, rule_policy, table_owner
-from tools.accept_meld import _utf8_stdout
+from guandan.console import utf8_stdout
 
 
 def net_pol(path: str):
@@ -77,7 +77,7 @@ def behavior(opp, games: int, seed: int, rule_team: int = 0) -> dict:
 
 
 def main(argv=None) -> int:
-    _utf8_stdout()
+    utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--opp", default=None, help="对手权重（默认挑最新 best.pt）")
     ap.add_argument("--games", type=int, default=400)
