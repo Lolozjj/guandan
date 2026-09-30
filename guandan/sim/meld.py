@@ -17,6 +17,19 @@
     4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 < 9炸 < 10炸 < 天王炸
 其中 4炸~8炸 有实证；**9炸/10炸（8 张同点数 + 逢人配）是自然延伸**，
 只有一手真实「存在」证据、没有「对压」证据（见 `_BOMB_CLASS_BY_SIZE` 旁注）。
+
+怎么读这份文件（按依赖顺序，不是按行号）：
+
+    1. 常量 + `Meld`            —— 牌型编号、比较值、一手牌的数据结构
+    2. `point_value` / `nat_values` / `bomb_class` / `beats`
+                                —— 「谁比谁大」「谁能压谁」的全部规则
+    3. `_melds_basic` / `_melds_straights` / `_melds_pair_run` / `_melds_plate`
+       -> `_melds_natural`      —— 天然牌型枚举（逢人配只当它自己）
+    4. `_melds_wild`            —— 逢人配补牌（本文件最绕的一段，先看懂 3 再读它）
+    5. `melds_from` / `legal_moves`
+                                —— 对外入口，含**缓存的两条契约**
+    6. `as_meld` / `strongest`  —— 反向：把一串具体牌判成牌型，多读法取最强
+    7. `cid_from_name` 等       —— 名字适配层（全项目**只有这里**出现牌名字符串）
 """
 from __future__ import annotations
 
@@ -35,6 +48,7 @@ JOKER_SMALL, JOKER_BIG = 14, 15
 
 # 非序列牌型的点数比较值：级牌 > A > K > ... > 2
 _POINT = {**{i: i - 1 for i in range(2, 11)}, 11: 10, 12: 11, 13: 12, 1: 13}
+#: 比 A 还大的三档（见 `point_value`）：级牌（「打几」那张）< 小王 < 大王
 POINT_LEVEL, POINT_SMALL, POINT_BIG = 14, 15, 16
 
 _MIN_BOMB = 4
@@ -69,6 +83,17 @@ def norm_level(level: Optional[int]) -> Optional[int]:
 
 
 def point_value(idx: int, level: Optional[int]) -> int:
+    """点数索引 -> **可比较的大小值**（越大越强）。**非序列牌型**用它。
+
+    级牌是「打几」那张，它比 A 还大，所以三档是：
+        级牌 = 14 < 小王 = 15 < 大王 = 16，其余按 `_POINT`（A=13 > K=12 > … > 2=1）。
+
+    序列类（顺子 / 连对 / 钢板）**不用**这个值 —— 它们比的是窗口顶端的自然值
+    （见 `Meld.rank` 的双重口径）。
+
+    ⚠️ `level` 先过 `norm_level`：日志里 A 有时写成 14，不折回 1 的话 14 会被
+    当成小王，级牌判定与顺子权重全错。
+    """
     level = norm_level(level)
     if idx == JOKER_BIG:
         return POINT_BIG
@@ -80,7 +105,11 @@ def point_value(idx: int, level: Optional[int]) -> int:
 
 
 def is_wild(cid: int, level: Optional[int]) -> bool:
-    """级牌红桃 = 逢人配（万能牌）。"""
+    """这张牌是不是**逢人配**（万能牌）= 级牌红桃。
+
+    打 5 时：♥5 是逢人配，♠5 / ♣5 / ♦5 只是普通的级牌。
+    `level=None`（没有级牌）时恒为 False。补牌怎么用它见 `_melds_wild`。
+    """
     level = norm_level(level)
     if level is None:
         return False
@@ -106,14 +135,20 @@ def nat_values(idx: int) -> tuple:
 
 @dataclass(frozen=True)
 class Meld:
-    kind: int
-    size: int
-    rank: int                       # 比较主键（同 kind 内可比）
-    cards: tuple
-    wild_used: int = 0
+    """一手牌型。**不可变**（`frozen=True`）—— 它会被缓存、被多处共享，谁都不许就地改。
+
+    `rank` 只在**同 kind + 同 size** 之间可比；跨牌型比大小一律走 `beats`。
+    """
+
+    kind: int                       # 牌型编号 1..10，与游戏协议的 card_type 同口径
+    size: int                       # 张数（炸弹 4~10；顺子 5；连对/钢板 6）
+    rank: int                       # 比较主键：序列类=窗口顶端自然值，其余=point_value
+    cards: tuple                    # 具体牌 ID（**含补上的逢人配**；验收按牌组精确比对）
+    wild_used: int = 0              # 这一手里用掉几张逢人配
 
     @property
     def is_bomb(self) -> bool:
+        """是不是炸弹类（含同花顺与天王炸）—— 等价于 `bomb_class(m) is not None`。"""
         return bomb_class(self) is not None
 
 
@@ -134,7 +169,10 @@ def _all_jokers(ids) -> bool:
 
 
 def bomb_class(m: Meld) -> Optional[int]:
-    """炸弹层级；不是炸弹返回 None。天王炸最高。
+    """炸弹层级；不是炸弹返回 None。
+
+    层级（大的压小的，见 `_BOMB_CLASS_BY_SIZE` / `CLASS_FLUSH` / `CLASS_JOKER_BOMB`）：
+        4炸(1) < 5炸(2) < 同花顺(3) < 6炸(4) < 7炸(5) < 8炸(6) < 9炸(7) < 10炸(8) < 天王炸(9)
 
     ⚠️ **先判 kind 再判 `_all_jokers`**，顺序是刻意反过来的：
     `bomb_class` 在自对弈里被调用 **240 万次/300 局**（`beats` 每个候选都要问一次），
@@ -159,7 +197,14 @@ def bomb_class(m: Meld) -> Optional[int]:
 
 
 def beats(a: Meld, b: Meld) -> bool:
-    """a 能不能压过 b。"""
+    """`a` 能不能压过 `b`（`b` 一般是桌面上那一手）。规则就三段：
+
+    1. **两边都是炸弹** -> 先比层级（4炸 < 5炸 < 同花顺 < 6炸 < … < 天王炸），
+       层级相同再比 `rank`（于是「级牌炸」压「A 炸」是自动成立的）。
+    2. **只有一边是炸弹** -> 炸弹赢（炸弹压一切普通牌型）。
+    3. **都不是炸弹** -> `kind` 与 `size` **都必须相同**（顺子压不了连对，
+       也更压不了同样 5 张的三带二），再比 `rank`。
+    """
     ca, cb = bomb_class(a), bomb_class(b)
     if ca is not None and cb is not None:
         return ca > cb if ca != cb else a.rank > b.rank
@@ -173,6 +218,11 @@ def beats(a: Meld, b: Meld) -> bool:
 
 
 def _by_idx(hand: Sequence[int]) -> dict:
+    """按点数分组：`{点数索引: [牌 ID, ...]}`（同点数的两副牌都进同一个桶）。
+
+    ⚠️ **保留插入序**（不排序）—— 后面各枚举器都拿 `ids[0]` / `ids[:n]` 当「代表牌」，
+    所以枚举结果**依赖手牌顺序**；缓存也把顺序算进键里（见 `melds_from` 的契约 1）。
+    """
     g = {}
     for c in hand:
         g.setdefault(cards.parts(c)[0], []).append(c)
@@ -180,6 +230,14 @@ def _by_idx(hand: Sequence[int]) -> dict:
 
 
 def _melds_basic(hand: Sequence[int], level: Optional[int]) -> list:
+    """**单张 / 对子 / 三张 / 炸弹**（不含序列类，也不含天王炸）。
+
+    按点数分组逐个处理：每个点数出 1 张单张；≥2 张出对子；≥3 张出三张；
+    4 张起按 `_MIN_BOMB .. min(张数, _MAX_BOMB)` 出各档炸弹（取前 n 张当代表）。
+
+    ⚠️ **王单独处理**：王只有单张与对子（两个小王算一对），**不能凑三张、
+    也不能当普通炸弹** —— 所以天王炸由 `_melds_joker_bomb` 单独补一条。
+    """
     out = []
     for idx, ids in _by_idx(hand).items():
         pv = point_value(idx, level)
@@ -199,6 +257,13 @@ def _melds_basic(hand: Sequence[int], level: Optional[int]) -> list:
 
 
 def _melds_triple_pair(level, triples, pairs) -> list:
+    """**三带二**：每个「三张」配每个「对子」（同点数不配自己），共 5 张。
+
+    `rank` 取**三张那一半**的点数 —— 三带二比的是三张，不是对子。
+
+    `triples` / `pairs` 由 `_melds_natural` 备好：三张**排除王**（凑不出三张），
+    对子**不排除王**（真实数据里有「三个 2 带两张小王」）。
+    """
     out = []
     for t_idx, t_cards in triples:
         for p_idx, p_cards in pairs:
@@ -302,7 +367,11 @@ def _melds_straights(g: dict, level) -> list:
 
 
 def _melds_pair_run(g: dict, level) -> list:
-    """连对（恰好 3 个连续对子）。4 张只有炸弹，所以没有二连对。"""
+    """**连对**（恰好 3 个连续对子 = 6 张）。比较主键 = 顶端自然值。
+
+    窗口里每格必须真有 ≥2 张，每格取前 2 张当代表。
+    规模写死 3：4 张的「二连对」不存在（4 张只有炸弹）。
+    """
     nat = _seq_lookup(g)
     mask = _seq_mask(nat)
     out = []
@@ -318,7 +387,11 @@ def _melds_pair_run(g: dict, level) -> list:
 
 
 def _melds_plate(g: dict, level) -> list:
-    """钢板（恰好 2 个连续三张）。"""
+    """**钢板**（恰好 2 个连续三张 = 6 张）。比较主键 = 顶端自然值。
+
+    窗口里每格必须真有 ≥3 张，每格取前 3 张当代表。
+    王进不来（`nat_values` 对王返回空元组）。
+    """
     nat = _seq_lookup(g)
     mask = _seq_mask(nat)
     out = []
@@ -343,7 +416,10 @@ def _melds_plate(g: dict, level) -> list:
 
 
 def _split_wild(hand: Sequence[int], level: Optional[int]) -> tuple:
-    """把逢人配拆出来。返回 (其余牌, 逢人配列表)。"""
+    """把逢人配拆出来：返回 `(其余牌, 逢人配列表)`，两边都保持原顺序。
+
+    不假设张数：手里 0 / 1 / 2 张逢人配都能正常工作（`_melds_from_uncached` 靠它分流）。
+    """
     wilds = [c for c in hand if is_wild(c, level)]
     rest = [c for c in hand if not is_wild(c, level)]
     return rest, wilds
@@ -364,7 +440,10 @@ def _missing(nat: dict, nats, per: int) -> int:
 
 
 def _take(nat: dict, nats, per: int) -> tuple:
-    """窗口里每格取 per 张牌（不够就少取，缺口由调用方补逢人配）。"""
+    """窗口里每格取 `per` 张牌；某格不够就**少取**，缺口由调用方用逢人配补。
+
+    返回的是**天然牌**那一半（具体牌 ID），补牌由 `_with_wild` 接上。
+    """
     out = []
     for n in nats:
         out.extend(nat.get(n, [])[:per])
@@ -372,7 +451,12 @@ def _take(nat: dict, nats, per: int) -> tuple:
 
 
 def _with_wild(cards, wilds, d: int) -> tuple:
-    """天然那几张 + 补上的 d 张逢人配（`cards` 是具体牌 ID）。"""
+    """天然那几张 + 补上的 `d` 张逢人配 = 最终的牌组（`cards` 是具体牌 ID）。
+
+    ⚠️ **逢人配必须真的进 `cards`**：验收① 是按牌组精确比对的
+    （`sorted(m.cards) == sorted(实际出的牌)`），少了它，每一手带逢人配的
+    真实出牌都会被报成「判不出牌型」。
+    """
     return tuple(cards) + tuple(wilds[:d])
 
 
@@ -556,6 +640,8 @@ def _melds_from_uncached(hand: Sequence[int], level: Optional[int] = None) -> li
     # 分别读成 rank 1 / 13。留最强读法把这条不定性收掉。
     seen, uniq = {}, []
     for m in out:
+        # 键 = (牌型, 牌组)：同一组牌读成**两种牌型**要各留一条（顺子 / 同花顺），
+        # 而同一种牌型的同一组牌只留一条。
         key = (m.kind, tuple(sorted(m.cards)))
         i = seen.get(key)
         if i is None:
@@ -579,6 +665,10 @@ _CACHE_MAXSIZE = 256
 
 @functools.lru_cache(maxsize=_CACHE_MAXSIZE)
 def _melds_from_cached(hand_key: tuple, level: Optional[int]) -> list:
+    """缓存壳：键是 `(手牌元组, 级别)`。真正干活的是 `_melds_from_uncached`。
+
+    缓存为什么必要、为什么只给 256 格，见 `_CACHE_MAXSIZE` 的注释。
+    """
     return _melds_from_uncached(list(hand_key), level)
 
 
@@ -602,7 +692,13 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
 
 def legal_moves(hand: Sequence[int], table: Optional[Meld],
                 level: Optional[int] = None) -> list:
-    """现在能出的所有牌。table 为 None 表示我领出（此时不产生「过」）。"""
+    """现在能出的所有牌（候选列表）。
+
+    - `table=None`（我领出）-> 返回全部牌型。**领出不能过**，所以这里不加 `None`。
+    - 否则只留下压得过桌面的那几条（`beats` 过滤）。
+      跟牌时「能压也可以过」的那条 `None` 由**调用方**补
+      （`advice/advise.py::candidates`，口径与 `rules.Hand.actions` 一致）。
+    """
     moves = melds_from(hand, level)
     if table is None:
         return moves
@@ -610,7 +706,12 @@ def legal_moves(hand: Sequence[int], table: Optional[Meld],
 
 
 def _stronger(a: Meld, b: Meld) -> bool:
-    """同一组牌的两个解释里，a 是不是更强的那条（`strongest` 的比较口径）。"""
+    """同一组牌的两个解释之间，`a` 是不是更**强**的那条（`strongest` 的比较口径）。
+
+    只看**炸弹层级 -> kind 编号**，**不比 rank** —— 这里比的是「同一组牌该读成哪种牌型」，
+    而 rank 是给「同 kind 同 size 的两手不同牌」比大小的（顺子的 rank 是窗口顶端，
+    同花顺也是，所以两者必须靠 kind 分高下）。
+    """
     ca, cb = bomb_class(a), bomb_class(b)
     if (ca is None) != (cb is None):
         return ca is not None                 # 炸弹类优先
@@ -742,8 +843,13 @@ _KIND_NAMES = {
 
 
 def describe_meld(m: Meld) -> str:
-    """牌型 -> 中文名。口径与老 live/rules.py 逐字对齐：炸弹带张数、天王炸单列、
-    3 个连续对子叫「三连对」（面板原样显示，见 `_KIND_NAMES` 的说明）。"""
+    """牌型 -> **中文名**（面板与战报直接显示这一串）。
+
+    三类特殊写法，口径与老实现逐字对齐（面板是交付物，**别改字**）：
+      - 天王炸单列成「四大天王」（不叫「4 张炸」）
+      - 其它炸弹带张数：「6 张炸」
+      - 3 个连续对子叫「三连对」（不是「连对」，见 `_KIND_NAMES` 的说明）
+    """
     if _all_jokers(m.cards):
         return "四大天王"
     if m.kind in (BOMB, BOMB6):
