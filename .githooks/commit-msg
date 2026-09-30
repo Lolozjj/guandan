@@ -1,0 +1,41 @@
+#!/bin/sh
+# 提交信息守门人 —— 拒绝「无信息量」的标题。
+#
+# 为什么有它：本仓库历史上出现过三个标题就是 "1" 的提交
+# （9095e3b / 7646463 / eb0b785），其中一个把 5.6MB 的 yolo11n.pt 带进了版本库。
+# 事后从 `git log` 里完全看不出那三个提交干了什么。
+#
+# 只拦三类明显无信息量的标题：太短（<4 个字符）、纯数字、单字符重复。
+# 放行：Merge / Revert / fixup! / squash! / amend!（这些由 git 自己生成）。
+# 绕过：`git commit --no-verify`。
+#
+# 启用（每个克隆都要做一次，本地配置不入库）：
+#     git config core.hooksPath .githooks
+# 关掉：
+#     git config --unset core.hooksPath
+
+msg_file="$1"
+subject=$(sed -n '1p' "$msg_file" | sed 's/[[:space:]]*$//')
+
+case "$subject" in
+    Merge*|Revert*|fixup!*|squash!*|amend!*) exit 0 ;;
+esac
+
+# 去掉空白再判：'1 ' 与 '1' 一样无信息量
+body=$(printf '%s' "$subject" | tr -d '[:space:]')
+len=${#body}
+
+reject() {
+    printf '\n✗ 提交信息没有信息量：%s\n' "$1" >&2
+    printf '  你写的是：「%s」\n' "$subject" >&2
+    printf '  请写清「做了什么、为什么」，例如：\n' >&2
+    printf '      fix(影子模式): 级别读不到时回退到网络报文\n' >&2
+    printf '  确实要这样提交：git commit --no-verify\n\n' >&2
+    exit 1
+}
+
+[ "$len" -lt 4 ] && reject "少于 4 个字符"
+printf '%s' "$body" | grep -Eq '^[0-9]+$' && reject "纯数字"
+[ "$(printf '%s' "$body" | fold -w1 | sort -u | wc -l)" -eq 1 ] && reject "只有一个字符重复"
+
+exit 0

@@ -1,12 +1,15 @@
 # ---- 环境 ----
-#.venv/
+.venv/
 __pycache__/
 *.pyc
 
 # ---- 大体量数据（可重新生成，合计约 2.3 GB）----
 dataset/
 dataset_v2/
-#runs/
+# 实验产物一律不入库（检查点是 *.pt，见下）。
+# ⚠️ 已经跟踪的那几个小文本（runs/detect/*/results.csv、runs/games/*.txt）
+#    **不受本行影响**，仍会继续跟踪 —— gitignore 管不到已跟踪文件。
+runs/
 snapshots/
 audit/
 assets/
@@ -15,6 +18,8 @@ results/
 live/frames/
 
 # ---- 权重与图像、日志 ----
+# 训练/预训练权重一律不入库（含根目录的 yolo11n.pt，5.6 MB）。
+# 要复现权重请照 README / 交付文档重新训练或下载，别把二进制提交进来。
 *.pt
 *.onnx
 *.png
