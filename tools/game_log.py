@@ -36,20 +36,24 @@ _SETTLE = re.compile(r"EVA1B001结算协议 = (\{.*)")
 
 @dataclass
 class PlayRec:
-    seat: int
-    cards: list[int]
-    card_type: int
+    """日志里的一手牌（`GameLog.plays` 的元素，来自 `NotifyGiveCards` 那行）。"""
+
+    seat: int        # 这一手是谁出的（绝对座位）
+    cards: list[int] # 出的牌（牌 ID）
+    card_type: int   # 服务器标的牌型编号（对账用；判牌型走 guandan/sim/meld.py）
     left: int        # 这一手之后该家还剩几张
     nxt: int         # 服务器给的下一手座位；-1 表示本局结束
 
 
 @dataclass
 class GameLog:
-    t0: datetime
+    """一局日志解析出来的全部内容（**验收的真值来源**，见 `load_corpus`）。"""
+
+    t0: datetime               # 这一局的第一条日志时间（换局配对靠它）
     trump: int                 # 级别（A=1, 2..10, J=11, Q=12, K=13）
     my_cards: list[int]        # 发牌给我自己的 27 张
-    plays: list[PlayRec] = field(default_factory=list)
-    settle: Optional[dict] = None
+    plays: list[PlayRec] = field(default_factory=list)   # 按时间序的全部出牌
+    settle: Optional[dict] = None   # 结算行原文（名次 / 升级都在里面）；None = 这局没结算
     unparsed: int = 0          # 前缀命中却解不出 JSON 的出牌/结算行条数（丢数据要看得见）
 
 
@@ -290,11 +294,13 @@ _TRIB_RETURN = re.compile(
 
 @dataclass
 class TributeRec:
-    t: Optional[datetime]
+    """一条进贡/还贡记录（验收③ 的证据）。"""
+
+    t: Optional[datetime]  # 这条日志的时间（拿它跟出牌时间配对）
     kind: str              # "give" = 进贡 / "return" = 还贡
     giver: int             # 交出牌的人
     taker: Optional[int]   # 收到牌的人（"give" 那行日志里没有，为 None）
-    card: int
+    card: int              # 交出的那张牌（牌 ID）
 
 
 def load_tributes(log_dir: str = LOG_DIR) -> list[TributeRec]:

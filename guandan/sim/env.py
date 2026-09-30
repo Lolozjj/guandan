@@ -79,7 +79,7 @@ class Observation:
     table_rank: int                 # 桌面主点数（`meld.point_value` 口径；-1 = 无）
     passed: Tuple[bool, ...]        # 本轮谁「要不起」（公开信息）
     turn: int                       # 轮到谁（绝对座位）
-    level: int
+    level: int                      # 本局级别（打几）—— 编码进状态的那 15 维 one-hot
 
 
 def _rel(seq, seat: int):
@@ -213,9 +213,9 @@ class EnvConfig:
     另外进贡那条基线本身还不稳（spec §13.8：贡最大的牌只对了 18/25），
     所以默认关着也顺带把那份不确定性挡在训练之外。
     """
-    tribute: bool = False
-    level: Optional[int] = None       # None -> 每局从 1..13 采一个
-    seed: int = 0
+    tribute: bool = False             # 开不开进贡（默认关，理由见上面的类说明）
+    level: Optional[int] = None       # 打几；None = 每局从 1..13 随机采一个
+    seed: int = 0                     # 牌堆/级别的随机种子（想复现同一局就固定它；0 就是种子 0，不是「随机」）
 
 
 class GuandanEnv:

@@ -30,12 +30,14 @@ from tools.game_log import GameLog
 
 @dataclass
 class Snapshot:
-    seat: int
+    """一个**决策点**的现场（从日志重建，用来跟影子记录逐位对账）。"""
+
+    seat: int                  # 这一步是谁要走（绝对座位）
     hand: list                 # 该座位此刻手上的牌（含他即将打出的）
     table: Optional[list]      # 桌面待压的牌；None = 他领出
     actual: list               # 他实际打出的牌（真值）
-    level: int
-    t: datetime
+    level: int                 # 这一局的级别（打几）
+    t: datetime                # 这一步的时间（与影子记录按时间配对，不靠顺序）
 
 
 def initial_hands(g: GameLog) -> dict[int, set[int]]:

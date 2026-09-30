@@ -36,11 +36,13 @@ _MIN_VOTE_CARDS = 4
 
 @dataclass
 class Play:
-    seat: int
-    cards: List[int]
-    card_type: int = 0
-    next_seat: int = 0
-    left: int = 0
+    """一条出牌记录（`GameState.plays` / `history` / `table` 的元素）。"""
+
+    seat: int              # 谁出的（绝对座位号）
+    cards: List[int]       # 出的牌（牌 ID）
+    card_type: int = 0     # 服务器自己标的牌型编号 —— **只用于对账/报错信息**，判牌型走 `sim/meld.py`
+    next_seat: int = 0     # 服务器给的下一手该谁；**-1 = 本局结束，不是座位号**（当座位会渲染成天文数字）
+    left: int = 0          # 这一手之后该家还剩几张（服务器的 LeftCardLen）
 
     def names(self, level: int = None) -> List[str]:
         """按掼蛋大小排好的牌面（大的在前）。
@@ -59,6 +61,7 @@ class GameState:
     hand: List[int] = field(default_factory=list)     # 我的手牌
     turn: Optional[int] = None           # 现在轮到谁
     plays: List[Play] = field(default_factory=list)   # 全部出牌（按时序）
+    #: 按座位分的出牌记录（键 0..3）：面板上「每家出过什么牌」显示的就是它（记牌）。
     history: Dict[int, List[Play]] = field(
         default_factory=lambda: {0: [], 1: [], 2: [], 3: []})
     remaining: Dict[int, int] = field(default_factory=dict)   # 各家剩几张
@@ -81,8 +84,8 @@ class GameState:
     me_confirmed: bool = False
     #: 本局出完的座位，按出完先后。影子日志的「那局赢没赢」用它推。
     finish_order: List[int] = field(default_factory=list)
-    _votes: Dict[int, int] = field(default_factory=dict)
-    _me_note: str = ""
+    _votes: Dict[int, int] = field(default_factory=dict)  # 「我」座位判定的投票计数（只统计、**不自动改判**，事后排查用）
+    _me_note: str = ""                                    # 座位是怎么认出来的（给人看的溯源，写进日志）
 
     # ------------------------------------------------------------- 事件入口
 

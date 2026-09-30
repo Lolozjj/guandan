@@ -47,22 +47,30 @@ class IllegalPlay(Exception):
 
 @dataclass
 class Step:
-    seat: int
+    """动作流水里的一步（`Hand.steps` 的元素；影子模式的历史就取这一串）。"""
+
+    seat: int                      # 这一步是谁走的（绝对座位号）
     meld: Optional[meld.Meld]      # None = 要不起（过）
     left: int                      # 这一步之后该家还剩几张
 
 
 @dataclass
 class Hand:
-    hands: List[Set[int]]
-    level: Optional[int] = None
-    turn: int = 0
-    table: Optional[meld.Meld] = None
-    table_seat: Optional[int] = None
-    passed: Set[int] = field(default_factory=set)
-    order: List[int] = field(default_factory=list)
-    steps: List[Step] = field(default_factory=list)
-    over: bool = False
+    """一手牌的全部状态。轮转 / 接风 / 清桌 / 终局都落在这一层（见 `_advance`、`is_over`）。
+
+    ⚠️ **`hands` 是四家的明牌** —— 只给规则层与训练环境，**绝不能交给策略**。
+    策略能看见的只有 `env.Observation`。
+    """
+
+    hands: List[Set[int]]              # 四家手牌，按绝对座位 0..3（**明牌，不许外泄**）
+    level: Optional[int] = None        # 打几；None = 没有级牌（**必须先过 `meld.norm_level`**）
+    turn: int = 0                      # 现在轮到谁（绝对座位号）
+    table: Optional[meld.Meld] = None  # 桌面上待压的那手牌型；None = 没人领出 / 已清桌
+    table_seat: Optional[int] = None   # 桌面上那手是谁打的（清桌与接风都看它）
+    passed: Set[int] = field(default_factory=set)    # 本轮已「要不起」的座位；有人出牌即清空
+    order: List[int] = field(default_factory=list)   # 出完的座位，按先后 —— 名次与终局都判它
+    steps: List[Step] = field(default_factory=list)  # 动作流水（按时序）
+    over: bool = False                 # 这一手结束了没有（`_advance` 里置位）
 
     # ------------------------------------------------------------ 查询
 

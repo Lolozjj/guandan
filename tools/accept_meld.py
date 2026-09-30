@@ -48,9 +48,11 @@ _MIN_SETTLED = 20
 
 @dataclass
 class Result:
-    name: str
-    total: int = 0
-    bad: list = field(default_factory=list)
+    """一项检查的结果（①~④ 每项一个）。**失败要能说清是哪几条、为什么。**"""
+
+    name: str                  # 这一项叫什么（打印用）
+    total: int = 0             # 查了多少条 —— **必须 > 0**，否则算失败（见 `ok`）
+    bad: list = field(default_factory=list)   # 不过的明细（空 = 全过）
     floor: str = ""            # 非空 = 语料地板没到（见 _corpus_floor）
     note: str = ""             # 附加说明行（如 ② 的条数拆分），成功失败都打
 

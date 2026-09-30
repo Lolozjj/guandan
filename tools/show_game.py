@@ -78,14 +78,14 @@ class Frame:
     step: int                       # 第几手（1 起）
     seat: int                       # 谁出手
     chosen: object                  # 选中的 Meld；None = 过
-    level: int
+    level: int                      # 这一局的级别（打几）
     turn: object                    # 出手**之前**轮到谁（= seat；终局帧是 None）
     table: object                   # 出手**之前**台面上待压的 `Play`；None = 领出
     hands: dict                     # 出手之前四家手牌 {seat: set}
     played: dict                    # 出手之前每家已出过的 `Play` 列表
     passes: set                     # 出手之前谁已经要不起
     candidates: list = field(default_factory=list)   # [(q, meld|None)] 按 q 降序
-    wasted: bool = False
+    wasted: bool = False            # 这一手是不是「白炸」：本来能用普通牌压却出了炸
     over: bool = False              # 这一步之后是不是终局
     opp: object = None              # 这手是**固定对手**出的：`kind` 字符串；None = 模型自己的
 

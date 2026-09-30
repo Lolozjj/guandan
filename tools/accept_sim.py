@@ -57,9 +57,11 @@ def shape(m) -> tuple:
 
 @dataclass
 class ReplayResult:
-    steps: int
-    passes_inferred: int
-    hand: rules.Hand
+    """回放一局之后的统计（验收② 的读数）。"""
+
+    steps: int               # 走了几步（出牌 + 过）
+    passes_inferred: int     # 其中「过」有几步是**推断**出来的（日志不记「过」，只能从轮转推）
+    hand: rules.Hand         # 走完之后的牌局状态（用来核对名次 / 记账 / 终局）
 
 
 def replay(g, record=None) -> ReplayResult:

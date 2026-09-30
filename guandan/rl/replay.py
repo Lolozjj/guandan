@@ -43,8 +43,8 @@ class GameRecord:
     混入固定对手时，对手那一队不该进训练目标（记进去等于拿它当老师），
     而重放侧**没有别的办法**知道这件事 —— 所以它必须跟记录一起走。
     """
-    level: int
-    first: int
+    level: int                      # 本局的级别（打几）
+    first: int                      # 本局谁先领出（绝对座位号）
     hands: tuple                    # 4 个 tuple（排序后的牌 ID）
     actions: tuple                  # 每一步选中的候选下标
     learn: tuple = None             # 学习座位；None = 四家都学

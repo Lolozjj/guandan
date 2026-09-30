@@ -49,8 +49,8 @@ POOL_SIZE = 20
 class PoolMember:
     """池子里的一个成员：一个 id + 一份权重文件。"""
 
-    mid: int
-    path: str
+    mid: int        # 成员 id（池内唯一；`WinRates` 按它记账）
+    path: str       # 权重文件路径（`<run>/pool/snap_<局数>.pt`）
 
 
 class WinRates:

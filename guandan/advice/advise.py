@@ -39,24 +39,30 @@ DEAL_EACH = 27
 
 @dataclass
 class Skip:
-    reason: str
+    """这次算不出建议（**不是错误**）。原因必须如实记进影子日志 —— 静默跳过等于数据有偏。"""
+
+    reason: str                    # 取上面的 SKIP_* 常量之一
 
 
 @dataclass
 class Built:
-    obs: Optional[env.Observation] = None
-    hist: Optional[np.ndarray] = None
-    table_meld: Optional[meld.Meld] = None
-    reason: str = ""
+    """`build()` 的结果：要么给出「可观测状态 + 历史」，要么给出「为什么算不了」。"""
+
+    obs: Optional[env.Observation] = None      # 可观测状态（只有公开信息 + 我的手牌）
+    hist: Optional[np.ndarray] = None          # (15,147) 历史；与训练侧逐位一致
+    table_meld: Optional[meld.Meld] = None     # 桌面那串牌 ID 解释出来的牌型；None = 我领出
+    reason: str = ""                           # 非空 = 算不了（取 SKIP_* 常量）
 
 
 @dataclass
 class Advice:
-    obs: env.Observation
-    hist: np.ndarray
+    """一次建议的全部产物（面板与影子日志都从这里取）。"""
+
+    obs: env.Observation         # 可观测状态（喂给网络的那一半输入）
+    hist: np.ndarray             # (15,147) 历史（喂给网络的另一半）
     cands: list                 # 候选，含 None（过）
-    q: List[float]              # 与 cands 等长
-    order: List[int]            # 按 Q 降序的下标
+    q: List[float]              # 与 cands 等长：每个候选的 Q 值
+    order: List[int]            # 按 Q 降序的下标 —— `order[0]` 就是首选
 
 
 class _HandLike:
