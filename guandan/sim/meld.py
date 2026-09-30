@@ -39,11 +39,19 @@ from typing import Optional, Sequence
 
 from guandan.capture import cards
 
-SINGLE, PAIR, TRIPLE = 1, 2, 3
-STRAIGHT, TRIPLE_PAIR = 4, 5
-PAIR_RUN, PLATE = 6, 7
-BOMB, STRAIGHT_FLUSH, BOMB6 = 8, 9, 10
-
+# --- 牌型编号（`Meld.kind`）----------------------------------------------
+# 这些数字**就是游戏协议 card_type 字段的取值**（465 手真牌统计得来，spec §2.2），
+# 不是我们自己编的序号 —— 所以**别重排、别插队**。中文名见 `_KIND_NAMES` / `describe_meld`。
+SINGLE, PAIR, TRIPLE = 1, 2, 3          # 单张 / 对子 / 三张
+STRAIGHT, TRIPLE_PAIR = 4, 5            # 顺子（5 张连续）/ 三带二（3 张 + 一对）
+PAIR_RUN, PLATE = 6, 7                  # 三连对（3 个连对）/ 钢板（2 个连三）
+# 协议里 card_type 8 表 4~5 张炸、10 表 6 张炸；而**引擎一律用 `BOMB` + `size` 承载 4~10 张**，
+# 所以 `BOMB6` **没有任何地方产出它**。只有三处会**读**它，并且都归一成 `BOMB`：
+# `bomb_class` / `describe_meld` / `tools/accept_meld.py::shape()` —— 为的是读得懂
+# 老记录与协议直接标出来的 card_type。留着是这个用途，不是死代码忘了删。
+BOMB, STRAIGHT_FLUSH, BOMB6 = 8, 9, 10  # 炸弹 / 同花顺 / 协议口径的「6 张炸」（见上）
+#: 王的**点数索引**（不是牌型 —— 别和上面的 kind 混）。口径同 `capture/cards.py::parts`，
+#: 只有 `point_value` / `nat_values` 这类「按点数看牌」的地方用它。
 JOKER_SMALL, JOKER_BIG = 14, 15
 
 # 非序列牌型的点数比较值：级牌 > A > K > ... > 2
@@ -51,7 +59,7 @@ _POINT = {**{i: i - 1 for i in range(2, 11)}, 11: 10, 12: 11, 13: 12, 1: 13}
 #: 比 A 还大的三档（见 `point_value`）：级牌（「打几」那张）< 小王 < 大王
 POINT_LEVEL, POINT_SMALL, POINT_BIG = 14, 15, 16
 
-_MIN_BOMB = 4
+_MIN_BOMB = 4          # 炸弹最小 4 张
 _MAX_BOMB = 10         # 两副牌一个点数最多 8 张，**再加最多 2 张逢人配 = 10**
 
 # 4炸 < 5炸 < 同花顺 < 6炸 < 7炸 < 8炸 有用户口述 + 24 对真实证据；
@@ -59,14 +67,16 @@ _MAX_BOMB = 10         # 两副牌一个点数最多 8 张，**再加最多 2 �
 # （J♠J♠(二副)J♥J♥(二副)J♣J♣(二副)J♦J♦(二副) + ♥3，打 3，card_type=10），
 # 但只有「存在」证据、没有「对压」证据，位置需用户确认。
 _BOMB_CLASS_BY_SIZE = {4: 1, 5: 2, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8}
-CLASS_FLUSH = 3
+CLASS_FLUSH = 3        # 同花顺在炸弹阶梯里的层级：插在 5 炸(2) 与 6 炸(4) 之间
 CLASS_JOKER_BOMB = 9   # 天王炸仍居顶（比 10 张炸还高一层）
 
 # --- 序列类牌型（顺子 / 连对 / 钢板）--------------------------------------
 # 规模是定死的：数据里 4 张只有炸弹（没有二连对），顺子也只出现 5 张的。
-_SEQ_LEN = 5
-_PAIR_RUN_LEN = 3
-_PLATE_LEN = 2
+# ⚠️ 三个常量的**单位不一样**：一个是张数、两个是组数（实际张数要再乘）——
+#    写新牌型时最容易在这里错，`Meld.size` 的构造处就是 `×2` / `×3`。
+_SEQ_LEN = 5           # 顺子的**张数**
+_PAIR_RUN_LEN = 3      # 三连对的**对数**（×2 = 6 张）
+_PLATE_LEN = 2         # 钢板的**组数**（×3 = 6 张）
 _NAT_MAX = 14          # A 当大牌时的自然值；也是序列能给到的最大值
 
 # 同花判断用的花色字符。顺序固定 —— 枚举结果要可复现（不要用 set 迭代序）。
