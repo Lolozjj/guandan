@@ -33,7 +33,7 @@ import torch
 from guandan.advice import advise
 from guandan.sim import env, rules
 from guandan.rl.eval import bomb_rate, bomb_waste, match
-from guandan.rl.net import DEVICE, QNet, q_values
+from guandan.rl.net import DEVICE, QNet, load_state, q_values
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import ally_of, rule_choose, rule_policy, table_owner
 from guandan.console import utf8_stdout
@@ -43,7 +43,7 @@ def net_pol(path: str):
     """权重 -> `(obs, acts, hist) -> 下标`（走 `q_values`，与上线同一条路）。"""
     ck = torch.load(path, map_location="cpu", weights_only=False)
     n = QNet()
-    n.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
+    load_state(n, ck["net"] if isinstance(ck, dict) else ck)
     n.eval().to(DEVICE)
     games = ck.get("games") if isinstance(ck, dict) else None
     return (lambda obs, acts, hist: int(q_values(n, obs, acts, hist).argmax())), games

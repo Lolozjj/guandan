@@ -36,7 +36,7 @@ from guandan.capture.cards import names_sorted
 from guandan.sim import env, meld, rules
 from guandan.capture.state import Play
 from guandan.rl.eval import bomb_opportunity, is_wasted_bomb
-from guandan.rl.net import QNet, q_values
+from guandan.rl.net import QNet, load_state, q_values
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import rule_choose
 from guandan.rl.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型的唯一产地，不另写一份
@@ -113,7 +113,7 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
         raise SystemExit("找不到权重：设 GUANDAN_WEIGHTS，或把权重放到 models/best.pt")
     ck = torch.load(p, map_location="cpu", weights_only=False)
     net = QNet()
-    net.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
+    load_state(net, ck["net"] if isinstance(ck, dict) else ck)
     net.eval()
     lv = level if level is not None else 8
     e = env.GuandanEnv(seed=seed)

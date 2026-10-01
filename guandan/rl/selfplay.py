@@ -46,6 +46,7 @@ from guandan.sim import env, rules
 from guandan.rl import pool, replay
 from guandan.rl.eval import match
 from guandan.rl.net import (DEVICE, QNet, check_entropy, check_logits, check_q_scale,
+                            load_state,
                             log_prob_and_entropy, policy_sample_batch,
                             q_argmax_batch, q_max_batch)
 from guandan.rl.policies import greedy_policy, random_policy
@@ -151,7 +152,7 @@ def load_init(net, path: str = None) -> None:
     if not path:
         return
     ck = torch.load(path, map_location="cpu")
-    net.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
+    load_state(net, ck["net"] if isinstance(ck, dict) else ck)
 
 
 def plan_step(learn_seats, turn, fixed) -> tuple:

@@ -40,7 +40,7 @@ import torch
 from guandan.advice import advise
 from guandan.sim import env, rules
 from guandan.rl.eval import match
-from guandan.rl.net import QNet, q_values
+from guandan.rl.net import QNet, load_state, q_values
 from guandan.rl.policies import greedy_policy, random_policy
 from guandan.rl.rule_policy import rule_choose, rule_policy
 from guandan.rl.selfplay import net_play
@@ -54,7 +54,7 @@ MATTERS = 0.05
 def load(path: str):
     d = torch.load(path, map_location="cpu", weights_only=False)
     n = QNet()
-    n.load_state_dict(d["net"] if isinstance(d, dict) else d)
+    load_state(n, d["net"] if isinstance(d, dict) else d)
     n.eval()
     return n, (d.get("games") if isinstance(d, dict) else None)
 

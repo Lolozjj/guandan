@@ -25,13 +25,15 @@ from typing import Optional, Tuple
 import numpy as np
 
 from guandan.capture import cards
-from guandan.sim import meld, rules
+from guandan.sim import features, meld, rules
 
 #: spec §4.1 的状态维度，逐项对齐：
 #:     我的手牌 108 + 已出过的牌 4×108 + 各家剩几张 4 + 桌面待压 108
 #:     + 桌面牌型 10 + 桌面主点数 15 + 谁要不起 4 + 轮到谁 4 + 级别 15
-STATE_DIM = 108 + 4 * 108 + 4 + 108 + 10 + 15 + 4 + 4 + 15
-assert STATE_DIM == 700
+#: **再加 A2 的显式特征**（`sim/features.py` 的 `EXTRA_DIM`，2026-09-30）——
+#: 老权重的第一层可以按列零填充后热启动，见 `rl/net.py::load_state`。
+STATE_DIM = 108 + 4 * 108 + 4 + 108 + 10 + 15 + 4 + 4 + 15 + features.EXTRA_DIM
+assert STATE_DIM == 727
 
 _OFF_HAND = 0
 _OFF_PLAYED = _OFF_HAND + 108
@@ -42,6 +44,8 @@ _OFF_RANK = _OFF_KIND + 10
 _OFF_PASSED = _OFF_RANK + 15
 _OFF_TURN = _OFF_PASSED + 4
 _OFF_LEVEL = _OFF_TURN + 4
+#: A2 的显式特征（`sim/features.py`）**接在最后** —— 老权重零填充热启动靠这个位置。
+_OFF_EXTRA = _OFF_LEVEL + 15
 
 #: 桌面/动作里的「主点数」编码：点数 1..13 -> 0..12；
 #: **级牌 -> 13**（`meld.POINT_LEVEL`）；王 -> 14（`POINT_SMALL` / `POINT_BIG` 合到一格，
@@ -93,7 +97,7 @@ def _rel(seq, seat: int):
 
 
 def encode_state(obs: Observation) -> np.ndarray:
-    """`Observation` -> 700 维 float32。**只吃 `Observation`**，别给它开别的入口。"""
+    """`Observation` -> `STATE_DIM` 维 float32（700 + A2 的显式特征）。**只吃 `Observation`**。"""
     if not isinstance(obs.level, int) or not 1 <= obs.level <= 13:
         raise ValueError(
             f"级别必须在 1..13（A=1）。收到 {obs.level!r} —— "
@@ -125,6 +129,9 @@ def encode_state(obs: Observation) -> np.ndarray:
 
     v[_OFF_TURN + (obs.turn - obs.seat) % 4] = 1.0
     v[_OFF_LEVEL + obs.level] = 1.0            # 1..13 用第 1..13 格；0 与 14 恒为 0
+
+    # A2：显式特征（手数 / 未见牌 / 剩牌对比 / 火力 / 残局信号）
+    v[_OFF_EXTRA:] = features.extra_features(obs)
 
     return v
 

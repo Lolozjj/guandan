@@ -453,6 +453,34 @@
 **代价**：改 `env.encode_state`（+X 维）+ 一个零填充加载器 + 一条训练臂（先跑 2 小时看曲线，
 不急着 9 小时）。
 
-**结果**：（待填）
+**实现（2026-09-30）**
+
+- `guandan/sim/features.py`（新）：`EXTRA_DIM = 27` 的显式特征。
+  `unseen_pool` / `hand_partition`（含 `_nat_cards` / `_take_run`）**从 `rl/rule_policy.py`
+  搬到这里** —— 它们本来就在算 sim 层的量，而 `env.encode_state` 要用；让 `sim/` 反向
+  import `rl/` 会把依赖方向弄反。`rule_policy` 改成从新家 import，**老名字照旧可用**
+  （测试与 `tools/` 一行没改）。
+- `env.py`：`STATE_DIM 700 → 727`，特征块接在**最后**（`_OFF_EXTRA`）——
+  零填充热启动靠这个位置。
+- `net.py::load_state`（新）：`[state | action | lstm]` 的**按列搬家** ——
+  老 state 列原位、新特征列补 0、action/lstm 整体右移 X。
+  **11 处手工加载 checkpoint 的地方**（10 个 tools + `advise.load_net`）全部改走它，
+  否则老权重会因为尺寸不符直接炸。
+- 等价性**端到端验过**：老权重（700 维）装上后 `tools.structure_metrics` 逐位给出
+  **71.2% / 74.2%**（与 A2 之前完全相同）⇒ 新特征初始时确实"贡献 0"，A2 是同一起点。
+
+**性能（这一条必须记，判读时要算）**
+
+| | 值 |
+|---|---|
+| `extra_features` 冷调 | 400 µs → **92 µs**（`hand_partition` 150→37、`unseen_pool` 32→8、`fire_counts` 27→23） |
+| 每局 `encode_state` 次数 | **265**（生成 ~132 + 学习步重放 ~132） |
+| 特征成本 | **30 ms/局**（占训练墙钟 **32%**） |
+| 训练吞吐 | **19 → 10.6 局/秒**（1.8× 慢） |
+
+⚠️ 等价性用「2155 手（1655 真实 + 500 随机）的 `hand_partition` 输出 sha256 与优化前逐字节相同」钉住 ——
+优化分组循环（不是改语义）时最容易悄悄改掉行为。
+
+**结果**：（待填，臂跑完填）
 
 ---

@@ -28,7 +28,7 @@ import torch
 
 from guandan import paths
 from guandan.rl.eval import bomb_rate, bomb_waste, match
-from guandan.rl.net import QNet
+from guandan.rl.net import QNet, load_state
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import rule_policy
 from guandan.rl.selfplay import net_play
@@ -45,7 +45,7 @@ GAMES_WASTE = 60
 def load(p):
     d = torch.load(p, map_location="cpu", weights_only=False)
     n = QNet()
-    n.load_state_dict(d["net"])
+    load_state(n, d["net"])
     n.eval()
     return net_play(n), d
 

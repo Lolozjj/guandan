@@ -49,6 +49,40 @@ class QNet(nn.Module):
         return self.mlp(torch.cat([state, action, h[-1]], dim=-1)).squeeze(-1)
 
 
+def load_state(net, sd) -> None:
+    """把 checkpoint 装进 `net`，**允许状态维度长大**（A2 的零填充热启动）。
+
+    `forward` 的第一层输入是 `[state | action | lstm]`。A2 之后 `state` 末尾多了 X 维
+    （`sim/features.py`），所以老 checkpoint 的列要**搬家**：
+
+        新列 [0, s_old)            <- 老列 [0, s_old)        （老状态，原位）
+        新列 [s_old, s_new)        <- 0                       （新特征，从"贡献 0"开始学）
+        新列 [s_new, end)          <- 老列 [s_old, end)       （action 与 lstm，整体右移 X）
+
+    ⇒ 装上老权重之后，网络**在数值上等价于老网络**（新特征乘 0）。这正是 A2 可比的前提：
+    否则就得从零重训，还未必追得上现役权重。`strict=True` 保留 —— 别的形状不对就炸。
+
+    ⚠️ 只允许**长大**（`s_new > s_old`）；变小或别的形状不符一律抛，不静默凑合。
+    """
+    import torch
+
+    w = sd.get("mlp.0.weight")
+    if w is not None and w.shape[1] != net.mlp[0].weight.shape[1]:
+        s_old = w.shape[1] - env.ACTION_DIM - LSTM_HIDDEN
+        s_new = net.mlp[0].weight.shape[1] - env.ACTION_DIM - LSTM_HIDDEN
+        if s_new <= s_old:
+            raise ValueError(
+                f"权重装不上：状态维度 {s_old} -> {s_new} 不是「长大」。"
+                f"（本函数只做零填充热启动，不做缩维）")
+        new_w = torch.zeros(w.shape[0], s_new + env.ACTION_DIM + LSTM_HIDDEN,
+                            dtype=w.dtype)
+        new_w[:, :s_old] = w[:, :s_old]
+        new_w[:, s_new:] = w[:, s_old:]
+        sd = dict(sd)
+        sd["mlp.0.weight"] = new_w
+    net.load_state_dict(sd)
+
+
 def _q(net, obs, acts, hist):
     """一次前向算出一批候选的 Q。`obs`/`hist` 是单个局面的。"""
     st = torch.from_numpy(env.encode_state(obs)).unsqueeze(0).to(DEVICE)

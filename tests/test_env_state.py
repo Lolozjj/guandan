@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from guandan.capture import cards
-from guandan.sim import env, meld, rules
+from guandan.sim import env, features, meld, rules
 
 A = meld.cid_from_name
 
@@ -19,9 +19,17 @@ def _obs(seat=0, hand=(A("S3"),), played=None, left=None, table=(),
 
 
 def test_state_dim_is_what_the_spec_says():
-    assert env.STATE_DIM == 700          # spec §4.1：108+4*108+4+108+10+15+4+4+15
-    assert env.encode_state(_obs()).shape == (700,)
+    # spec §4.1 的 700 项 + A2 的显式特征（`sim/features.py`，2026-09-30 加）
+    assert env.STATE_DIM == 700 + features.EXTRA_DIM
+    assert env.encode_state(_obs()).shape == (env.STATE_DIM,)
     assert env.encode_state(_obs()).dtype == np.float32
+
+
+def test_a2_block_sits_after_the_700():
+    """A2 的特征必须**接在 700 维之后**（老权重零填充热启动靠这个位置）。"""
+    v = env.encode_state(_obs())
+    assert v.shape == (env.STATE_DIM,)
+    assert len(features.extra_features(_obs())) == features.EXTRA_DIM
 
 
 def test_hand_and_table_land_in_the_right_slots():

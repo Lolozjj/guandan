@@ -195,7 +195,7 @@ def load_net(path: str = None, device: str = "cpu") -> Tuple[Optional[object], s
     """
     import torch
 
-    from guandan.rl.net import QNet
+    from guandan.rl.net import QNet, load_state
 
     p = resolve_weights(path)
     if not p:
@@ -205,7 +205,7 @@ def load_net(path: str = None, device: str = "cpu") -> Tuple[Optional[object], s
     try:
         ck = torch.load(p, map_location="cpu")
         net = QNet()
-        net.load_state_dict(ck["net"] if isinstance(ck, dict) else ck)
+        load_state(net, ck["net"] if isinstance(ck, dict) else ck)
         net.to(device).eval()
     except Exception as exc:                      # noqa: BLE001 - 面板不许崩
         return None, f"权重加载失败（{type(exc).__name__}: {exc}）：{p}"

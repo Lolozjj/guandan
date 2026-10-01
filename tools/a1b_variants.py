@@ -28,7 +28,7 @@ import sys
 from guandan import paths
 from guandan.console import utf8_stdout
 from guandan.rl import eval as ev
-from guandan.rl.net import QNet, q_values
+from guandan.rl.net import QNet, load_state, q_values
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import rule_policy
 from guandan.rl.selfplay import generate_batch, net_play
@@ -46,7 +46,7 @@ def load(path: str):
     import torch
     d = torch.load(path, map_location="cpu", weights_only=False)
     n = QNet()
-    n.load_state_dict(d["net"] if isinstance(d, dict) else d)
+    load_state(n, d["net"] if isinstance(d, dict) else d)
     n.eval()
     return n, (d.get("games") if isinstance(d, dict) else None)
 

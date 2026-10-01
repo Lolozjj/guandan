@@ -51,6 +51,8 @@ from typing import Optional
 
 from guandan.capture import cards
 from guandan.sim import meld, rules
+# A2（2026-09-30）：这几个量从 sim/ 搬下来了（见 guandan/sim/features.py）
+from guandan.sim.features import _has_run, hand_partition, unseen_pool   # noqa: F401  # 老名字照旧可用
 
 #: 剩 `n` 张「一手走完」的风险到多少才算「必须压制」。
 #: **这是一个启发式门槛**，不是概率 —— `finish_risk` 返回的是刻度，不是概率。
@@ -98,36 +100,6 @@ def table_owner(obs) -> Optional[int]:
     return None
 
 
-def unseen_pool(obs) -> dict:
-    """**还没露面**的牌：点数 -> 张数。整副 108 张减去我的手牌与四家出过的牌。
-
-    另外三家的手牌只能是这个池子里的子集 —— 所以估「他能不能一手走完」
-    只需要它，**不需要看明牌**。
-    """
-    seen = set(obs.hand)
-    for s in rules.SEATS:
-        seen |= set(obs.played[s])
-    pool: dict = {}
-    for cid in range(1, cards.MAX_ID + 1):
-        if cards.is_card(cid) and cid not in seen:
-            idx = cards.parts(cid)[0]
-            pool[idx] = pool.get(idx, 0) + 1
-    return pool
-
-
-def _has_run(pool: dict, length: int, per: int) -> bool:
-    """池子里有没有 `length` 个连续点数、每个至少 `per` 张（A 可当最小也可最大）。
-
-    借 `meld.nat_values` —— A 的两头、王不参与序列，都由它一处定义。
-    """
-    have = set()
-    for idx, c in pool.items():
-        if c >= per:
-            have |= set(meld.nat_values(idx))
-    return any(all(v in have for v in range(s, s + length))
-               for s in range(1, 15 - length + 1))
-
-
 def finish_risk(n: int, pool: dict) -> float:
     """剩 `n` 张「**一手走完**」的风险 —— **启发式刻度（0~1），不是概率**。
 
@@ -171,83 +143,6 @@ def finish_risk(n: int, pool: dict) -> float:
     if n <= 8:
         return 0.35 if has(n) else 0.05
     return 0.05
-
-
-def _nat_cards(avail: dict, v: int) -> list:
-    """自然值 `v` 现在还有哪些牌可用（A 的两个头由 `meld.nat_values` 一处定义）。
-
-    ⚠️ **四张同点的点数不参与** —— 那是一个炸，不许拿去凑顺子
-    （「不许拆自己的炸」这条纪律对分区同样成立，见 `breaks_bomb`）。
-    """
-    out = []
-    for idx, cs in avail.items():
-        if len(cs) >= 4:
-            continue
-        if v in meld.nat_values(idx):
-            out += cs
-    return out
-
-
-def _take_run(avail: dict, length: int, per: int):
-    """找一个「`length` 个连续自然值、每个至少 `per` 张」的组合并**就地取走**。
-
-    取走是就地改 `avail` —— 同一个牌 ID 因此不可能被两个组合用到。
-    从**最小的起点**开始找（同样能成，先花小的）。
-    """
-    for start in range(1, 15 - length + 1):
-        groups = [_nat_cards(avail, v)[:per] for v in range(start, start + length)]
-        if all(len(g) == per for g in groups):
-            out = [c for g in groups for c in g]
-            for c in out:
-                avail[cards.parts(c)[0]].remove(c)
-            return out
-    return None
-
-
-def hand_partition(hand, level) -> list:
-    """把手牌**贪心**拆成尽量少的几手 —— 估「我还要几手才能走完」。
-
-    口径：**先抽序列类**（钢板/三连对 6 张、顺子 5 张 —— 一次消得多的先抽），
-    剩下的照开源 AI 的 `utils.partition`：三张尽量配一对凑成三带二（一次消 5 张）；
-    对子、单张各算一手；4 张以上同点算炸。
-
-    ⚠️ **不做最优划分**（那是指数级的），**也不认逢人配** ——
-    所以它**高估**手数，只当粗估用。要问「整手是不是一个牌型」（一把走完），
-    用 `melds_from` 精确判，别用这个。
-
-    ⚠️ 2026-09-29：**原来不认顺子/三连对/钢板**，手里有顺子时把 5 张算成 5 张单牌
-    ⇒ 系统性高估手数 ⇒ [源 2] 几乎不触发。序列类那一段是补上的。
-    """
-    avail: dict = {}
-    for c in hand:
-        avail.setdefault(cards.parts(c)[0], []).append(c)
-    groups: list = []
-    for length, per in ((2, 3), (3, 2), (5, 1)):      # 钢板 → 三连对 → 顺子
-        while True:
-            g = _take_run(avail, length, per)
-            if g is None:
-                break
-            groups.append(g)
-    singles, pairs, triples, bombs = [], [], [], []
-    for idx, cs in avail.items():
-        if not cs:
-            continue                                  # 已被序列类抽空
-        if not meld.nat_values(idx):          # 王：不参与序列，单独算一张
-            singles += cs
-        elif len(cs) >= 4:
-            bombs.append(cs)
-        elif len(cs) == 3:
-            triples.append(cs)
-        elif len(cs) == 2:
-            pairs.append(cs)
-        else:
-            singles += cs
-    groups += list(bombs)
-    while triples:
-        t = triples.pop(0)
-        groups.append(t + pairs.pop(0) if pairs else t)   # 三张优先配一对 -> 三带二
-    groups += pairs + [[c] for c in singles]
-    return [m for m in (meld.as_meld(g, level) for g in groups) if m is not None]
 
 
 # ------------------------------------------------------------------ 选牌助手

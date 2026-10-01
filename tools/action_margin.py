@@ -24,7 +24,7 @@ import sys
 import torch
 
 from guandan import paths
-from guandan.rl.net import QNet, q_values
+from guandan.rl.net import QNet, load_state, q_values
 from guandan.rl.selfplay import generate_batch
 from guandan.console import utf8_stdout
 
@@ -71,7 +71,7 @@ def main(argv=None) -> int:
     for p in (argv or [str(paths.BEST)]):
         d = torch.load(p, map_location="cpu", weights_only=False)
         net = QNet()
-        net.load_state_dict(d["net"])
+        load_state(net, d["net"])
         net.eval()
         n, st = measure(net)
         print(f"== {p}（{d.get('games', 0):,} 局）")

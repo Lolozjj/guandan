@@ -34,7 +34,7 @@ import sys
 import torch
 
 from guandan.rl.eval import match
-from guandan.rl.net import QNet
+from guandan.rl.net import QNet, load_state
 from guandan.rl.rule_policy import rule_policy
 from guandan.rl.selfplay import net_play
 from guandan.console import utf8_stdout
@@ -48,7 +48,7 @@ def load(path: str):
     """权重 -> (策略, 元信息)。策略走 `net_play`，与上线同一条路。"""
     d = torch.load(path, map_location="cpu", weights_only=False)
     n = QNet()
-    n.load_state_dict(d["net"] if isinstance(d, dict) else d)
+    load_state(n, d["net"] if isinstance(d, dict) else d)
     n.eval()
     return net_play(n), (d if isinstance(d, dict) else {})
 
