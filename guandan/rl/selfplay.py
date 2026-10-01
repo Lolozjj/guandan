@@ -185,7 +185,7 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                    greedy_share=0.8, learn_all_seats=False, members=None,
                    pick_fixed=None, bomb_cost: float = 0.0,
                    opp_kind: str = "greedy", sample: bool = False,
-                   mate_mix: float = 0.0):
+                   mate_mix: float = 0.0, shaping: float = 0.0):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
@@ -351,7 +351,8 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                                    opp=fixed[k], won=won)
         if capture:
             labels = replay.mc_targets(seq[k], e.ranks, learn=learn[k],
-                                       bomb_cost=bomb_cost)
+                                       bomb_cost=bomb_cost,
+                                       hands0=hands0[k], shaping=shaping)
             assert len(labels) == len(caps[k]), (
                 f"标签条数 {len(labels)} 与决策点数 {len(caps[k])} 对不上")
             out.append((rec, caps[k], labels))
@@ -392,7 +393,8 @@ def sync_target(net, net_tgt, games, last_sync, every=TGT_SYNC_GAMES) -> int:
     return games
 
 
-def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0):
+def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0,
+                  shaping: float = 0.0):
     """从 buffer 采一批、重放成张量原料。返回 `(samples, y_mc, boot)`，**等长同序**。
 
     `fresh` 是单进程那条路的「刚打完的这一批」快捷缓存（省一次重放，约 18ms/局）。
@@ -409,7 +411,7 @@ def build_samples(buf, rng, batch_games, *, fresh=None, bomb_cost=0.0, n_step=0)
     for rec in buf.sample(batch_games, rng):
         got = fresh.get(id(rec)) if fresh else None
         if got is None:
-            pts, y, b = replay.expand(rec, bomb_cost=bomb_cost, n=n_step)
+            pts, y, b = replay.expand(rec, bomb_cost=bomb_cost, n=n_step, shaping=shaping)
         else:
             pts, y = got
             b = []
@@ -528,7 +530,7 @@ def _pg_step(net, opt, samples, rewards, base, games, beta_ent: float = BETA_ENT
 
 
 def _targets(net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
-             fresh=None):
+             fresh=None, shaping: float = 0.0):
     """这一批训练样本的目标值。**自举在这里、且只在这里进入标签。**
 
     `mc_mix >= 1` 是纯 MC（默认）—— 那时连 `V` 都不算，`boot` 也不产出。
@@ -541,7 +543,8 @@ def _targets(net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
     """
     n_boot = 0 if mc_mix >= 1.0 else n_step
     samples, y_mc, boot = build_samples(buf, rng, batch_games, fresh=fresh,
-                                        bomb_cost=bomb_cost, n_step=n_boot)
+                                        bomb_cost=bomb_cost, n_step=n_boot,
+                                        shaping=shaping)
     # `boot` 的第 4 位是出手人（判视角用的）—— 打分只吃前三位
     vals = (q_max_batch(net_tgt, [b[:3] if b is not None else None for b in boot])
             if n_boot else None)
@@ -565,7 +568,8 @@ def _close_weights(targets, close_weight: float, dev):
 
 
 def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
-                mc_mix, n_step, fresh=None, close_weight: float = 1.0):
+                mc_mix, n_step, fresh=None, close_weight: float = 1.0,
+                shaping: float = 0.0):
     """从 buffer 采一批 → 重放 → 拼张量 → 一步 MSE。**两条训练路线共用这一份。**
 
     `mc_mix < 1` 时多一次前向算自举项（用**目标网络**、`no_grad`、返回 float）。
@@ -575,7 +579,7 @@ def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
     `F.mse_loss`（逐位不变），不开加权分支 —— 免得"默认没变"只是近似成立。
     """
     samples, targets = _targets(net_tgt, buf, rng, batch_games, bomb_cost,
-                                mc_mix, n_step, fresh=fresh)
+                                mc_mix, n_step, fresh=fresh, shaping=shaping)
     st, ac, hi = _tensors(samples)
     dev = next(net.parameters()).device
     y_hat = net(st.to(dev), ac.to(dev), hi.to(dev))
@@ -784,7 +788,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           opp_kind: str = "greedy", algo: str = "dmc",
           beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES,
           eval_rule_games: int = None, mate_mix: float = 0.0,
-          close_weight: float = 1.0):
+          close_weight: float = 1.0, shaping: float = 0.0):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -818,6 +822,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
            if mate_mix > 0 else "")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + (f"  **胶着加权 ×{close_weight:g}**" if close_weight != 1.0 else "")
+        + (f"  **势函数 shaping β={shaping:g}**" if shaping else "")
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
         + _pg_log(algo, beta_ent)      # 单进程没有权重广播 ⇒ 不打那一行
@@ -840,7 +845,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
                                learn_all_seats=learn_all_seats,
                                bomb_cost=bomb_cost, opp_kind=opp_kind,
                                mate_mix=mate_mix,
-                               sample=(algo == "pg"))
+                               sample=(algo == "pg"), shaping=shaping)
 
         if algo == "pg":
             # **on-policy：不写 buffer**（写了就是 off-policy，要重要性采样）。
@@ -860,7 +865,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
             loss = _learn_step(net, net_tgt, buf, rng, opt, games,
                                batch_games=batch_games, bomb_cost=bomb_cost,
                                mc_mix=mc_mix, n_step=n_step, fresh=fresh,
-                               close_weight=close_weight)
+                               close_weight=close_weight, shaping=shaping)
             last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
         steps += 1
 
@@ -896,7 +901,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    mc_mix: float = MC_MIX, n_step: int = N_STEP,
                    tgt_sync: int = TGT_SYNC_GAMES, opp_kind: str = "greedy",
                    algo: str = "dmc", mate_mix: float = 0.0, beta_ent: float = BETA_ENT,
-                   close_weight: float = 1.0,
+                   close_weight: float = 1.0, shaping: float = 0.0,
                    weight_sync_games: int = WEIGHT_SYNC_GAMES,
                    eval_rule_games: int = None,
                    _kill_worker_after: float = None):
@@ -971,6 +976,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                                      bomb_cost=bomb_cost,
                                                      opp_kind=opp_kind,
                                                      mate_mix=mate_mix,
+                                                     shaping=shaping,
                                                      sample=(algo == "pg"))))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
@@ -988,6 +994,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 f"  **池子关**")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + (f"  **胶着加权 ×{close_weight:g}**" if close_weight != 1.0 else "")
+        + (f"  **势函数 shaping β={shaping:g}**" if shaping else "")
         + (f"  **队友混合 {mate_mix:.0%}**（队友={OPP_KIND_CN.get(opp_kind, opp_kind)}）"
            if mate_mix > 0 else "")
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
@@ -1041,7 +1048,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 for rec in recs:
                     # ⚠️ `bomb_cost` 必须传 —— 漏了它，多进程 PG 的标签与日志头写的
                     # 「炸弹代价 λ=0.2」不符（评审 I1；单进程那条路是传的）。
-                    pts, y, _b = replay.expand(rec, bomb_cost=bomb_cost)
+                    pts, y, _b = replay.expand(rec, bomb_cost=bomb_cost, shaping=shaping)
                     samples += pts
                     rewards += y
                 out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
@@ -1051,7 +1058,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 loss = _learn_step(net, net_tgt, buf, rng, opt, games,
                                    batch_games=batch_games, bomb_cost=bomb_cost,
                                    mc_mix=mc_mix, n_step=n_step,
-                                   close_weight=close_weight)
+                                   close_weight=close_weight, shaping=shaping)
             steps += 1
             el = time.perf_counter() - t0
             if steps % 10 == 0:
@@ -1194,6 +1201,9 @@ def main(argv=None) -> int:
         # A5：老二分里「贪心」的份额（默认 0.8 ⇒ 20% 是**随机**对手）。
         # 1.0 = 把随机那一路关掉 —— 那 20% 的局给的梯度基本是噪声，去掉是白送的。
         kw["greedy_share"] = float(argv[argv.index("--greedy-share") + 1])
+    if "--shaping" in argv:
+        # 信用分配 spec 的设计 1：势函数 shaping 的 β。默认 0.0 = 关。
+        kw["shaping"] = float(argv[argv.index("--shaping") + 1])
     if "--close-weight" in argv:
         # 信用分配 spec 的设计 2：胶着局（|标签| < 3）样本的权重。默认 1.0 = 关。
         kw["close_weight"] = float(argv[argv.index("--close-weight") + 1])

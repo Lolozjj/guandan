@@ -76,7 +76,24 @@ class GameRecord:
                           won=won)
 
 
-def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0) -> list:
+def _phi(base, played, seat) -> float:
+    """势函数（**出牌人视角**）：`(对方剩牌 − 我方剩牌) / 本局发出去的牌数` ∈ [−1, 1]。
+
+    只用"发牌数 − 已出数"就能算 —— **不需要给记录新增字段**（紧凑记录是要跨进程传的）。
+
+    ⚠️ **必须归一化**：标签尺度是 ±3，而没归一化的 `Φ` 能到 ±54（张数）
+    ⇒ `β=0.3` 会把标签推到 ±16，直接撞上 `check_q_scale` 那道守门。
+    除以"本局发出去的牌数"（= 108）之后，`Φ` 与标签同量级。
+    """
+    me = rules.TEAM[seat]
+    mine = sum(base[s] - played[s] for s in rules.SEATS if rules.TEAM[s] == me)
+    theirs = sum(base[s] - played[s] for s in rules.SEATS if rules.TEAM[s] != me)
+    total = sum(base.values()) or 1
+    return (theirs - mine) / total
+
+
+def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0, hands0=None,
+               shaping: float = 0.0) -> list:
     """被保留的那些决策点的 DMC 标签 —— **现场与重放共用的唯一实现**。
 
     `y_t = R − λ · B_t`，其中 `B_t` = **从第 t 步起、该步座位自己**用掉的炸弹数
@@ -89,18 +106,48 @@ def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0) -> list:
 
     ⚠️ **只数该座位自己的炸弹**：奖励本来就是「出牌人视角」的零和量，
     代价用同一视角才自洽。`is_bomb` 也把**同花顺**算作炸（掼蛋里它本来就是）。
+
+    **`shaping`（信用分配 spec 的设计 1，默认 0.0 = 关）**：
+    `y_t += β · (Φ_T − Φ_t)`，`Φ` 见 `_phi`。要 `hands0` 一起给才生效。
+
+    ⚠️ **先看清它的机制，别指望错的东西**：势函数形式（Ng et al. 1999）在 γ=1 下
+    **望远镜化** ⇒ 整局的 shaping 之和只差一个与动作无关的常数 ⇒
+    **它对"同一个局面里哪个动作更好"毫无影响**（推理的 argmax 口径不变）。
+    它改的是**回归目标本身**：把 ±1/±2/±3 那种粗糙离散的标签，变成"终局分 + 本局到现在的进度"，
+    跨状态的方差更小、**更好拟合**。
+    ⇒ 所以判据第一位是**动作边际**（若边际不变或变窄，这条就没用），胜率放第二位。
     """
     if bomb_cost < 0:
         raise ValueError(f"bomb_cost 不能为负：{bomb_cost}")
+    if shaping and hands0 is None:
+        raise ValueError("给了 shaping 就必须给 hands0 —— 否则势函数没法算，会**静默**变成没开")
     keep = set(learn) if learn else None
     tail, suffix = {}, [0] * len(seq)
     for i in range(len(seq) - 1, -1, -1):     # 倒着扫一遍就得到全部后缀计数
         seat, m = seq[i]
         tail[seat] = tail.get(seat, 0) + (1 if (m is not None and m.is_bomb) else 0)
         suffix[i] = tail[seat]
-    return [rules.reward(ranks, seat) - bomb_cost * suffix[i]
-            for i, (seat, _m) in enumerate(seq)
-            if keep is None or seat in keep]
+
+    if shaping:
+        played = {s: 0 for s in rules.SEATS}
+        base = {s: len(hands0[s]) for s in rules.SEATS}
+        phi_t = []
+        for seat, m in seq:
+            phi_t.append(_phi(base, played, seat))        # **决策前**的势（与状态同一时刻）
+            played[seat] += 0 if m is None else len(m.cards)
+        phi_end = [_phi(base, played, seat) for seat, _m in seq]   # 终局的势（各按自己的视角）
+    else:
+        phi_t = phi_end = None
+
+    out = []
+    for i, (seat, _m) in enumerate(seq):
+        if keep is not None and seat not in keep:
+            continue
+        y = rules.reward(ranks, seat) - bomb_cost * suffix[i]
+        if shaping:
+            y += shaping * (phi_end[i] - phi_t[i])
+        out.append(y)
+    return out
 
 
 def blend(y_mc, boot, beta: float = 1.0) -> list:
@@ -161,7 +208,8 @@ def _boot_source_ok(learn, tgt_seat: int, src_seat: int) -> bool:
     return rules.TEAM[src_seat] == rules.TEAM[tgt_seat]
 
 
-def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0):
+def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0,
+           shaping: float = 0.0):
     """把记录重放成 `(决策点, MC 标签, 自举源)`。
 
     决策点是 `(obs, acts, 选中下标, 出牌人, hist)` —— 与 `env.rollout` 同形状，
@@ -213,11 +261,12 @@ def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0):
                     boot[j] = (obs, acts, env.encode_history(e.hand, seat), seat)
         obs, _r, _done, _info = e.step(i)
     # 标签**只有一个产地**（`mc_targets`）—— 过滤也在它里面做
-    return (points, mc_targets(seq, e.ranks, learn=rec.learn, bomb_cost=bomb_cost),
+    return (points, mc_targets(seq, e.ranks, learn=rec.learn, bomb_cost=bomb_cost,
+                             hands0=rec.hands, shaping=shaping),
             boot)
 
 
-def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.0):
+def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.0, shaping: float = 0.0):
     """打一局。返回 `(记录, 决策点, 终局 reward)`；`capture=False` 时决策点是空表。
 
     **为什么要 `capture`**：刚打完的一批局，每一步的决策点在生成时**本来就算过**了
@@ -245,12 +294,14 @@ def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.
     if not capture:
         return rec, [], []
     # 标签走**同一个产地**（`mc_targets`）—— 三条路都收在一处，改一处就是改三处
-    return rec, points, mc_targets(seq, e.ranks, bomb_cost=bomb_cost)
+    return rec, points, mc_targets(seq, e.ranks, bomb_cost=bomb_cost,
+                                     hands0=hands0, shaping=shaping)
 
 
-def play_and_record(policy, rng, level=None):
+def play_and_record(policy, rng, level=None, shaping: float = 0.0):
     """只记紧凑记录（不抓决策点）。返回 `(GameRecord, 决策点数)`。"""
-    rec, _pts, _y = play_capturing(policy, rng, level=level, capture=False)
+    rec, _pts, _y = play_capturing(policy, rng, level=level, capture=False,
+                                  shaping=shaping)
     return rec, len(rec.actions)
 
 
