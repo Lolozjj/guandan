@@ -483,4 +483,20 @@
 
 **结果**：（待填，臂跑完填）
 
+**臂（2026-09-30 起，进行中）**：从现役 R11 零填充热启动，配方与 R11 完全一致，只多出特征：
+
+```powershell
+$env:GUANDAN_DEVICE="cpu"
+.venv/Scripts/python.exe -u -m guandan.rl.selfplay 9000 `
+  --init models/best.pt --opp-kind rule --opp-mix 0.5 --workers 2 `
+  --out-dir runs/ab/A2_features *> runs/ab/A2_features.log
+```
+
+⚠️ 判读要**算上吞吐代价**：A2 之后单 worker 10.9 局/秒（A2 之前 19.2），
+2 worker 合计 **21.7 局/秒** ⇒ 2.5 小时约 **19.5 万局**（与 R11 自己的 21 万局同量级）。
+而"从 R11 继续练 19.5 万局"在台账上的期望收益 ≈ +0.5~1pp（边际 1~2pp/百万局）
+⇒ **单代仍然测不实**。所以本轮判据是**方向性**的：`vs 规则式` ≥ +1pp（≥3 种子配对）
+才算"有信号、值得加长"；≤ +0.5pp ⇒ 无信号。**且必须同时看动作边际有没有变宽**
+（`tools/action_margin.py`）—— 那才是 A2 的直接靶子（A1b-1 的负结果给的理由）。
+
 ---
