@@ -499,6 +499,34 @@ $env:GUANDAN_DEVICE="cpu"
 才算"有信号、值得加长"；≤ +0.5pp ⇒ 无信号。**且必须同时看动作边际有没有变宽**
 （`tools/action_margin.py`）—— 那才是 A2 的直接靶子（A1b-1 的负结果给的理由）。
 
+### 评测口径（**在臂跑完之前**钉死，免得事后挑快照）
+
+主判据用 **`last.pt`（终局权重）**，不用 `best.pt`：
+
+- 臂里的 `best.pt` 是由 **200 局单种子**的规则式评测挑出来的 —— 那个读数 sd ≈ 3pp，
+  挑出来的很可能是**幸运快照**，直接拿它比就是"挑最好看的那次"。
+- `best.pt` 一并量、一并报（它是**面板实际会加载的那个**，有工程意义），
+  但**判定"特征有没有用"看 `last.pt`**。
+
+命令（基准 = 现役 R11，配对逐种子对消）：
+
+```powershell
+.venv/Scripts/python.exe -m tools.ruler `
+  models/best.pt runs/ab/A2_features/last.pt runs/ab/A2_features/best.pt `
+  --seeds 1002,1003,1004,1005,1006,1007 --games 400
+```
+
+外加动作边际（A2 的直接靶子）：
+
+```powershell
+.venv/Scripts/python.exe -m tools.action_margin runs/ab/A2_features/last.pt
+# 基准（现役 R11，2026-09-30 量）：首选次选之差 **中位 0.100**、p90 0.442、打平 8.0%
+```
+
+⚠️ **臂中途的读数只当过程看，不当判据**：@10,016 局时它是
+`vs 随机 99.0% / vs 贪心 97.0% / vs 规则式 64.5%`（200 局、单种子）——
+热启动后 ε=0.3 的这段本来就会掉，且这个读数 sd ≈ 3pp，**不足以下任何结论**。
+
 ---
 
 ---
