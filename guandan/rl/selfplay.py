@@ -155,7 +155,7 @@ def load_init(net, path: str = None) -> None:
     load_state(net, ck["net"] if isinstance(ck, dict) else ck)
 
 
-def plan_step(learn_seats, turn, fixed) -> tuple:
+def plan_step(learn_seats, turn, fixed, mates=None) -> tuple:
     """这一步由谁出手 → `("learner", None)` / `("member", mid)` / `("fixed", kind)`。
 
     **纯函数**，故意抽出来 —— 分组错了会**静默用错权重**（池子里全变成一个模型），
@@ -163,9 +163,15 @@ def plan_step(learn_seats, turn, fixed) -> tuple:
 
     「不属学习队、又没有固定对手」是不该出现的状态（`learn` 与 `fixed` 是一起定的），
     所以**炸掉**而不是猜一个 —— 猜的后果是静默退回贪心（本仓库纪律：失败必须响）。
+
+    `mates`（A3）：`{座位: kind}` —— **学习队里被换成固定策略的那个队友**。
+    ⚠️ 它必须在 `fixed is None` 那道检查**之前**判：队友多样性可以用在纯自对弈局里
+    （那种局的 `fixed` 就是 None），晚一步就会炸在"没有固定对手"上。
     """
     if turn in learn_seats:
         return ("learner", None)
+    if mates and turn in mates:
+        return ("fixed", mates[turn])
     if fixed is None:
         raise ValueError(
             f"座位{turn} 不属于学习队 {tuple(learn_seats)}、又没有固定对手 —— "
@@ -178,7 +184,8 @@ def plan_step(learn_seats, turn, fixed) -> tuple:
 def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                    greedy_share=0.8, learn_all_seats=False, members=None,
                    pick_fixed=None, bomb_cost: float = 0.0,
-                   opp_kind: str = "greedy", sample: bool = False):
+                   opp_kind: str = "greedy", sample: bool = False,
+                   mate_mix: float = 0.0):
     """同步推进 `n_games` 局，返回 `[(GameRecord, points, y), ...]`。
 
     `points` 是每步的 `(obs, acts, 选中下标, 出牌人, hist)`（`capture=False` 时为空）——
@@ -199,9 +206,19 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
     `pick_fixed(rng) -> ("greedy",) | ("random",) | ("member", mid)`：这一局的固定
     对手是谁，由调用方给（PFSP 在 learner 侧算）。不给就沿用老的 `greedy_share` 二分。
     **哪一队当固定对手统一在这里抽**（池成员也一样）—— `learn` 由它推出来。
+
+    **`mate_mix`（A3）：队友多样性。** 每局以此概率把**学习队的搭档**也换成固定策略
+    （`opp_kind`），于是那一局**只剩一个座位学**。理由：真实搭档不是自己
+    （面板/现实里配合的是人），而纯自对弈里两个座位永远同源 ⇒ 网络只在"和自己打配合"上
+    被训练。固定队友的着法与固定对手一样**不进训练目标** —— 靠的还是 `learn` 这一个
+    变量（`caps` 现场抓取与 `GameRecord.learn` 都用它）⇒ 不存在只改一半的可能。
+    ⚠️ **只在「有固定对手」的局里生效**（纯自对弈局里"学习队的搭档"没有定义，
+    硬换会留下半个效果）⇒ **A3 的实际剂量 = `opp_mix × mate_mix`**。
+    ⚠️ 默认 0.0：关掉时 `mates` 恒为空，行为与加这个开关之前**完全一样**（连 rng 都不多抽）。
     """
     envs, hands0, log, caps, seq = [], [], [], [], []
     learn, fixed = [], []          # 每局：学习那一队的座位 / 固定对手（None = 纯自对弈）
+    mates: list = []               # 每局：{座位: kind} —— 被换成固定策略的**队友**（A3）
     members = members if members is not None else {}
     for _ in range(n_games):
         e = env.GuandanEnv(seed=rng.randrange(1 << 30))
@@ -224,9 +241,25 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
                     raise ValueError(f"认不出的固定对手类型：{kind!r}（只有 {OPP_KINDS} / random）")
                 fixed.append((kind, opp))
             learn.append(tuple(s for s in rules.SEATS if rules.TEAM[s] != opp))
+            # A3：把**学习队的搭档**也换成固定策略（**队友多样性**）。
+            # ⚠️ 只在「有固定对手」的局里做 —— 纯自对弈局里"学习队的搭档"没有定义
+            # （四家都学，两个座位互为搭档），硬换一个座位会留下"另一对还在自己配自己"
+            # 的半个效果。所以 A3 的剂量就是 `opp_mix × mate_mix`，日志里两个都打。
+            # ⚠️ `mate_mix == 0.0` 时**一个 rng 都不许消费** —— 否则同一个种子打出来的牌
+            # 会与加这个开关之前不同，老臂就不再可比（本文件那条「rng 消费顺序别漂」）。
+            # `and` 的短路就是保证这件事的地方，别改写成先抽再判。
+            mates.append({})
+            if mate_mix > 0.0 and rng.random() < mate_mix:
+                if opp_kind not in OPP_KINDS:
+                    raise ValueError(f"认不出的队友类型：{opp_kind!r}（只有 {OPP_KINDS}）")
+                cand = learn[-1]
+                seat = cand[rng.randrange(len(cand))]
+                mates[-1][seat] = opp_kind
+                learn[-1] = tuple(s for s in cand if s != seat)
         else:
             fixed.append(None)
             learn.append(tuple(rules.SEATS))
+            mates.append({})
         if learn_all_seats:
             # 对照臂：**一处改**，现场抓取（caps）与写进记录（GameRecord.learn）一起跟 ——
             # 只改一处的话两臂差的就不止「expand 有没有过滤」这一个变量了
@@ -246,7 +279,7 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
         picks = [None] * len(pending)
         groups = {}
         for j, k in enumerate(alive):
-            who = plan_step(learn[k], envs[k].hand.turn, fixed[k])
+            who = plan_step(learn[k], envs[k].hand.turn, fixed[k], mates[k])
             groups.setdefault(who, []).append(j)
 
         def _order(item):
@@ -257,8 +290,10 @@ def generate_batch(net, rng, eps, n_games, capture=True, opp_mix=0.0,
         for (who, mid), js in sorted(groups.items(), key=_order):
             if who == "fixed":
                 # 贪心 / 随机：便宜的 Python 路径，**不占前向**（占混合局的 20%）
+                # ⚠️ 用的必须是**这一组的 kind**（`mid`），不是 `fixed[k]` 的：
+                # A3 之后同一个"fixed"组里可能有队友（另一种 kind）与对手两种来源。
                 for j in js:
-                    picks[j] = _fixed_pick(fixed[alive[j]], pending[j], rng)
+                    picks[j] = _fixed_pick((mid,), pending[j], rng)
                 continue
             if who == "member":
                 if mid not in members:
@@ -725,7 +760,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES,
           opp_kind: str = "greedy", algo: str = "dmc",
           beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES,
-          eval_rule_games: int = None):
+          eval_rule_games: int = None, mate_mix: float = 0.0):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -751,6 +786,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"评测每 {eval_every:,} 局  ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  "
         f"对手混合 {opp_mix:.0%}"
         f"（其中{OPP_KIND_CN.get(opp_kind, opp_kind)} {greedy_share:.0%}）"
+        + (f"  **队友混合 {mate_mix:.0%}**（队友={OPP_KIND_CN.get(opp_kind, opp_kind)}）"
+           if mate_mix > 0 else "")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
@@ -773,6 +810,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
                                opp_mix=opp_mix, greedy_share=greedy_share,
                                learn_all_seats=learn_all_seats,
                                bomb_cost=bomb_cost, opp_kind=opp_kind,
+                               mate_mix=mate_mix,
                                sample=(algo == "pg"))
 
         if algo == "pg":
@@ -827,7 +865,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    eps_start: float = None, bomb_cost: float = 0.0,
                    mc_mix: float = MC_MIX, n_step: int = N_STEP,
                    tgt_sync: int = TGT_SYNC_GAMES, opp_kind: str = "greedy",
-                   algo: str = "dmc", beta_ent: float = BETA_ENT,
+                   algo: str = "dmc", mate_mix: float = 0.0, beta_ent: float = BETA_ENT,
                    weight_sync_games: int = WEIGHT_SYNC_GAMES,
                    eval_rule_games: int = None,
                    _kill_worker_after: float = None):
@@ -897,6 +935,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                                      pool_greedy_share=pool_greedy_share,
                                                      bomb_cost=bomb_cost,
                                                      opp_kind=opp_kind,
+                                                     mate_mix=mate_mix,
                                                      sample=(algo == "pg"))))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
@@ -913,6 +952,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 f"随机 {1 - greedy_share:.0%}）"
                 f"  **池子关**")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
+        + (f"  **队友混合 {mate_mix:.0%}**（队友={OPP_KIND_CN.get(opp_kind, opp_kind)}）"
+           if mate_mix > 0 else "")
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
         + _pg_log(algo, beta_ent, weight_sync_games)
@@ -1103,6 +1144,14 @@ def main(argv=None) -> int:
         # ⚠️ **池子自己的**贪心份额，与老二分的 `greedy_share` 是两回事。
         # 混用会让池子只拿到设计的 1/4 剂量（2026-09-27 评审抓到过）。
         kw["pool_greedy_share"] = float(argv[argv.index("--pool-greedy-share") + 1])
+    if "--greedy-share" in argv:
+        # A5：老二分里「贪心」的份额（默认 0.8 ⇒ 20% 是**随机**对手）。
+        # 1.0 = 把随机那一路关掉 —— 那 20% 的局给的梯度基本是噪声，去掉是白送的。
+        kw["greedy_share"] = float(argv[argv.index("--greedy-share") + 1])
+    if "--mate-mix" in argv:
+        # A3：**队友多样性** —— 以此概率把学习队的一个座位也换成 `--opp-kind` 的固定策略，
+        # 只对另一个座位产标签。默认 0.0（关）= 与加开关之前逐位相同。
+        kw["mate_mix"] = float(argv[argv.index("--mate-mix") + 1])
     workers = int(argv[argv.index("--workers") + 1]) if "--workers" in argv else 1
     if workers > 1:
         r = train_parallel(seconds=seconds, workers=workers, buffer_games=buf,

@@ -37,7 +37,7 @@ def worker_device() -> str:
 def worker_batch(net, rng, eps, n_games, opp_mix=0.5, greedy_share=0.8,
                  learn_all_seats=False, members=None, pick_fixed=None,
                  bomb_cost: float = 0.0, opp_kind: str = "greedy",
-                 sample: bool = False):
+                 sample: bool = False, mate_mix: float = 0.0):
     """打一批局，只取紧凑记录（张量与奖励都由 learner 侧重放出来）。
 
     ⚠️ 新参数**必须带默认值** —— `tests/test_worker.py` 直接调这个函数，
@@ -47,7 +47,7 @@ def worker_batch(net, rng, eps, n_games, opp_mix=0.5, greedy_share=0.8,
         net, rng, eps, n_games, capture=False,
         opp_mix=opp_mix, greedy_share=greedy_share,
         learn_all_seats=learn_all_seats, members=members, pick_fixed=pick_fixed,
-        bomb_cost=bomb_cost, opp_kind=opp_kind, sample=sample)]
+        bomb_cost=bomb_cost, opp_kind=opp_kind, sample=sample, mate_mix=mate_mix)]
 
 
 def _drain_ctrl(ctrl_q, net, members: dict, state: dict) -> None:
@@ -125,7 +125,8 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
                             members=members, pick_fixed=picker,
                             bomb_cost=cfg.get("bomb_cost", 0.0),
                             opp_kind=cfg.get("opp_kind", "greedy"),
-                            sample=cfg.get("sample", False))
+                            sample=cfg.get("sample", False),
+                            mate_mix=cfg.get("mate_mix", 0.0))
         send_q.put(recs)                        # 队满则阻塞 = 天然背压（spec §6）
 
 
@@ -133,7 +134,8 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
                learn_all_seats=False, init=None, members=None,
                pick_all=None, member_id=None, use_pool=False,
                pool_greedy_share=pool.GREEDY_SHARE, bomb_cost: float = 0.0,
-               opp_kind: str = "greedy", sample: bool = False) -> dict:
+               opp_kind: str = "greedy", sample: bool = False,
+               mate_mix: float = 0.0) -> dict:
     """`members`：`{mid: state_dict}` 的**初始**池。
 
     `use_pool=False` 时**不抽池成员**，走老的 `greedy_share` 二分 ——
@@ -152,4 +154,4 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
             "members": dict(members or {}),
             "pick_all": pick_all, "member_id": member_id, "use_pool": use_pool,
             "pool_greedy_share": pool_greedy_share, "bomb_cost": bomb_cost,
-            "opp_kind": opp_kind, "sample": sample}
+            "opp_kind": opp_kind, "sample": sample, "mate_mix": mate_mix}
