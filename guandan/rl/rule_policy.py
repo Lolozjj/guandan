@@ -46,6 +46,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 from collections import Counter
 from typing import Optional
 
@@ -302,7 +303,38 @@ def _pass(acts):
 # `[源]` = 移植自那份开源规则式 AI；`[用户]` = 用户 2026-09-28 补的。
 
 
-def _lead(obs, acts, pool) -> Optional[int]:
+@dataclasses.dataclass(frozen=True)
+class Style:
+    """规则式的**风格旋钮**（路线图 A4）：默认 = 现役规则式，**逐位不变**。
+
+    **为什么要有它**：A6 只量出一种"可避免"（单点翻盘 14.7%），A6b 量出输局最大的一类是
+    「2-3」胶着局 —— 两条都指向同一个可能的弱点：**训练里只有单一对手风格**
+    （50% 的局打规则式）。而"打不打得过规则式"与"换个风格还打不打得过"是两件事。
+    所以这三个旋钮的真正用途是**造新尺子**（`tools/style_profile.py`），
+    让"鲁棒性"变成可测量的东西 —— 顺带也让 A4 那条臂有对手可换。
+
+    三个旋钮都只动**门槛**，不动规则本身（不动枚举、不动纪律）。
+    """
+    name: str = "normal"
+    #: 对手「一手走完」的风险到多少才必须拦（越高越不管；`DANGER` 是原值）
+    danger: float = DANGER
+    #: 台面主点 > 它才动炸（越低越爱炸；原值 10）
+    bomb_rank: int = 10
+    #: 领出时是否"留炸"（False = 残局计划里也先动炸）
+    hold_fire: bool = True
+
+
+NORMAL = Style()
+#: 炸侠：几乎见牌就炸、残局先动炸
+BOMB = Style(name="bomb", bomb_rank=4, hold_fire=False)
+#: 龟：只在对手**非常**可能一手走完时才拦，几乎不主动动炸
+HOLD = Style(name="hold", danger=0.8, bomb_rank=13)
+
+#: 名字 -> 风格。训练与尺子都按名字取，**别在别处再写一份字典**。
+STYLES = {s.name: s for s in (NORMAL, BOMB, HOLD)}
+
+
+def _lead(obs, acts, pool, style: Style = NORMAL) -> Optional[int]:
     """**领出**（台面是空的，我赢着这一手）。"""
     ally = ally_of(obs.seat)
 
@@ -313,8 +345,10 @@ def _lead(obs, acts, pool) -> Optional[int]:
 
     hands = hand_partition(obs.hand, obs.level)
     # [源 2] 还剩 2~3 手、且既有火力又有非火力 -> 先走非火力那手（留炸）
+    # `style.hold_fire=False`（炸侠）反过来：这一手先动炸
     if 2 <= len(hands) <= SOURCE2_MAX_HANDS and any(map(is_fire, hands))             and not all(map(is_fire, hands)):
-        i = _planned_plain(acts, hands, obs.hand, obs.level)
+        i = (_cheapest_fire(acts, obs.hand, obs.level) if not style.hold_fire
+             else _planned_plain(acts, hands, obs.hand, obs.level))
         if i is not None:
             return i
 
@@ -342,7 +376,7 @@ def _lead(obs, acts, pool) -> Optional[int]:
     # 按风险从高到低挑那个最该卡的对手。⚠️ 这条比原来「剩 1 张出对子、
     # 剩 2 张出单张」更一般 —— 3/5/6 张同样可能一手走完（用户补的那条）。
     for opp in sorted(opponents(obs.seat), key=lambda s: -finish_risk(obs.left[s], pool)):
-        if finish_risk(obs.left[opp], pool) >= DANGER:
+        if finish_risk(obs.left[opp], pool) >= style.danger:
             i = _size_not(acts, obs.left[opp], obs.hand, obs.level)
             if i is not None:
                 return i
@@ -358,7 +392,7 @@ def _lead(obs, acts, pool) -> Optional[int]:
     return None
 
 
-def _follow(obs, acts, pool) -> Optional[int]:
+def _follow(obs, acts, pool, style: Style = NORMAL) -> Optional[int]:
     """**跟牌**（台面上有牌要压）。
 
     ⚠️ 跟牌必须**同牌型同张数**（炸弹/同花顺除外），所以「有能压的普通牌」
@@ -398,7 +432,7 @@ def _follow(obs, acts, pool) -> Optional[int]:
                  default=0.0)
 
     # [用户 2] 有对手面临「一手走完」-> **必须拦**：先普通牌，没有就动炸
-    if danger >= DANGER:
+    if danger >= style.danger:
         i = _cheapest_plain(acts, obs.hand, obs.level)
         if i is not None:
             return i
@@ -409,26 +443,34 @@ def _follow(obs, acts, pool) -> Optional[int]:
     i = _cheapest_plain(acts, obs.hand, obs.level)
     if i is not None:
         return i
-    # [源 3] 台面主点 > 10 且我凑得出炸 -> 才动炸
-    if obs.table_rank > 10:
+    # [源 3] 台面主点 > 门槛 且我凑得出炸 -> 才动炸（`style.bomb_rank` 越低越爱炸）
+    if obs.table_rank > style.bomb_rank:
         i = _cheapest_fire(acts, obs.hand, obs.level)
         if i is not None:
             return i
     return _pass(acts)
 
 
-def rule_choose(obs, acts) -> int:
-    """规则式选择，返回 `acts` 的下标。**两条链的唯一实现。**"""
+def rule_choose(obs, acts, style: Style = NORMAL) -> int:
+    """规则式选择，返回 `acts` 的下标。**两条链的唯一实现。**
+
+    `style`（A4）：只动几个门槛（见 `Style`）。默认 `NORMAL` ⇒ 与加这个参数之前逐位相同。
+    """
     pool = unseen_pool(obs)
-    i = _follow(obs, acts, pool) if obs.table else _lead(obs, acts, pool)
+    i = _follow(obs, acts, pool, style) if obs.table else _lead(obs, acts, pool, style)
     return _cheapest(acts, obs.hand, obs.level) if i is None else i
 
 
-def rule_policy():
+def rule_policy(style: Style = NORMAL):
     """工厂：返回一个和 `greedy_policy` 同形状的策略 `(obs, acts, hist) -> 下标`。
 
     只吃 `obs`（公开信息）—— **拿不到明牌**，与那条红线一致。
+
+    `style`：见 `Style`（A4 的对手风格）；也可以直接传名字（`rule_policy("bomb")`）。
     """
+    if isinstance(style, str):
+        style = STYLES[style]
+
     def policy(obs, acts, hist=None) -> int:
-        return rule_choose(obs, acts)
+        return rule_choose(obs, acts, style)
     return policy
