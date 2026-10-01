@@ -24,6 +24,7 @@ def bench_run(workers: int, seconds: float = 45.0, out_dir: str = None,
     r = train_parallel(seconds=seconds, workers=workers,
                        out_dir=out_dir or tempfile.mkdtemp(prefix="bench-"),
                        eval_games=1, eval_every=10 ** 9,   # 不中途评测
+                       eval_rule_games=0,                  # 规则式那把尺子也不跑（它慢）
                        log=log, **kw)
     return {"workers": workers, "games": r["games"], "elapsed": r["elapsed"],
             "games_per_s": r["games"] / max(1e-9, r["elapsed"]),

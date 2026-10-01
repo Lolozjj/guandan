@@ -49,7 +49,7 @@ from guandan.rl.net import (DEVICE, QNet, check_entropy, check_logits, check_q_s
                             log_prob_and_entropy, policy_sample_batch,
                             q_argmax_batch, q_max_batch)
 from guandan.rl.policies import greedy_policy, random_policy
-from guandan.rl.rule_policy import rule_choose
+from guandan.rl.rule_policy import rule_choose, rule_policy
 
 BATCH_GAMES = 32              # spec §5.3（同步推进的局数；`--batch` 可调大）
 LR = 1e-4                     # spec §5.3
@@ -558,8 +558,21 @@ WEIGHT_SYNC_GAMES = 1000     # 多进程：每这么多局把权重广播给 wor
 
 def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
                 batch_games, out_dir, log, snap_every=pool.SNAP_EVERY_GAMES,
-                pool_size=pool.POOL_SIZE):
+                pool_size=pool.POOL_SIZE, rule_games=None):
     """每 `eval_every` 局评测一次并（可能）存 `best.pt`。**两条训练路线共用这一份。**
+
+    三把尺子：`vs 随机` / `vs 贪心` / **`vs 规则式`**（`rule_policy()`）。
+    `vs 贪心` 早在 90%+ 饱和，量不出代差 —— **`vs 规则式` 才是现在的主尺子**
+    （`tools/ruler.py` 就是拿它做多臂配对）。三个数**共用同一个 `eval_games`**，
+    所以互相可比；但要跟 `tools/ruler.py` 那套（多种子配对 × 400 局）**分开口径**，
+    别把这里的数直接当台账上的数引用。
+
+    `rule_games`：规则式那把跑多少局。`None` = 与 `eval_games` 相同；`0` = 不跑
+    —— 规则式是纯 Python 启发式，比贪心慢一个量级（200 局约十几秒），
+    所以量吞吐的短跑（`tools/bench_train.py`）必须能把它关掉。
+
+    `best.pt` 仍按 `vs 贪心` 挑（**行为不变**）—— 换成按规则式挑是另一个决定，
+    见 `docs` 里的讨论：老口径是按训练内 200 局 vs 贪心挑，噪声与一代的进步同量级。
 
     顺带按 `snap_every` 存池子快照 —— **与「有没有刷新最好」无关**：
     只存 `best.pt` 的话池子原料不够（144 万局只落几个点）。
@@ -568,12 +581,17 @@ def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
         wr_r = match(net_play(net), random_policy(random.Random(101)),
                      games=eval_games, seed=1001)
         wr_g = match(net_play(net), greedy_policy, games=eval_games, seed=1002)
-        curve.append((games, wr_r, wr_g))
-        log(f"     >> 评测 @ {games:7d} 局：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g:.1%}")
+        rg = eval_games if rule_games is None else rule_games
+        wr_rule = (match(net_play(net), rule_policy(), games=rg, seed=1004)
+                   if rg else None)
+        curve.append((games, wr_r, wr_g, wr_rule))
+        log(f"     >> 评测 @ {games:7d} 局：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g:.1%}"
+            + (f"   vs 规则式 {wr_rule:.1%}" if wr_rule is not None else ""))
         if wr_g > best_greedy:
             best_greedy = wr_g
             torch.save({"net": net.state_dict(), "games": games,
-                        "winrate_random": wr_r, "winrate_greedy": wr_g},
+                        "winrate_random": wr_r, "winrate_greedy": wr_g,
+                        "winrate_rule": wr_rule},
                        os.path.join(out_dir, "best.pt"))
     if snap_every and games and games % snap_every < batch_games:
         p = pool.snapshot_path(out_dir, games)
@@ -586,25 +604,36 @@ def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
 
 
 def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log,
-            bomb_games: int = 25):
+            bomb_games: int = 25, rule_games=None):
     """收尾：两次评测看方差 + 报告 + 存 last.pt + 返回结果。**两条路线共用。**
 
     `elapsed` 是**训练阶段**的秒数（在收尾评测之前取）—— 吞吐要用它算，
     别把固定的评测开销算进去（否则 bench 的短跑会被评测淹没）。
-    `bomb_games=0` 跳过炸弹浪费率那一步（bench 用，省 30 秒）。
+    `bomb_games=0` 跳过炸弹浪费率那一步（bench 用，省 30 秒）；
+    `rule_games=0` 跳过规则式那把尺子（同理，bench 用）。
     """
     elapsed = time.perf_counter() - t0
     wr_g1 = match(net_play(net), greedy_policy, games=eval_games, seed=2001)
     wr_g2 = match(net_play(net), greedy_policy, games=eval_games, seed=2002)
     wr_r = match(net_play(net), random_policy(random.Random(202)),
                  games=eval_games, seed=2003)
+    # 规则式用**同样的两个 seed**（2001/2002）—— 也就是同一副牌，
+    # 所以「vs 贪心」与「vs 规则式」这两组数可以直接对着看。
+    rg = eval_games if rule_games is None else rule_games
+    wr_u1 = match(net_play(net), rule_policy(), games=rg, seed=2001) if rg else None
+    wr_u2 = match(net_play(net), rule_policy(), games=rg, seed=2002) if rg else None
     log("")
     log(f"总共 {games:,} 局 / {steps:,} 步 / {elapsed:.0f} 秒")
     log(f"末次：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g1:.1%} / {wr_g2:.1%}"
         f"（两次，差 {abs(wr_g1 - wr_g2):.1%} —— 200 局的噪声约 ±2%）")
+    if wr_u1 is not None:
+        log(f"      vs 规则式 {wr_u1:.1%} / {wr_u2:.1%}"
+            f"（两次，差 {abs(wr_u1 - wr_u2):.1%}，**与上面同一副牌**）"
+            f" ← **主尺子**；口径与 `tools/ruler.py`（多种子配对 ×400 局）不同，别混")
     if curve:
-        log("曲线（局数:vs随机/vs贪心）：" + "  ".join(
-            f"{g // 1000}k:{r:.0%}/{k:.0%}" for g, r, k in curve))
+        log("曲线（局数:vs随机/vs贪心/vs规则式）：" + "  ".join(
+            f"{g // 1000}k:{r:.0%}/{k:.0%}" + (f"/{u:.0%}" if u is not None else "")
+            for g, r, k, u in curve))
     # 炸弹浪费率（用户 2026-09-26 报的毛病）——**只报告，不当判据**：
     # 判据仍是「vs 贪心 ≥55%」（与老几次跑可比），这个数是给你看「有没有变好」的。
     if bomb_games:
@@ -615,11 +644,14 @@ def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log,
                 f"   [对照：贪心恒为 0%]")
         except Exception as exc:                  # noqa: BLE001 - 报告失败不该带崩训练
             log(f"  炸弹浪费率：没量成（{type(exc).__name__}: {exc}）")
+    wr_rule = (wr_u1 + wr_u2) / 2 if wr_u1 is not None else None
     torch.save({"net": net.state_dict(), "games": games,
-                "winrate_random": wr_r, "winrate_greedy": wr_g1},
+                "winrate_random": wr_r, "winrate_greedy": wr_g1,
+                "winrate_rule": wr_rule},
                os.path.join(out_dir, "last.pt"))
     return {"games": games, "curve": curve, "best_greedy": best_greedy,
             "wr_random": wr_r, "wr_greedy": (wr_g1 + wr_g2) / 2,
+            "wr_rule": wr_rule,
             "out_dir": out_dir, "elapsed": elapsed}
 
 
@@ -674,7 +706,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           bomb_cost: float = 0.0, mc_mix: float = MC_MIX,
           n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES,
           opp_kind: str = "greedy", algo: str = "dmc",
-          beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES):
+          beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES,
+          eval_rule_games: int = None):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -757,10 +790,11 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         # 4) 每 N 局：存权重 + 评测（spec §5.3）—— 公共件，两条训练路线共用
         best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
                                   eval_every, batch_games, out_dir, log,
-                                  snap_every=snap_every, pool_size=pool_size)
+                                  snap_every=snap_every, pool_size=pool_size,
+                                  rule_games=eval_rule_games)
 
     return _finish(net, games, steps, t0, curve, best_greedy, eval_games,
-                   out_dir, log)
+                   out_dir, log, rule_games=eval_rule_games)
 
 
 def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
@@ -777,6 +811,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    tgt_sync: int = TGT_SYNC_GAMES, opp_kind: str = "greedy",
                    algo: str = "dmc", beta_ent: float = BETA_ENT,
                    weight_sync_games: int = WEIGHT_SYNC_GAMES,
+                   eval_rule_games: int = None,
                    _kill_worker_after: float = None):
     """多进程：`workers` 个进程打牌、本进程学习。
 
@@ -943,7 +978,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
             best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
                                       eval_every, batch_games, out_dir, log,
-                                      snap_every=snap_every, pool_size=pool_size)
+                                      snap_every=snap_every, pool_size=pool_size,
+                                      rule_games=eval_rule_games)
             # 新快照进池 + **增量**广播（只发这一个成员，7.8MB，每 snap_every 局一次）。
             # 用「文件在不在」判、不重算取模 —— 免得与 _maybe_eval 里的条件漂开。
             if pfsp and os.path.exists(pool.snapshot_path(out_dir, games)):
@@ -970,7 +1006,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 p.terminate()
     collapsed = pool_report(wr, current_pfsp(), log) if pfsp else False
     r = _finish(net, games, steps, t0, curve, best_greedy, eval_games,
-                out_dir, log)
+                out_dir, log, rule_games=eval_rule_games)
     r["qmax"] = qmax
     r["pool_collapsed"] = collapsed
     return r
@@ -1040,6 +1076,9 @@ def main(argv=None) -> int:
         kw["snap_every"] = int(argv[argv.index("--snap-every") + 1])
     if "--pool-size" in argv:
         kw["pool_size"] = int(argv[argv.index("--pool-size") + 1])
+    if "--eval-rule-games" in argv:
+        # 规则式那把尺子跑多少局：留空 = 与 `--eval-games` 相同；0 = 不跑。
+        kw["eval_rule_games"] = int(argv[argv.index("--eval-rule-games") + 1])
     if "--pfsp" in argv:
         kw["pfsp"] = True
     if "--pool-greedy-share" in argv:
@@ -1057,6 +1096,10 @@ def main(argv=None) -> int:
     ok = r["wr_greedy"] >= 0.55
     print("判据（spec §7 分水岭：明确打得过贪心）：" + (
         "**过了** ✓" if ok else f"**没过** ✗（vs 贪心 {r['wr_greedy']:.1%}，要 ≥55%）"))
+    if r.get("wr_rule") is not None:
+        # 只是报出来：**退出码仍按 vs 贪心**（与老几次跑可比）。
+        # 规则式才是主尺子，但它慢、且训练内只有 200 局，不适合当退出码。
+        print(f"  参考：vs 规则式 {r['wr_rule']:.1%}（**主尺子**；要按它挑权重请用 tools.ruler）")
     if r.get("pool_collapsed"):
         # 池子塌了 = 失败，不是一行日志（spec §1.4 / 本仓库「失败必须响」）。
         # 原来只写进返回值，退出码照样 0、照样印「判据过了」——
