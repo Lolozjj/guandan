@@ -42,8 +42,8 @@ guandan/
   sim/               牌局引擎（训练与上线的**同一份**，不许有副本）
     meld.py            牌型引擎：合法着法枚举 + 大小比较
     rules.py           牌局规则：轮转 / 接风 / 进贡 / 名次
-    env.py             RL 环境：700 维状态 / 143 动作 / 15×147 历史
-    features.py        A2 的显式特征（27 维，**默认关**：中期无信号 + 2× 吞吐代价）
+    env.py             RL 环境：状态 727 维 / 动作 146 维 / 历史 15×147
+    features.py        A2 的显式特征（27 维，**默认关**）+ 动作侧后果（3 维，默认开）
   advice/            出牌建议（明牌 → 策略的唯一窄口）
     advise.py          GameState → Observation → 候选 → QNet 打分 → 建议
     shadow.py          影子模式：每个决策点记账 → runtime/shadow.jsonl
@@ -217,6 +217,19 @@ $env:GUANDAN_DEVICE="cpu"      # ⚠️ 实测最优，不是将就：这个循�
 ---
 
 ## 四、权重怎么换（只有一条路，而且看得见）
+
+**网络的三块输入（宽度）** —— 改宽度前先读这三行，否则会静默把权重接错输入：
+
+| 块 | 宽度 | 说明 |
+|---|---|---|
+| state | **727** | 老 700 项 + 27 维 A2 显式特征（`features.ENABLED`，**默认关、恒为 0**） |
+| action | **146** | 基础 143 + **3 维动作侧后果**（用掉一手计划 / 拆一手计划 / 拆自己的炸） |
+| history | 15×**147** | 历史行用**基础 143**，那里拿不到当时的手牌 ⇒ **与当前动作不是一个宽度** |
+
+⚠️ `ACTION_DIM`（146）与 `ACTION_BASE_DIM`（143）**别混用**：
+当前动作只有一个入口 `env.encode_action_now(m, level, hand)`；历史行用 `encode_action`。
+老权重靠 `net.load_state` **按块零填充**搬列（`KNOWN_LAYOUTS = ((700,143),(727,143))`），
+反推不出布局就抛 —— 猜错＝静默把权重接在错的输入上。
 
 优先级：**显式传参 → `GUANDAN_WEIGHTS` 环境变量 → `models/best.pt`**（`advise.resolve_weights`）。
 
