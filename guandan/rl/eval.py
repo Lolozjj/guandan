@@ -15,7 +15,7 @@ from guandan.sim import env, rules
 
 
 def match(policy_a, policy_b, games: int = 200, seed: int = 0,
-          level: int = None, expand_a: bool = False) -> float:
+          level: int = None, expand_a: bool = False, search_a=None) -> float:
     """a 队对 b 队的胜率（`games` 局，座位对调）。
 
     **所有局同步推进**（各走一步、攒成一批再问网络），理由与自对弈那边一样：
@@ -28,6 +28,11 @@ def match(policy_a, policy_b, games: int = 200, seed: int = 0,
     `expand_a=True`：**只给 `policy_a` 那一侧**的候选补花色变体（A1b 实验，
     `env.expand_seats`）—— `policy_b`（尺子）保持老候选，所以测的是
     「多给选项值多少」，不是「换了套规则」。
+
+    `search_a`：可选的**推理时搜索**（见 `rl/search.py` 的 `one_step_backup`）。
+    给了之后 `policy_a` 那一侧改由它选动作（批量接口：
+    `search_a([(env, (obs, acts, hist)), ...]) -> [下标, ...]`）。
+    它**只影响选动作，不改权重** —— 所以这是"多算一次前向"值多少的直接测量。
     """
     rng = random.Random(seed)
     envs, a_on_team0 = [], []
@@ -56,12 +61,15 @@ def match(policy_a, policy_b, games: int = 200, seed: int = 0,
 
         picks = [None] * len(pending)
         for on_a, js in groups.items():
-            pol = policy_a if on_a else policy_b
-            bc = getattr(pol, "batch_choose", None)
-            if bc is not None:
-                got = bc([pending[j] for j in js])
+            if on_a and search_a is not None:
+                got = search_a([(envs[alive[j]], pending[j]) for j in js])
             else:
-                got = [pol(*pending[j]) for j in js]
+                pol = policy_a if on_a else policy_b
+                bc = getattr(pol, "batch_choose", None)
+                if bc is not None:
+                    got = bc([pending[j] for j in js])
+                else:
+                    got = [pol(*pending[j]) for j in js]
             for j, idx in zip(js, got):
                 picks[j] = idx
 
