@@ -1138,6 +1138,15 @@ def main(argv=None) -> int:
     if "--eval-rule-games" in argv:
         # 规则式那把尺子跑多少局：留空 = 与 `--eval-games` 相同；0 = 不跑。
         kw["eval_rule_games"] = int(argv[argv.index("--eval-rule-games") + 1])
+    if "--eval-games" in argv:
+        # B4：训练内评测多少局（默认 200）。**`best.pt` 就是按这个读数挑的** ——
+        # 200 局的 sd ≈ 2pp，与一代的进步（~3pp）同量级，等于在抽签。
+        # 想让它挑得稳就调大（代价：每次评测多花时间，规则式 400 局约 20 秒）。
+        kw["eval_games"] = int(argv[argv.index("--eval-games") + 1])
+    if "--eval-every" in argv:
+        # B4：每多少局评测一次（默认 10000）。**它同时决定快照/评测点的密度**：
+        # 短臂要调小才看得到曲线。
+        kw["eval_every"] = int(argv[argv.index("--eval-every") + 1])
     if "--pfsp" in argv:
         kw["pfsp"] = True
     if "--pool-greedy-share" in argv:
