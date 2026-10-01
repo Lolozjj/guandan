@@ -96,6 +96,20 @@ def _rel(seq, seat: int):
     return tuple(seq[(seat + i) % 4] for i in range(4))
 
 
+def encode_action_now(m, level: int, hand) -> np.ndarray:
+    """**当前动作的唯一入口**：`ACTION_BASE_DIM` + 动作侧后果特征 = `ACTION_DIM`。
+
+    为什么要动作侧特征：A2 加的是状态侧（同一局面里对每个候选都一样）⇒ 帮不上 argmax；
+    这三个量逐个候选不同，是"哪一手更好"真正缺的信息。
+
+    ⚠️ **历史行不要用这个**（`encode_history` 用 `encode_action`）：
+    历史里拿不到当时的手牌，两边宽度因此不同 —— 这是**故意**的，不是疏漏。
+    """
+    return np.concatenate([
+        encode_action(m, level),
+        np.asarray(features.consequence_features(hand, m, level), dtype=np.float32)])
+
+
 def encode_state(obs: Observation) -> np.ndarray:
     """`Observation` -> `STATE_DIM` 维 float32（700 + A2 的显式特征）。**只吃 `Observation`**。"""
     if not isinstance(obs.level, int) or not 1 <= obs.level <= 13:
@@ -168,8 +182,16 @@ def observe(hand: "rules.Hand", seat: int, played, table_meld: Optional["meld.Me
 # ---------------------------------------------------------------- 动作编码
 
 #: spec §4.2：牌型 10 + 主点数 15 + 张数 9 + 逢人配 1 + 牌 108
-ACTION_DIM = 10 + 15 + 9 + 1 + 108
-assert ACTION_DIM == 143
+#: **历史行**里的动作宽度（`encode_history`）：那里**拿不到当时的手牌**，
+#: 所以不能带动作侧后果特征。历史行必须用这个宽度。
+ACTION_BASE_DIM = 10 + 15 + 9 + 1 + 108
+assert ACTION_BASE_DIM == 143
+
+#: **当前动作**的宽度 = 基础 143 + `features.CONSEQUENCE_DIM`（动作侧后果特征）。
+#: ⚠️ 与 `ACTION_BASE_DIM` 是两个宽度，**别混用**：混了就是"位置含义漂了"，
+#: 而网络那边只会静默学歪。当前动作只有一个入口：`encode_action_now()`。
+ACTION_DIM = ACTION_BASE_DIM + features.CONSEQUENCE_DIM
+assert ACTION_DIM == 146
 
 _A_OFF_KIND = 0
 _A_OFF_RANK = 10
@@ -185,7 +207,11 @@ _SIZE_COMPOSITE = 8
 
 
 def encode_action(m, level: int) -> np.ndarray:
-    """一个候选着法 -> 143 维 float32。**`None`（过）编成全 0。**
+    """一个候选着法 -> **`ACTION_BASE_DIM`（143）** 维 float32。**`None`（过）编成全 0。**
+
+    ⚠️ 这是**基础**编码：`encode_history`（历史行）用它 —— 那里**拿不到当时的手牌**，
+    所以不能带动作侧后果特征。**当前动作请用 `encode_action_now()`（146 维）。**
+    两个宽度混用就是"位置含义漂了"，而网络只会静默学歪。
 
     ⚠️ 主点数那一格的口径与 `Meld.rank` 一致，而 `rank` 在两种口径之间：
     序列类（顺子/连顺/钢板）存的是**自然值**（A 可作 1 或 14），
@@ -193,7 +219,7 @@ def encode_action(m, level: int) -> np.ndarray:
     天王炸的 `rank` 是 0。**所以这一格跨牌型不是单射** ——
     真正的判别力在牌 multi-hot 上，这一格是给网络的便捷特征。
     """
-    v = np.zeros(ACTION_DIM, dtype=np.float32)
+    v = np.zeros(ACTION_BASE_DIM, dtype=np.float32)
     if m is None:
         return v                          # 「过」= 全 0（没有牌型、没有牌）
     v[_A_OFF_KIND + m.kind - 1] = 1.0
@@ -334,7 +360,7 @@ HISTORY_LEN = 15
 #: ⚠️ 那 4 维是**在 spec §4.2 的动作编码之外加的**（§4.2 只说了动作怎么编）。
 #: 加的理由：同一个 9♠ 是下家出的还是对家出的，对判断局面完全不同 ——
 #: 不记「谁出的」，这 15 行能提供的信息会少一大半。动作编码本身仍严格按 §4.2（143 维）。
-HISTORY_DIM = ACTION_DIM + 4
+HISTORY_DIM = ACTION_BASE_DIM + 4     # 历史行不带动作侧后果特征（见上）
 assert HISTORY_DIM == 147
 
 
@@ -349,6 +375,6 @@ def encode_history(hand: "rules.Hand", seat: int) -> np.ndarray:
     steps = hand.steps[-HISTORY_LEN:]
     for i, st in enumerate(steps):
         row = v[HISTORY_LEN - len(steps) + i]
-        row[:ACTION_DIM] = encode_action(st.meld, hand.level)   # 过 = 全 0
-        row[ACTION_DIM + (st.seat - seat) % 4] = 1.0
+        row[:ACTION_BASE_DIM] = encode_action(st.meld, hand.level)   # 过 = 全 0
+        row[ACTION_BASE_DIM + (st.seat - seat) % 4] = 1.0
     return v

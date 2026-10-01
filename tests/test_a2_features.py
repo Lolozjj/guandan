@@ -96,37 +96,43 @@ def test_no_leak_from_opponents_hands():
 
 
 def test_old_weights_load_by_zero_padding_and_stay_equivalent():
-    """⚠️ A2 可比的前提：**老权重（少 27 维）装上之后，行为必须一字不差。**
+    """⚠️ 热启动可比的前提：**老权重（少 27 维状态 + 少 3 维动作）装上后行为必须一字不差。**
 
-    构造方式（第一版我写错了，记下来）：老 checkpoint 的逻辑含义是
+    构造方式（第一版我写错过，记下来）：老 checkpoint 的逻辑含义是
     「**新特征那几列根本不存在**」⇒ 等价于那些列是 0。
-    所以先**把新特征列清零**，再切掉它们模拟老 ckpt —— 装回来之后输出必须与清零后完全相同。
+    所以先**把新列清零**，再切掉它们模拟老 ckpt —— 装回来之后输出必须与清零后完全相同。
 
     （反面教训：直接切掉**随机非零**的那几列，函数当然会变 —— 那是测试构造错，不是实现错。）
     """
     net = QNet().eval()
-    s_new = env.STATE_DIM
+    s_new, a_new = env.STATE_DIM, env.ACTION_DIM
     s_old = s_new - features.EXTRA_DIM
-    with torch.no_grad():
-        net.mlp[0].weight[:, s_old:s_new] = 0.0          # 老网络没有这些特征 ⇒ 列是 0
+    a_old = env.ACTION_BASE_DIM
+    w = net.mlp[0].weight
+    with torch.no_grad():                                 # 老网络没有这些特征 ⇒ 那几列是 0
+        w[:, s_old:s_new] = 0.0                           # 新状态特征
+        w[:, s_new + a_old:s_new + a_new] = 0.0           # 新动作特征
     sd = {k: v.clone() for k, v in net.state_dict().items()}
-    old_w = torch.cat([sd["mlp.0.weight"][:, :s_old],
-                       sd["mlp.0.weight"][:, s_new:]], dim=1)   # 模拟老 ckpt（971 列）
-    assert old_w.shape[1] == s_old + env.ACTION_DIM + LSTM_HIDDEN
+    w = sd["mlp.0.weight"]
+    old_w = torch.cat([w[:, :s_old],                      # 老状态
+                       w[:, s_new:s_new + a_old],         # 老动作（去掉中间的新状态列）
+                       w[:, s_new + a_new:]], dim=1)      # lstm（去掉新动作列）
+    assert old_w.shape[1] == s_old + a_old + LSTM_HIDDEN == 700 + 143 + 128
 
     st = torch.randn(2, s_new)
-    ac = torch.randn(2, env.ACTION_DIM)
+    ac = torch.randn(2, a_new)
     hi = torch.randn(2, 15, env.HISTORY_DIM)
     with torch.no_grad():
         want = net(st, ac, hi)
 
     grown = QNet().eval()
     load_state(grown, {**sd, "mlp.0.weight": old_w})
-    # 新特征那几列必须是 0（贡献为 0）
+    # 两块新特征的那几列必须都是 0（贡献为 0）
     assert torch.count_nonzero(grown.mlp[0].weight[:, s_old:s_new]) == 0
+    assert torch.count_nonzero(grown.mlp[0].weight[:, s_new + a_old:s_new + a_new]) == 0
     with torch.no_grad():
         got = grown(st, ac, hi)
-    assert torch.allclose(want, got, atol=1e-6), "零填充之后输出变了 —— A2 不可比"
+    assert torch.allclose(want, got, atol=1e-6), "零填充之后输出变了 —— 热启动不可比"
 
 
 def test_wider_checkpoints_are_rejected_loudly():

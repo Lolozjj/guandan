@@ -8,12 +8,30 @@ A = meld.cid_from_name
 
 
 def test_action_dim_matches_the_spec():
-    assert env.ACTION_DIM == 143          # 10 + 15 + 9 + 1 + 108
+    # 基础 143（历史行用）+ 3 个**动作侧后果**特征 = 146（当前动作用）
+    assert env.ACTION_BASE_DIM == 143     # 10 + 15 + 9 + 1 + 108
+    assert env.ACTION_DIM == 146
+    assert env.HISTORY_DIM == env.ACTION_BASE_DIM + 4
+
+
+def test_encode_action_now_appends_the_consequence_block():
+    """当前动作 = 基础 143 + 3；前 143 维必须与基础编码**逐位相同**，`None`（过）整条全 0。"""
+    hand = [A("S3"), A("H3"), A("D3"), A("S5")]
+    m = meld.as_meld([A("S3"), A("H3"), A("D3")], 2)
+    now = env.encode_action_now(m, 2, hand)
+    base = env.encode_action(m, 2)
+    assert now.shape == (env.ACTION_DIM,)
+    assert np.array_equal(now[:env.ACTION_BASE_DIM], base)
+    # 三个 3 正好是这一手计划好的牌 ⇒ 「用掉一整手计划」那一维必须是 1
+    assert now[env.ACTION_BASE_DIM] == 1.0
+    assert np.all((now[env.ACTION_BASE_DIM:] >= 0) & (now[env.ACTION_BASE_DIM:] <= 1))
+    z = env.encode_action_now(None, 2, hand)
+    assert z.shape == (env.ACTION_DIM,) and z.sum() == 0
 
 
 def test_pass_action_is_all_zeros_and_single_card_is_not():
     z = env.encode_action(None, level=2)
-    assert z.shape == (143,) and z.sum() == 0
+    assert z.shape == (env.ACTION_BASE_DIM,) and z.sum() == 0
     m = meld.as_meld([A("S3")], 2)
     v = env.encode_action(m, 2)
     assert v[:10].argmax() == meld.SINGLE - 1

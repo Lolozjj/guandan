@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import functools
+from collections import Counter
 
 from guandan.capture import cards
 from guandan.sim import meld, rules
@@ -180,6 +181,64 @@ def hand_partition(hand, level) -> list:
         groups.append(t + pairs.pop(0) if pairs else t)   # 三张优先配一对 -> 三带二
     groups += pairs + [[c] for c in singles]
     return [m for m in (meld.as_meld(g, level) for g in groups) if m is not None]
+
+
+def breaks_bomb(hand, m) -> bool:
+    """这一手是不是**从自己手里的炸里挖牌**：某个点数我握着 ≥4 张，
+    这一手只用了其中 1~3 张 ⇒ 那个炸废了。
+
+    ⚠️ 豁免只有一种：**把整个炸当炸打出去**（`is_bomb` 且四张全用掉）。
+    不能只看「四张全用掉」—— 逢人配会骗人：`8♠8♥8♣8♦J♠`（8♥ 当 J 去配对子）
+    里真被吃掉的 8 只有 3 张，8 炸没了，但按牌面点数看 4 个 8 全在。
+
+    （原在 `rl/rule_policy.py`；2026-09-30 搬到 `sim/` —— 动作侧特征要用它，
+    让 `sim/` 反向 import `rl/` 会把依赖方向弄反。老名字在 `rule_policy` 里照旧可用。）
+    """
+    if m is None:
+        return False
+    have = Counter(cards.parts(c)[0] for c in hand)
+    used = Counter(cards.parts(c)[0] for c in m.cards)
+    for idx, n in have.items():
+        if n < 4:
+            continue
+        k = used.get(idx, 0)
+        if k and not (m.is_bomb and k == n):
+            return True
+    return False
+
+
+#: 每个**当前动作**额外带的后果特征维度（见 `consequence_features`）
+CONSEQUENCE_DIM = 3
+
+
+def consequence_features(hand, m, level, groups=None) -> tuple:
+    """**动作侧**的后果特征（3 维）：这一手对"我计划好的牌"做了什么。
+
+    为什么必须是动作侧：A2 加的是**状态**特征 —— 同一局面里对**每个候选都一样**，
+    所以**不可能**帮 argmax 分辨候选（实测边际 0.110 → 0.104，没动）。
+    这三个量**逐个候选不同**，正是比较时缺的那点信息。
+
+        1. 正好打出一手**计划好的牌**（`hand_partition` 的某一组）—— 效率最高的一手
+        2. **拆了一手计划好的牌**（部分用了某一组）—— 半途而废
+        3. **拆了自己的炸**（某点数 ≥4 张却只用了 1~3 张）—— 纪律问题（「白炸」的来源）
+
+    `groups` 可传入复用：**同一个决策点的所有候选共用一次 `hand_partition`**
+    —— 逐个候选都算一次会让编码慢一个数量级（那是热路径）。
+    """
+    if m is None:
+        return (0.0, 0.0, 0.0)
+    used = set(m.cards)
+    if groups is None:
+        groups = hand_partition(sorted(hand), level)
+    uses = breaks_plan = 0.0
+    for g in groups:
+        cs = set(g.cards)
+        if used == cs:
+            uses = 1.0
+            break
+        if used & cs:
+            breaks_plan = 1.0
+    return (uses, breaks_plan, 1.0 if breaks_bomb(hand, m) else 0.0)
 
 
 def fire_counts(hand, level) -> tuple:

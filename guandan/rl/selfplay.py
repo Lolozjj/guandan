@@ -602,7 +602,7 @@ def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
 def _tensors(samples):
     """把 `(obs, acts, i, seat, hist)` 铺成张量。"""
     st = torch.from_numpy(np.stack([env.encode_state(o) for o, _a, _i, _s, _h in samples]))
-    ac = torch.from_numpy(np.stack([env.encode_action(a[i], o.level)
+    ac = torch.from_numpy(np.stack([env.encode_action_now(a[i], o.level, o.hand)
                                     for o, a, i, _s, _h in samples]))
     hi = torch.from_numpy(np.stack([h for _o, _a, _i, _s, h in samples]))
     return st, ac, hi

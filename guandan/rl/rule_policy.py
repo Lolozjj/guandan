@@ -53,7 +53,8 @@ from typing import Optional
 from guandan.capture import cards
 from guandan.sim import meld, rules
 # A2（2026-09-30）：这几个量从 sim/ 搬下来了（见 guandan/sim/features.py）
-from guandan.sim.features import _has_run, hand_partition, unseen_pool   # noqa: F401  # 老名字照旧可用
+from guandan.sim.features import _has_run, hand_partition, unseen_pool
+from guandan.sim.features import breaks_bomb   # noqa: F401  # A4 之后搬下去（动作侧特征要用）   # noqa: F401  # 老名字照旧可用
 
 #: 剩 `n` 张「一手走完」的风险到多少才算「必须压制」。
 #: **这是一个启发式门槛**，不是概率 —— `finish_risk` 返回的是刻度，不是概率。
@@ -157,33 +158,6 @@ def _key(m):
     """主排序键 —— 与 `policies.greedy_policy` 的 `_sort_key` 同口径
     （张数优先，所以「最小」永远不会是炸）。**并列时另有 `_spent` 细化。**"""
     return (m.size, m.rank, m.kind)
-
-
-def breaks_bomb(hand, m) -> bool:
-    """这一手是不是**从自己手里的炸里挖牌**：某个点数我握着 ≥4 张，
-    这一手只用了其中 1~3 张 ⇒ 那个炸废了。
-
-    ⚠️ 豁免只有一种：**把整个炸当炸打出去**（`is_bomb` 且四张全用掉）。
-    不能只看「四张全用掉」—— 逢人配会骗人：`8♠8♥8♣8♦J♠`（8♥ 当 J 去配对子）
-    里真被吃掉的 8 只有 3 张，8 炸没了，但按牌面点数看 4 个 8 全在。
-
-    用户 2026-09-29 报的：「为啥第一手就把炸弹毫无意义的给拆了」。
-    查出来两层毛病**都在这一层**（移植来的是「优先三带二」那条规则，
-    怎么在三带二之间取舍是我写的）：`_key` 看不见「那一对」，
-    而 `is_fire(m)` 判的是**这一手本身**是不是炸 —— `222+77` 不是炸，
-    就当普通牌放行了。实测代价：规则式 4.7% 的决策**本可不拆却拆了**。
-    """
-    if m is None:
-        return False
-    have = Counter(cards.parts(c)[0] for c in hand)
-    used = Counter(cards.parts(c)[0] for c in m.cards)
-    for idx, n in have.items():
-        if n < 4:
-            continue
-        k = used.get(idx, 0)
-        if k and not (m.is_bomb and k == n):
-            return True
-    return False
 
 
 def _prefer_intact(cand, hand):

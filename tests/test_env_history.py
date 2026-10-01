@@ -25,8 +25,8 @@ def test_recent_steps_are_right_aligned_and_carry_the_relative_seat():
     v = env.encode_history(h, 1)                      # 从座位 1 的视角看
     assert v[:env.HISTORY_LEN - 1].sum() == 0         # 只有一步，前面全是 0
     row = v[-1]
-    assert row[:env.ACTION_DIM].sum() > 0             # 有动作
-    assert row[env.ACTION_DIM:].argmax() == 3         # 座位 0 对座位 1 来说是**上家**（相对 3）
+    assert row[:env.ACTION_BASE_DIM].sum() > 0        # 有动作（历史行用**基础**宽度）
+    assert row[env.ACTION_BASE_DIM:].argmax() == 3    # 座位 0 对座位 1 来说是**上家**（相对 3）
 
 
 def test_history_is_truncated_to_the_last_15_steps():

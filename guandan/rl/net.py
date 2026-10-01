@@ -49,35 +49,53 @@ class QNet(nn.Module):
         return self.mlp(torch.cat([state, action, h[-1]], dim=-1)).squeeze(-1)
 
 
+#: 历史上出现过的 `(state_dim, action_dim)` 组合 —— 装载时据此**反推** checkpoint 的布局。
+#: 只在"checkpoint 与当前网络宽度不同"时才用；反推不出来就**抛**（不许静默猜一个）。
+#:   (700, 143) R 系列 / R11
+#:   (727, 143) A2 加了 27 维状态特征（那一块默认关、恒为 0）
+#: 当前是 (727, 146)：A2 的 27 + **动作侧后果** 3 维。
+KNOWN_LAYOUTS = ((700, 143), (727, 143))
+
+
 def load_state(net, sd) -> None:
-    """把 checkpoint 装进 `net`，**允许状态维度长大**（A2 的零填充热启动）。
+    """把 checkpoint 装进 `net`，**允许 state 块与 action 块长大**（零填充热启动）。
 
-    `forward` 的第一层输入是 `[state | action | lstm]`。A2 之后 `state` 末尾多了 X 维
-    （`sim/features.py`），所以老 checkpoint 的列要**搬家**：
+    `forward` 的第一层输入是 `[state | action | lstm]`。两处都长过：
 
-        新列 [0, s_old)            <- 老列 [0, s_old)        （老状态，原位）
-        新列 [s_old, s_new)        <- 0                       （新特征，从"贡献 0"开始学）
-        新列 [s_new, end)          <- 老列 [s_old, end)       （action 与 lstm，整体右移 X）
+    - **state**：A2 在末尾加了 27 维（`sim/features.py`，默认关、恒为 0）
+    - **action**：2026-09-30 加了 3 维**动作侧后果**（`env.encode_action_now`）
 
-    ⇒ 装上老权重之后，网络**在数值上等价于老网络**（新特征乘 0）。这正是 A2 可比的前提：
-    否则就得从零重训，还未必追得上现役权重。`strict=True` 保留 —— 别的形状不对就炸。
+    所以老 checkpoint 的列要按块**搬家**（新维度补 0 ⇒ 新网络**数值上等价于老网络**）：
 
-    ⚠️ 只允许**长大**（`s_new > s_old`）；变小或别的形状不符一律抛，不静默凑合。
+        新 [0, s_old)            <- 老 [0, s_old)              （老状态，原位）
+        新 [s_old, s_new)        <- 0                          （新状态特征）
+        新 [s_new, s_new+a_old)  <- 老 [s_old, s_old+a_old)    （老动作块，整体右移）
+        新 [s_new+a_old, ·)      <- 0                          （新动作特征）
+        新 [·, end)              <- 老 [·, end)                （lstm，整体右移）
+
+    ⚠️ 只允许**长大**（两块都不许缩）；布局反推不出来、或宽度不符一律抛，不静默凑合。
     """
     import torch
 
     w = sd.get("mlp.0.weight")
-    if w is not None and w.shape[1] != net.mlp[0].weight.shape[1]:
-        s_old = w.shape[1] - env.ACTION_DIM - LSTM_HIDDEN
-        s_new = net.mlp[0].weight.shape[1] - env.ACTION_DIM - LSTM_HIDDEN
-        if s_new <= s_old:
+    need = net.mlp[0].weight.shape[1]
+    if w is not None and w.shape[1] != need:
+        cand = [d for d in KNOWN_LAYOUTS if d[0] + d[1] + LSTM_HIDDEN == w.shape[1]]
+        if len(cand) != 1:
             raise ValueError(
-                f"权重装不上：状态维度 {s_old} -> {s_new} 不是「长大」。"
+                f"权重装不上：第一层 {w.shape[1]} 列反推不出布局"
+                f"（已知 {KNOWN_LAYOUTS}，LSTM={LSTM_HIDDEN}）。"
+                f"**别在这里猜** —— 猜错就是静默把权重接在错的输入上。")
+        s_old, a_old = cand[0]
+        s_new, a_new = env.STATE_DIM, env.ACTION_DIM
+        if s_new < s_old or a_new < a_old:
+            raise ValueError(
+                f"权重装不上：({s_old},{a_old}) -> ({s_new},{a_new}) 不是「长大」。"
                 f"（本函数只做零填充热启动，不做缩维）")
-        new_w = torch.zeros(w.shape[0], s_new + env.ACTION_DIM + LSTM_HIDDEN,
-                            dtype=w.dtype)
+        new_w = torch.zeros(w.shape[0], need, dtype=w.dtype)
         new_w[:, :s_old] = w[:, :s_old]
-        new_w[:, s_new:] = w[:, s_old:]
+        new_w[:, s_new:s_new + a_old] = w[:, s_old:s_old + a_old]
+        new_w[:, s_new + a_new:] = w[:, s_old + a_old:]
         sd = dict(sd)
         sd["mlp.0.weight"] = new_w
     net.load_state_dict(sd)
@@ -86,7 +104,7 @@ def load_state(net, sd) -> None:
 def _q(net, obs, acts, hist):
     """一次前向算出一批候选的 Q。`obs`/`hist` 是单个局面的。"""
     st = torch.from_numpy(env.encode_state(obs)).unsqueeze(0).to(DEVICE)
-    ac = torch.from_numpy(np.stack([env.encode_action(a, obs.level)
+    ac = torch.from_numpy(np.stack([env.encode_action_now(a, obs.level, obs.hand)
                                     for a in acts])).to(DEVICE)
     hi = torch.from_numpy(hist).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
@@ -103,7 +121,7 @@ def q_values(net, obs, acts, hist):
     """
     dev = next(net.parameters()).device
     st = torch.from_numpy(env.encode_state(obs)).unsqueeze(0).to(dev)
-    ac = torch.from_numpy(np.stack([env.encode_action(a, obs.level)
+    ac = torch.from_numpy(np.stack([env.encode_action_now(a, obs.level, obs.hand)
                                     for a in acts])).to(dev)
     hi = torch.from_numpy(hist).unsqueeze(0).to(dev)
     with torch.no_grad():
@@ -126,7 +144,7 @@ def _flat_scores(net, pending, grad: bool = False):
     counts = [len(acts) for _o, acts, _h in pending]
     st = np.stack([env.encode_state(o) for o, _a, _h in pending])
     hi = np.stack([h for _o, _a, h in pending])
-    ac = np.stack([env.encode_action(a, o.level)
+    ac = np.stack([env.encode_action_now(a, o.level, o.hand)
                    for o, acts, _h in pending for a in acts])
     idx = np.repeat(np.arange(len(pending)), counts)
     args = (torch.from_numpy(st[idx]).to(dev), torch.from_numpy(ac).to(dev),
