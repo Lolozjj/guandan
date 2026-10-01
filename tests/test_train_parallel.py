@@ -21,4 +21,4 @@ def test_train_parallel_runs_and_saves(tmp_path):
                                 log=lambda *a: None)
     assert r["games"] > 0 and r["curve"] == []
     assert os.path.exists(os.path.join(str(tmp_path), "last.pt"))
-    assert set(r) >= {"games", "curve", "best_greedy", "wr_random", "wr_greedy", "out_dir"}
+    assert set(r) >= {"games", "curve", "best_score", "wr_random", "wr_greedy", "out_dir"}

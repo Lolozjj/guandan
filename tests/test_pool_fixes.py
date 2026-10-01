@@ -135,7 +135,7 @@ def test_pfsp_with_an_empty_seed_pool_raises_loudly(tmp_path, monkeypatch):
 
 def test_a_collapsed_pool_fails_the_run(tmp_path, monkeypatch, capsys):
     """池子塌了就不能印「判据过了」并返回 0 —— 那是失败，不是一行日志。"""
-    fake = {"games": 1, "curve": [], "best_greedy": 0.9, "wr_random": 0.9,
+    fake = {"games": 1, "curve": [], "best_score": 0.9, "wr_random": 0.9,
             "wr_greedy": 0.99, "out_dir": str(tmp_path), "elapsed": 1.0,
             "qmax": 0, "pool_collapsed": True}
     monkeypatch.setattr(selfplay, "train_parallel", lambda **kw: fake)

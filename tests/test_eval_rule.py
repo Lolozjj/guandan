@@ -60,12 +60,66 @@ def test_rule_ruler_uses_the_same_boards_as_vs_greedy(tmp_path, wired):
     """收尾那两次用**同样的 seed**（= 同一副牌）⇒ 两组数可以直接对着看。"""
     lines = []
     r = sp._finish(QNet().eval(), games=10, steps=1, t0=0.0, curve=[],
-                   best_greedy=-1.0, eval_games=4, out_dir=str(tmp_path),
+                   best=0.7, eval_games=4, out_dir=str(tmp_path),
                    log=lines.append, bomb_games=0, rule_games=4)
     seeds = [s for _opp, _g, s in wired]
     assert 2001 in seeds and 2002 in seeds
     assert r["wr_rule"] == 0.5
+    assert r["best_score"] == 0.7          # 一路带下来的挑选分数，收尾照原样报出
     assert any("vs 规则式" in line for line in lines)
+    assert any("best.pt 的挑选分数" in line for line in lines)
+
+
+def test_best_pt_is_chosen_by_the_rule_ruler(tmp_path, monkeypatch):
+    """`best.pt` 按 **vs 规则式** 挑 —— 造一组「规则式在涨、贪心在跌」的数。
+
+    老口径（按 `vs 贪心`）在这种情况下**不会**再存 `best.pt`（0.90 < 0.95）；
+    新口径必须存，而且分数要跟着规则式走。
+    """
+    import torch
+
+    from guandan.rl.policies import greedy_policy as greedy
+
+    rule_vals, greedy_vals = [0.60, 0.65], [0.95, 0.90]
+
+    def fake_match(_pol, opp, games, seed):
+        if opp is _sentinel:
+            return rule_vals.pop(0)
+        if opp is greedy:
+            return greedy_vals.pop(0)
+        return 0.5                       # 随机那把：无关紧要
+
+    monkeypatch.setattr(sp, "match", fake_match)
+    monkeypatch.setattr(sp, "rule_policy", lambda: _sentinel)
+    net = QNet().eval()
+    curve, lines, best = [], [], -1.0
+    for games in (100, 200):
+        best = sp._maybe_eval(net, games, curve, best, 4, 1, 32, str(tmp_path),
+                              lines.append, snap_every=0, rule_games=4)
+    assert best == 0.65, "挑选分数应当跟着规则式走"
+    meta = torch.load(str(tmp_path / "best.pt"), map_location="cpu", weights_only=False)
+    assert meta["games"] == 200, "规则式涨了就该覆盖 best.pt（老口径下这里不会存）"
+    assert meta["winrate_rule"] == 0.65
+    assert meta["best_metric"] == "vs 规则式"
+    assert any("刷新最好" in line and "vs 规则式" in line for line in lines)
+
+
+def test_best_pt_falls_back_to_greedy_when_rule_is_off(tmp_path, monkeypatch):
+    """规则式没跑 ⇒ 退回按 `vs 贪心` 挑，**并把口径写进日志与权重**（不许静默换口径）。"""
+    import torch
+
+    from guandan.rl.policies import greedy_policy as greedy
+
+    monkeypatch.setattr(sp, "match",
+                        lambda _pol, opp, games, seed: 0.9 if opp is greedy else 0.1)
+    monkeypatch.setattr(sp, "rule_policy", lambda: _sentinel)
+    lines = []
+    best = sp._maybe_eval(QNet().eval(), 100, [], -1.0, 4, 1, 32, str(tmp_path),
+                          lines.append, snap_every=0, rule_games=0)
+    assert best == 0.9
+    meta = torch.load(str(tmp_path / "best.pt"), map_location="cpu", weights_only=False)
+    assert meta["best_metric"] == "vs 贪心（规则式未跑）"
+    assert any("规则式未跑" in line for line in lines)
 
 
 def test_bench_does_not_measure_the_slow_ruler():
@@ -80,7 +134,7 @@ def test_cli_forwards_eval_rule_games(monkeypatch):
     def fake_train(seconds=0, **kw):
         seen.update(kw)
         return {"out_dir": "x", "wr_greedy": 1.0, "wr_random": 1.0, "wr_rule": 0.7,
-                "games": 0, "curve": [], "best_greedy": 1.0, "elapsed": 0.0}
+                "games": 0, "curve": [], "best_score": 1.0, "elapsed": 0.0}
 
     monkeypatch.setattr(sp, "train", fake_train)
     sp.main(["1", "--eval-rule-games", "0"])

@@ -10,7 +10,7 @@ def test_cli_forwards_the_bootstrap_knobs(monkeypatch):
     def fake_train(seconds=0, **kw):
         seen.update(kw)
         return {"out_dir": "x", "wr_greedy": 1.0, "wr_random": 1.0,
-                "games": 0, "curve": [], "best_greedy": 1.0, "elapsed": 0.0}
+                "games": 0, "curve": [], "best_score": 1.0, "elapsed": 0.0}
 
     monkeypatch.setattr(sp, "train", fake_train)
     sp.main(["1", "--mc-mix", "0.5", "--n-step", "2", "--tgt-sync", "500"])

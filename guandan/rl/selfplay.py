@@ -556,7 +556,7 @@ def net_play(net):
 WEIGHT_SYNC_GAMES = 1000     # 多进程：每这么多局把权重广播给 worker
 
 
-def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
+def _maybe_eval(net, games, curve, best, eval_games, eval_every,
                 batch_games, out_dir, log, snap_every=pool.SNAP_EVERY_GAMES,
                 pool_size=pool.POOL_SIZE, rule_games=None):
     """每 `eval_every` 局评测一次并（可能）存 `best.pt`。**两条训练路线共用这一份。**
@@ -567,12 +567,19 @@ def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
     所以互相可比；但要跟 `tools/ruler.py` 那套（多种子配对 × 400 局）**分开口径**，
     别把这里的数直接当台账上的数引用。
 
-    `rule_games`：规则式那把跑多少局。`None` = 与 `eval_games` 相同；`0` = 不跑
-    —— 规则式是纯 Python 启发式，比贪心慢一个量级（200 局约十几秒），
-    所以量吞吐的短跑（`tools/bench_train.py`）必须能把它关掉。
+    ## `best.pt` 按 `vs 规则式` 挑（2026-09-30 改，`best` 就是它）
 
-    `best.pt` 仍按 `vs 贪心` 挑（**行为不变**）—— 换成按规则式挑是另一个决定，
-    见 `docs` 里的讨论：老口径是按训练内 200 局 vs 贪心挑，噪声与一代的进步同量级。
+    老口径是按训练内 200 局 `vs 贪心` 挑。但那把尺子有两个毛病叠加：
+    **噪声 ±2pp**（200 局）而**一代的真实进步只有 ~3pp** —— 噪声与信号同量级，
+    于是挑出来的是「运气最好的那一次评测」（实测 R8 的 `best.pt` 比它自己的末尾差 2.0pp）。
+    规则式那把还留着几十个百分点余量，挑出来更接近真实强度。
+
+    ⚠️ `rule_games=0`（规则式没跑）时**退回按 `vs 贪心` 挑**，并且把口径写进日志与
+    权重元信息 —— 不许静默换口径（本仓库的「换源必须可见」）。
+
+    `rule_games`：规则式那把跑多少局。`None` = 与 `eval_games` 相同；`0` = 不跑
+    —— 规则式是纯 Python 启发式，比贪心慢（200 局约 10 秒 vs 6.6 秒），
+    所以量吞吐的短跑（`tools/bench_train.py`）必须能把它关掉。
 
     顺带按 `snap_every` 存池子快照 —— **与「有没有刷新最好」无关**：
     只存 `best.pt` 的话池子原料不够（144 万局只落几个点）。
@@ -587,12 +594,16 @@ def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
         curve.append((games, wr_r, wr_g, wr_rule))
         log(f"     >> 评测 @ {games:7d} 局：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g:.1%}"
             + (f"   vs 规则式 {wr_rule:.1%}" if wr_rule is not None else ""))
-        if wr_g > best_greedy:
-            best_greedy = wr_g
+        # 挑选口径 = 主尺子；规则式没跑时退回贪心，并在下面那行日志里说明
+        metric = "vs 规则式" if wr_rule is not None else "vs 贪心（规则式未跑）"
+        score = wr_rule if wr_rule is not None else wr_g
+        if score > best:
+            best = score
             torch.save({"net": net.state_dict(), "games": games,
                         "winrate_random": wr_r, "winrate_greedy": wr_g,
-                        "winrate_rule": wr_rule},
+                        "winrate_rule": wr_rule, "best_metric": metric},
                        os.path.join(out_dir, "best.pt"))
+            log(f"        ↑ 刷新最好（{metric} {score:.1%}）-> best.pt")
     if snap_every and games and games % snap_every < batch_games:
         p = pool.snapshot_path(out_dir, games)
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -600,12 +611,15 @@ def _maybe_eval(net, games, curve, best_greedy, eval_games, eval_every,
         gone = pool.prune_snapshots(out_dir, pool_size)
         log(f"     >> 池子快照 {os.path.basename(p)}"
             + (f"（挤掉 {len(gone)} 个）" if gone else ""))
-    return best_greedy
+    return best
 
 
-def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log,
+def _finish(net, games, steps, t0, curve, best, eval_games, out_dir, log,
             bomb_games: int = 25, rule_games=None):
     """收尾：两次评测看方差 + 报告 + 存 last.pt + 返回结果。**两条路线共用。**
+
+    `best` 是 `_maybe_eval` 一路带上来的**挑选分数**（默认口径 = `vs 规则式`，
+    规则式没跑时退回 `vs 贪心`；见那个函数的 docstring）。
 
     `elapsed` 是**训练阶段**的秒数（在收尾评测之前取）—— 吞吐要用它算，
     别把固定的评测开销算进去（否则 bench 的短跑会被评测淹没）。
@@ -630,6 +644,9 @@ def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log,
         log(f"      vs 规则式 {wr_u1:.1%} / {wr_u2:.1%}"
             f"（两次，差 {abs(wr_u1 - wr_u2):.1%}，**与上面同一副牌**）"
             f" ← **主尺子**；口径与 `tools/ruler.py`（多种子配对 ×400 局）不同，别混")
+    if best >= 0:
+        log(f"  best.pt 的挑选分数 {best:.1%}"
+            + ("（规则式未跑，退回 vs 贪心）" if rule_games == 0 else "（按 vs 规则式）"))
     if curve:
         log("曲线（局数:vs随机/vs贪心/vs规则式）：" + "  ".join(
             f"{g // 1000}k:{r:.0%}/{k:.0%}" + (f"/{u:.0%}" if u is not None else "")
@@ -649,7 +666,7 @@ def _finish(net, games, steps, t0, curve, best_greedy, eval_games, out_dir, log,
                 "winrate_random": wr_r, "winrate_greedy": wr_g1,
                 "winrate_rule": wr_rule},
                os.path.join(out_dir, "last.pt"))
-    return {"games": games, "curve": curve, "best_greedy": best_greedy,
+    return {"games": games, "curve": curve, "best_score": best,
             "wr_random": wr_r, "wr_greedy": (wr_g1 + wr_g2) / 2,
             "wr_rule": wr_rule,
             "out_dir": out_dir, "elapsed": elapsed}
@@ -744,7 +761,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     last_tgt = 0                # 目标网络上次同步的局数
     base = _RunningMean()       # PG 的基线（DMC 用不到，留着不占什么）
     curve = []
-    best_greedy = -1.0
+    best = -1.0                 # `best.pt` 的挑选分数（默认 = vs 规则式，见 _maybe_eval）
 
     while time.perf_counter() - t0 < seconds:
         # **按局数退火**，不按时间（见 EPS_GAMES）；起点见 eps_start（热启动会压低）
@@ -788,12 +805,12 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
                     f"{games / el:.1f} 局/秒  buffer {len(buf):,}")
 
         # 4) 每 N 局：存权重 + 评测（spec §5.3）—— 公共件，两条训练路线共用
-        best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
-                                  eval_every, batch_games, out_dir, log,
-                                  snap_every=snap_every, pool_size=pool_size,
-                                  rule_games=eval_rule_games)
+        best = _maybe_eval(net, games, curve, best, eval_games,
+                           eval_every, batch_games, out_dir, log,
+                           snap_every=snap_every, pool_size=pool_size,
+                           rule_games=eval_rule_games)
 
-    return _finish(net, games, steps, t0, curve, best_greedy, eval_games,
+    return _finish(net, games, steps, t0, curve, best, eval_games,
                    out_dir, log, rule_games=eval_rule_games)
 
 
@@ -903,7 +920,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     t0 = time.perf_counter()
     games = steps = 0
     curve = []
-    best_greedy = -1.0
+    best = -1.0                 # `best.pt` 的挑选分数（默认 = vs 规则式，见 _maybe_eval）
     last_sync = 0
     last_tgt = 0                # 目标网络上次同步的局数
     base = _RunningMean()       # PG 的基线（DMC 用不到）
@@ -976,10 +993,10 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             # 静默夹到 `WEIGHT_SYNC_GAMES`（1000）那一拍上 —— 传 500 实际是 1000，
             # 而日志头照写用户给的值（参数说谎）。放在外面才真的按参数走。
             last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
-            best_greedy = _maybe_eval(net, games, curve, best_greedy, eval_games,
-                                      eval_every, batch_games, out_dir, log,
-                                      snap_every=snap_every, pool_size=pool_size,
-                                      rule_games=eval_rule_games)
+            best = _maybe_eval(net, games, curve, best, eval_games,
+                               eval_every, batch_games, out_dir, log,
+                               snap_every=snap_every, pool_size=pool_size,
+                               rule_games=eval_rule_games)
             # 新快照进池 + **增量**广播（只发这一个成员，7.8MB，每 snap_every 局一次）。
             # 用「文件在不在」判、不重算取模 —— 免得与 _maybe_eval 里的条件漂开。
             if pfsp and os.path.exists(pool.snapshot_path(out_dir, games)):
@@ -1005,7 +1022,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             if p.is_alive():
                 p.terminate()
     collapsed = pool_report(wr, current_pfsp(), log) if pfsp else False
-    r = _finish(net, games, steps, t0, curve, best_greedy, eval_games,
+    r = _finish(net, games, steps, t0, curve, best, eval_games,
                 out_dir, log, rule_games=eval_rule_games)
     r["qmax"] = qmax
     r["pool_collapsed"] = collapsed
