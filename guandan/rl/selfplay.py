@@ -548,12 +548,31 @@ def _targets(net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
     return samples, replay.blend(y_mc, vals, mc_mix)
 
 
+def _close_weights(targets, close_weight: float, dev):
+    """**按胶着度**给样本加权（信用分配 spec 的设计 2）。
+
+    每个决策点的标签**本身就带着胶着度**：`rules.reward` 按胜方**最差名次**给分，
+    `|y| = 3` ⟺ 双上 / 被双上（一边倒，所有决策拿到同一个 ±3，对"该不该炸"零区分度），
+    `|y| ∈ {1,2}` ⟺ 1-3 / 1-4 / 2-3 / 2-4（胶着局）。
+
+    ⚠️ 归一化交给调用方用 `/ w.sum()` —— 否则改权重会顺手改掉**有效学习率**。
+    """
+    w = torch.ones(len(targets), dtype=torch.float32, device=dev)
+    for i, t in enumerate(targets):
+        if abs(float(t)) < 3.0:
+            w[i] = close_weight
+    return w
+
+
 def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
-                mc_mix, n_step, fresh=None):
+                mc_mix, n_step, fresh=None, close_weight: float = 1.0):
     """从 buffer 采一批 → 重放 → 拼张量 → 一步 MSE。**两条训练路线共用这一份。**
 
     `mc_mix < 1` 时多一次前向算自举项（用**目标网络**、`no_grad`、返回 float）。
     `|Q|` 或 `|标签|` 超限会**在这里 raise**（发散必须响，不许静默地训下去）。
+
+    `close_weight`（默认 1.0 = 关）：胶着局样本的权重。**1.0 时走原来那一行**
+    `F.mse_loss`（逐位不变），不开加权分支 —— 免得"默认没变"只是近似成立。
     """
     samples, targets = _targets(net_tgt, buf, rng, batch_games, bomb_cost,
                                 mc_mix, n_step, fresh=fresh)
@@ -561,7 +580,11 @@ def _learn_step(net, net_tgt, buf, rng, opt, games, *, batch_games, bomb_cost,
     dev = next(net.parameters()).device
     y_hat = net(st.to(dev), ac.to(dev), hi.to(dev))
     y = torch.tensor(targets, dtype=torch.float32).to(dev)
-    loss = torch.nn.functional.mse_loss(y_hat, y)
+    if close_weight == 1.0:
+        loss = torch.nn.functional.mse_loss(y_hat, y)
+    else:
+        w = _close_weights(targets, close_weight, dev)
+        loss = (w * (y_hat - y) ** 2).sum() / w.sum()
     # 发散守门：**预测与标签都查**（自举跑飞时，标签通常先炸）
     # `.detach()` 不能省：`float()` 直接作用在带梯度的张量上，PyTorch 会告警
     # （"Converting a tensor with requires_grad=True to a scalar"）—— 守门是纯读，
@@ -760,7 +783,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           n_step: int = N_STEP, tgt_sync: int = TGT_SYNC_GAMES,
           opp_kind: str = "greedy", algo: str = "dmc",
           beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES,
-          eval_rule_games: int = None, mate_mix: float = 0.0):
+          eval_rule_games: int = None, mate_mix: float = 0.0,
+          close_weight: float = 1.0):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -768,6 +792,10 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
     # 训练照跑、只是慢 —— Plan 3 那 5 万局与 2026-09-26 那次 9 小时跑都是这么过去的
     # （GPU 从没被用上）。训练步的瓶颈就是网络前向（spec §14.3）。
     # `tests/test_train_device.py` 用 1 秒预算真跑一次钉住这件事。
+    if algo == "pg" and close_weight != 1.0:
+        raise ValueError(
+            "`--close-weight` 只接在 DMC 那条路上（PG 的损失是策略梯度，没有样本权重）"
+            "—— 别让它静默失效（日志说改了、其实没改）")
     net = QNet().to(DEVICE)
     load_init(net, init)
     eps_start = resolve_eps_start(init, eps_start)   # 热启动 -> 低起点（EPS_START_WARM）
@@ -789,6 +817,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         + (f"  **队友混合 {mate_mix:.0%}**（队友={OPP_KIND_CN.get(opp_kind, opp_kind)}）"
            if mate_mix > 0 else "")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
+        + (f"  **胶着加权 ×{close_weight:g}**" if close_weight != 1.0 else "")
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
         + _pg_log(algo, beta_ent)      # 单进程没有权重广播 ⇒ 不打那一行
@@ -830,7 +859,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
             # 从 buffer 采一批 + 训一步（spec §5.2）—— **共享实现**
             loss = _learn_step(net, net_tgt, buf, rng, opt, games,
                                batch_games=batch_games, bomb_cost=bomb_cost,
-                               mc_mix=mc_mix, n_step=n_step, fresh=fresh)
+                               mc_mix=mc_mix, n_step=n_step, fresh=fresh,
+                               close_weight=close_weight)
             last_tgt = sync_target(net, net_tgt, games, last_tgt, tgt_sync)
         steps += 1
 
@@ -866,6 +896,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    mc_mix: float = MC_MIX, n_step: int = N_STEP,
                    tgt_sync: int = TGT_SYNC_GAMES, opp_kind: str = "greedy",
                    algo: str = "dmc", mate_mix: float = 0.0, beta_ent: float = BETA_ENT,
+                   close_weight: float = 1.0,
                    weight_sync_games: int = WEIGHT_SYNC_GAMES,
                    eval_rule_games: int = None,
                    _kill_worker_after: float = None):
@@ -887,6 +918,10 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     os.makedirs(out_dir, exist_ok=True)
     torch.manual_seed(seed)
     rng = random.Random(seed)
+    if algo == "pg" and close_weight != 1.0:
+        raise ValueError(
+            "`--close-weight` 只接在 DMC 那条路上（PG 的损失是策略梯度，没有样本权重）"
+            "—— 别让它静默失效（日志说改了、其实没改）")
     net = QNet().to(DEVICE)
     load_init(net, init)
     eps_start = resolve_eps_start(init, eps_start)   # 热启动 -> 低起点（EPS_START_WARM）
@@ -952,6 +987,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 f"随机 {1 - greedy_share:.0%}）"
                 f"  **池子关**")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
+        + (f"  **胶着加权 ×{close_weight:g}**" if close_weight != 1.0 else "")
         + (f"  **队友混合 {mate_mix:.0%}**（队友={OPP_KIND_CN.get(opp_kind, opp_kind)}）"
            if mate_mix > 0 else "")
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
@@ -1014,7 +1050,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 # 采样 + 训一步（**与单进程那条路同一份实现**）
                 loss = _learn_step(net, net_tgt, buf, rng, opt, games,
                                    batch_games=batch_games, bomb_cost=bomb_cost,
-                                   mc_mix=mc_mix, n_step=n_step)
+                                   mc_mix=mc_mix, n_step=n_step,
+                                   close_weight=close_weight)
             steps += 1
             el = time.perf_counter() - t0
             if steps % 10 == 0:
@@ -1157,6 +1194,9 @@ def main(argv=None) -> int:
         # A5：老二分里「贪心」的份额（默认 0.8 ⇒ 20% 是**随机**对手）。
         # 1.0 = 把随机那一路关掉 —— 那 20% 的局给的梯度基本是噪声，去掉是白送的。
         kw["greedy_share"] = float(argv[argv.index("--greedy-share") + 1])
+    if "--close-weight" in argv:
+        # 信用分配 spec 的设计 2：胶着局（|标签| < 3）样本的权重。默认 1.0 = 关。
+        kw["close_weight"] = float(argv[argv.index("--close-weight") + 1])
     if "--mate-mix" in argv:
         # A3：**队友多样性** —— 以此概率把学习队的一个座位也换成 `--opp-kind` 的固定策略，
         # 只对另一个座位产标签。默认 0.0（关）= 与加开关之前逐位相同。
