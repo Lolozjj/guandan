@@ -15,7 +15,7 @@ from guandan.sim import env, rules
 
 
 def match(policy_a, policy_b, games: int = 200, seed: int = 0,
-          level: int = None) -> float:
+          level: int = None, expand_a: bool = False) -> float:
     """a 队对 b 队的胜率（`games` 局，座位对调）。
 
     **所有局同步推进**（各走一步、攒成一批再问网络），理由与自对弈那边一样：
@@ -24,12 +24,19 @@ def match(policy_a, policy_b, games: int = 200, seed: int = 0,
     随机 / 贪心这类便宜的策略仍然逐决策点调用。
 
     `level=None` 时每局随机 1..13（与训练时的分布一致）。
+
+    `expand_a=True`：**只给 `policy_a` 那一侧**的候选补花色变体（A1b 实验，
+    `env.expand_seats`）—— `policy_b`（尺子）保持老候选，所以测的是
+    「多给选项值多少」，不是「换了套规则」。
     """
     rng = random.Random(seed)
     envs, a_on_team0 = [], []
     for i in range(games):
         e = env.GuandanEnv(seed=rng.randrange(1 << 30))
         e.reset(level=level)
+        if expand_a:
+            team = 0 if i % 2 == 0 else 1
+            e.expand_seats = frozenset(s for s in rules.SEATS if rules.TEAM[s] == team)
         envs.append(e)
         a_on_team0.append(i % 2 == 0)          # 座位对调
 

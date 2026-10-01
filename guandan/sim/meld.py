@@ -612,7 +612,120 @@ def _melds_natural(hand: Sequence[int], level: Optional[int]) -> list:
     return out
 
 
-def _melds_from_uncached(hand: Sequence[int], level: Optional[int] = None) -> list:
+#: A1b 实验（`plans/2026-09-30-beat-70-roadmap.md` §九）：每个形状最多补几个「花色变体」。
+#: **默认不开** —— 只有 `melds_from(..., variants=True)` 才补，老调用方逐位不变。
+VARIANT_MAX = 3
+
+
+def _card_variants(pool: Sequence[int], n: int, level, k: int = VARIANT_MAX) -> list:
+    """同一个点数、同样 n 张的**几个不同牌组**（最多 k 个）。
+
+    ⚠️ **第 ① 个必须就是现状代表 `pool[:n]`** —— 这样 `variants=True` 的候选集合是
+    老集合的**超集**，"多给选项值多少"才是唯一变量，而不是"换了一套规则"。
+
+    ② 不含逢人配的（把 ♥ 级牌留住）—— A1 探针里最常见的材质缺口；
+    ③ 同花色优先的（尽量把同花色的牌留在一起，保同花顺潜力）。
+    """
+    out, seen = [], set()
+
+    def add(ids) -> None:
+        if len(ids) != n:
+            return
+        key = tuple(sorted(ids))
+        if key not in seen:
+            seen.add(key)
+            out.append(tuple(ids))
+
+    add(pool[:n])                                    # ① 现状代表
+    natural = [c for c in pool if not is_wild(c, level)]
+    if len(natural) >= n:
+        add(natural[:n])                             # ② 不用逢人配
+    by_suit: dict = {}
+    for c in natural:
+        by_suit.setdefault(cards.parts(c)[1], []).append(c)
+    for suit in _SUITS:                              # ③ 同花色优先
+        cs = by_suit.get(suit, [])
+        if len(cs) >= n:
+            add(cs[:n])
+    return out[:k]
+
+
+def _straight_variants(nat: dict, nats, level, k: int = VARIANT_MAX) -> list:
+    """顺子的花色变体：① 现状 `nat[n][0]`；②③ 尽量同花色。
+
+    （**同花顺**由 `_melds_straights` 的逐花色那一段负责，这里只管混色顺子**用哪几张**。）
+
+    ⚠️ **槽位缺天然牌就直接返回空**（那手顺子是靠逢人配补出来的）：`nat[n]` 会 KeyError
+    把自己炸掉 —— 这是实测踩到的（靠逢人配的顺子在自对弈里很常见）。
+    那种顺子的"用哪几张"变体要连逢人配一起算，留到 A1b-2。
+    """
+    out, seen = [], set()
+
+    def add(ids) -> None:
+        if any(c is None for c in ids):
+            return
+        key = tuple(sorted(ids))
+        if key not in seen:
+            seen.add(key)
+            out.append(tuple(ids))
+
+    if any(not nat.get(n) for n in nats):
+        return []
+    add([nat[n][0] for n in nats])
+    for suit in _SUITS:
+        add([next((c for c in nat[n] if cards.parts(c)[1] == suit), nat[n][0])
+             for n in nats])
+    return out[:k]
+
+
+def _wild_used_same_rank(ids, level, idx) -> int:
+    """同点数牌型里**当替身用**的逢人配张数。
+
+    ⚠️ 口径与 `_melds_basic` 一致：**♥级牌本身就是那个点数** ⇒ 不算替身。
+    实测踩过：把「牌组里有几张 ♥级牌」当成替身数，会让级牌炸的 `wild_used`
+    从 0 变成 1，与老路径（`_melds_basic` 产出的那条）自相矛盾。
+    """
+    return 0 if idx == level else sum(1 for c in ids if is_wild(c, level))
+
+
+def _wild_used_straight(ids, slots, level) -> int:
+    """顺子里**当替身用**的逢人配张数：占的位不是它自己那个自然值才算。
+
+    `slots` 与 `ids` **按下标对齐**（`_straight_variants` 就是按位置拼的）。
+    """
+    return sum(1 for c, nv in zip(ids, slots)
+               if is_wild(c, level) and cards.parts(c)[0] != nv)
+
+
+def _with_variants(melds: Sequence[Meld], hand: Sequence[int], level) -> list:
+    """给同点数形状（单/对/三/炸）与顺子补上「用哪几张」的变体。
+
+    只碰这五类 —— A1 探针里 137 处材质缺口中的 41+30+19+13+6 = **109 处**；
+    连对 / 钢板 / 三带二的变体留到 A1b-2（若本轮结论是"值得"）。
+    `wild_used` 按**替身**口径重算（见上面两个助手）。
+    """
+    g = _by_idx(hand)
+    nat = _seq_lookup(g)
+    out = []
+    for m in melds:
+        out.append(m)
+        if m.kind in (SINGLE, PAIR, TRIPLE, BOMB):
+            idx = cards.parts(m.cards[0])[0]
+            if idx >= JOKER_SMALL:
+                continue                             # 王：没有"换个花色"这回事
+            for ids in _card_variants(g[idx], m.size, level)[1:]:
+                out.append(Meld(m.kind, m.size, m.rank, ids,
+                                _wild_used_same_rank(ids, level, idx)))
+        elif m.kind == STRAIGHT:
+            nats = list(range(m.rank - _SEQ_LEN + 1, m.rank + 1))
+            for ids in _straight_variants(nat, nats, level)[1:]:
+                out.append(Meld(STRAIGHT, _SEQ_LEN, m.rank, ids,
+                                _wild_used_straight(ids, nats, level)))
+    return out
+
+
+def _melds_from_uncached(hand: Sequence[int], level: Optional[int] = None,
+                         variants: bool = False) -> list:
     """枚举手牌能组成的牌型，逢人配当万能牌，但**先试天然的**。
 
     两段拼起来：天然牌型（`_melds_natural`，`wild_used == 0`）+ 补牌牌型
@@ -633,11 +746,17 @@ def _melds_from_uncached(hand: Sequence[int], level: Optional[int] = None) -> li
     出现一次，但**不要**指望它把同一点数里「选哪几张」的所有组合都列出来。
     验收脚本的 `shape()`（`(kind, size, rank)` 键）依赖这条 —— 所以**不要**
     为了「补全」而去改枚举本身，那会让验收①的比对口径当场失效。
+
+    ⚠️ `variants=True` 是**唯一的例外**，而且是**默认关的**：它给同点数形状与顺子
+    额外补 ≤`VARIANT_MAX` 个花色变体（见 `_with_variants`），用来量
+    「A1 探针查出的 8.28% 表达缺口值多少分」。老路径（默认）逐位不变。
     """
     rest, wilds = _split_wild(hand, level)
     out = _melds_natural(hand, level)
     if wilds:
         out += _melds_wild(_by_idx(rest), level, wilds)
+    if variants:
+        out = _with_variants(out, hand, level)
     # 收口去重。键带 kind：同一组牌可以同时是顺子与同花顺（含天然那两条），
     # 那是两种解释，都要留下 —— tools/accept_meld.py 的 as_meld() 靠它取最强解释。
     #
@@ -674,15 +793,18 @@ _CACHE_MAXSIZE = 256
 
 
 @functools.lru_cache(maxsize=_CACHE_MAXSIZE)
-def _melds_from_cached(hand_key: tuple, level: Optional[int]) -> list:
-    """缓存壳：键是 `(手牌元组, 级别)`。真正干活的是 `_melds_from_uncached`。
+def _melds_from_cached(hand_key: tuple, level: Optional[int],
+                       variants: bool = False) -> list:
+    """缓存壳：键是 `(手牌元组, 级别, 要不要变体)`。真正干活的是 `_melds_from_uncached`。
 
     缓存为什么必要、为什么只给 256 格，见 `_CACHE_MAXSIZE` 的注释。
+    ⚠️ `variants` **必须进键** —— 漏了它，开了变体的查询会拿到老那条缓存。
     """
-    return _melds_from_uncached(list(hand_key), level)
+    return _melds_from_uncached(list(hand_key), level, variants)
 
 
-def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
+def melds_from(hand: Sequence[int], level: Optional[int] = None,
+               variants: bool = False) -> list:
     """`_melds_from_uncached` 的**缓存外壳**（形状契约见那个函数的 docstring）。
 
     为什么要缓存：见 `_CACHE_MAXSIZE` 的注释 —— 那 81% 里 83% 是在重算同一种牌面。
@@ -696,8 +818,10 @@ def melds_from(hand: Sequence[int], level: Optional[int] = None) -> list:
        所以顺序不同就是不同的输入（这是对的，不是缺陷）。
     2. **别就地改返回的 list**（同一个 list 会交给下一个调用方）。
        现有调用方都是「读一遍就丢」或自己再包一层，符合这条。
+
+    `variants=True`：只给 A1b 实验用（`env.expand_seats` 那条路），默认 False = 老行为。
     """
-    return _melds_from_cached(tuple(hand), level)
+    return _melds_from_cached(tuple(hand), level, variants)
 
 
 def legal_moves(hand: Sequence[int], table: Optional[Meld],

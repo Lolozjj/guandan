@@ -231,6 +231,9 @@ class GuandanEnv:
         self.hand: Optional[rules.Hand] = None
         self._played = {s: set() for s in rules.SEATS}
         self._last_actor = None
+        #: 这些座位的候选带**花色变体**（A1b 实验，默认空 = 老行为逐位不变）。
+        #: 只有实验对象那一侧开，对手保持老候选 ⇒ 尺子本身不变。
+        self.expand_seats: frozenset = frozenset()
 
     # ------------------------------------------------------------ 开局
 
@@ -257,8 +260,13 @@ class GuandanEnv:
         return self.hand.ranks() if self.hand.over else None
 
     def legal(self) -> list:
-        """当前该谁出，他的候选（含 `None` = 过）。"""
-        return self.hand.actions(self.hand.turn)
+        """当前该谁出，他的候选（含 `None` = 过）。
+
+        `expand_seats` 里的座位会拿到**带花色变体**的候选（A1b 实验）。
+        `step(i)` 内部调的就是这个函数 ⇒ 下标天然一致，不会错位。
+        """
+        return self.hand.actions(self.hand.turn,
+                                 variants=self.hand.turn in self.expand_seats)
 
     def observe(self, seat: int = None) -> Observation:
         a = self.hand.turn if seat is None else seat

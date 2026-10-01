@@ -89,19 +89,22 @@ class Hand:
 
     # ------------------------------------------------------------ 查询
 
-    def actions(self, seat: int) -> list:
+    def actions(self, seat: int, variants: bool = False) -> list:
         """该座位的可行动作。**`None` 表示「过」。**
 
         - **领出**（桌上无牌）：只有着法，**不含 `None`** —— 领出必须出牌
         - **跟牌**：压得过的着法 **∪ {None}**。
           `None` 在跟牌时**永远**在集合里（能压也可以过）；
           压不过时集合是 `[None]` 而不是空 —— 这是 HANDOFF「Plan 2 开工前第 2 条」要钉的语义。
+
+        `variants=True`：候选额外带花色变体（A1b 实验，默认关；见
+        `meld.melds_from` 的 `variants`）。它只改**候选集合**，不改规则。
         """
         if self.over:
             raise IllegalPlay("这一手已经结束了")
         if self.turn != seat:
             raise IllegalPlay(f"现在轮到 {self.turn}，不是 {seat}")
-        moves = meld.melds_from(sorted(self.hands[seat]), self.level)
+        moves = meld.melds_from(sorted(self.hands[seat]), self.level, variants=variants)
         if self.table is None:
             if not moves:
                 raise IllegalPlay(
