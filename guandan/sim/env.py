@@ -104,9 +104,16 @@ def encode_action_now(m, level: int, hand) -> np.ndarray:
 
     ⚠️ **历史行不要用这个**（`encode_history` 用 `encode_action`）：
     历史里拿不到当时的手牌，两边宽度因此不同 —— 这是**故意**的，不是疏漏。
+
+    ⚠️ `features.CONSEQUENCE_ENABLED=False` 时那 3 维**仍然在**（保持 `ACTION_DIM` 不变），
+    只是恒为 0 ⇒ 信息层面等价于"没有这个特征"，可当对照臂用。
     """
+    base = encode_action(m, level)
+    if not features.CONSEQUENCE_ENABLED:
+        return np.concatenate([base, np.zeros(features.CONSEQUENCE_DIM,
+                                              dtype=np.float32)])
     return np.concatenate([
-        encode_action(m, level),
+        base,
         np.asarray(features.consequence_features(hand, m, level), dtype=np.float32)])
 
 

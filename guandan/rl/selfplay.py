@@ -34,6 +34,7 @@ import glob
 import math
 import os
 import random
+import statistics
 import sys
 import time
 from datetime import datetime
@@ -621,7 +622,7 @@ WEIGHT_SYNC_GAMES = 1000     # 多进程：每这么多局把权重广播给 wor
 
 def _maybe_eval(net, games, curve, best, eval_games, eval_every,
                 batch_games, out_dir, log, snap_every=pool.SNAP_EVERY_GAMES,
-                pool_size=pool.POOL_SIZE, rule_games=None):
+                pool_size=pool.POOL_SIZE, rule_games=None, rule_seeds: int = 1):
     """每 `eval_every` 局评测一次并（可能）存 `best.pt`。**两条训练路线共用这一份。**
 
     三把尺子：`vs 随机` / `vs 贪心` / **`vs 规则式`**（`rule_policy()`）。
@@ -652,8 +653,13 @@ def _maybe_eval(net, games, curve, best, eval_games, eval_every,
                      games=eval_games, seed=1001)
         wr_g = match(net_play(net), greedy_policy, games=eval_games, seed=1002)
         rg = eval_games if rule_games is None else rule_games
-        wr_rule = (match(net_play(net), rule_policy(), games=rg, seed=1004)
-                   if rg else None)
+        # ⚠️ **多种子取均值**（点③，2026-10-01）：单种子 400 局的 sd ≈ 2.5pp，
+        # 而"一代的进步"只有 1~3pp ⇒ 单种子挑出来的 `best.pt` 自带**选点偏差**
+        # （实测：训练内挑出 +2.02pp 的件，扩大种子后缩到 +1.45pp）。
+        # 多跑 `rule_seeds` 个种子取均值把这份偏差压掉 —— 代价是每次评测多几十秒。
+        wr_rule = (statistics.mean(
+            [match(net_play(net), rule_policy(), games=rg, seed=1004 + i)
+             for i in range(rule_seeds)]) if rg else None)
         curve.append((games, wr_r, wr_g, wr_rule))
         log(f"     >> 评测 @ {games:7d} 局：vs 随机 {wr_r:.1%}   vs 贪心 {wr_g:.1%}"
             + (f"   vs 规则式 {wr_rule:.1%}" if wr_rule is not None else ""))
@@ -788,7 +794,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           opp_kind: str = "greedy", algo: str = "dmc",
           beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES,
           eval_rule_games: int = None, mate_mix: float = 0.0,
-          close_weight: float = 1.0, shaping: float = 0.0):
+          close_weight: float = 1.0, shaping: float = 0.0,
+          rule_eval_seeds: int = 1):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -818,6 +825,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"评测每 {eval_every:,} 局  ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  "
         f"对手混合 {opp_mix:.0%}"
         f"（其中{OPP_KIND_CN.get(opp_kind, opp_kind)} {greedy_share:.0%}）"
+        + (f"  **规则尺子 {rule_eval_seeds} 种子**" if rule_eval_seeds > 1 else "")
         + (f"  **队友混合 {mate_mix:.0%}**（队友={OPP_KIND_CN.get(opp_kind, opp_kind)}）"
            if mate_mix > 0 else "")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
@@ -882,7 +890,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         best = _maybe_eval(net, games, curve, best, eval_games,
                            eval_every, batch_games, out_dir, log,
                            snap_every=snap_every, pool_size=pool_size,
-                           rule_games=eval_rule_games)
+                           rule_games=eval_rule_games,
+                           rule_seeds=rule_eval_seeds)
 
     return _finish(net, games, steps, t0, curve, best, eval_games,
                    out_dir, log, rule_games=eval_rule_games)
@@ -902,6 +911,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    tgt_sync: int = TGT_SYNC_GAMES, opp_kind: str = "greedy",
                    algo: str = "dmc", mate_mix: float = 0.0, beta_ent: float = BETA_ENT,
                    close_weight: float = 1.0, shaping: float = 0.0,
+                   rule_eval_seeds: int = 1,
                    weight_sync_games: int = WEIGHT_SYNC_GAMES,
                    eval_rule_games: int = None,
                    _kill_worker_after: float = None):
@@ -982,7 +992,9 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
         f"buffer={buffer_games:,} 局  评测每 {eval_every:,} 局  "
-        f"ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火  对手混合 {opp_mix:.0%}"
+        f"ε 起点 {eps_start:.2f} 按 {eps_games:,} 局退火"
+        + (f"（规则尺子 {rule_eval_seeds} 种子）" if rule_eval_seeds > 1 else "")
+        + f"  对手混合 {opp_mix:.0%}"
         # ⚠️ **两个份额要分开展示**：池子开着时，「其中贪心 80%」说的是**老二分**
         # 那一路（跟池子无关），而池子的份额是 `pool_greedy_share`。
         # 上一轮就是这一行把人骗过去的：日志写着「其中贪心 80%」，我读着它
@@ -1082,7 +1094,8 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             best = _maybe_eval(net, games, curve, best, eval_games,
                                eval_every, batch_games, out_dir, log,
                                snap_every=snap_every, pool_size=pool_size,
-                               rule_games=eval_rule_games)
+                               rule_games=eval_rule_games,
+                               rule_seeds=rule_eval_seeds)
             # 新快照进池 + **增量**广播（只发这一个成员，7.8MB，每 snap_every 局一次）。
             # 用「文件在不在」判、不重算取模 —— 免得与 _maybe_eval 里的条件漂开。
             if pfsp and os.path.exists(pool.snapshot_path(out_dir, games)):
@@ -1179,6 +1192,10 @@ def main(argv=None) -> int:
         kw["snap_every"] = int(argv[argv.index("--snap-every") + 1])
     if "--pool-size" in argv:
         kw["pool_size"] = int(argv[argv.index("--pool-size") + 1])
+    if "--rule-eval-seeds" in argv:
+        # 点③：训练内**规则式那把尺子跑几个种子取均值**（默认 1 = 老行为）。
+        # 调大能压掉 best.pt 的选点偏差（实测偏差量级 ~0.6pp），代价是每次评测慢一点。
+        kw["rule_eval_seeds"] = int(argv[argv.index("--rule-eval-seeds") + 1])
     if "--eval-rule-games" in argv:
         # 规则式那把尺子跑多少局：留空 = 与 `--eval-games` 相同；0 = 不跑。
         kw["eval_rule_games"] = int(argv[argv.index("--eval-rule-games") + 1])

@@ -23,6 +23,7 @@ import torch
 
 from guandan.rl import pool, selfplay
 from guandan.rl.net import QNet
+from guandan.sim import features
 
 
 def worker_device() -> str:
@@ -114,6 +115,10 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
 
     # ⚠️ 池子关的时候要传 **`None` 这个参数**（让 generate_batch 走老的 greedy_share 二分），
     # 而不是让 `pick_fixed` 返回 None —— 函数照旧会被调用，`kind[0]` 会炸。
+    # 动作侧特征开关：**必须与 learner 一致**（worker 自己也在编动作）。
+    # 不一致就是「生成数据的编码」与「训练的编码」不同 —— 会静默把策略训歪。
+    features.CONSEQUENCE_ENABLED = bool(cfg.get("consequence", True))
+
     picker = pick_fixed if (cfg.get("use_pool") or cfg.get("pick_all")) else None
 
     while True:
@@ -138,7 +143,8 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
                pick_all=None, member_id=None, use_pool=False,
                pool_greedy_share=pool.GREEDY_SHARE, bomb_cost: float = 0.0,
                opp_kind: str = "greedy", sample: bool = False,
-               mate_mix: float = 0.0, shaping: float = 0.0) -> dict:
+               mate_mix: float = 0.0, shaping: float = 0.0,
+               consequence: bool = True) -> dict:
     """`members`：`{mid: state_dict}` 的**初始**池。
 
     `use_pool=False` 时**不抽池成员**，走老的 `greedy_share` 二分 ——
@@ -158,4 +164,5 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
             "pick_all": pick_all, "member_id": member_id, "use_pool": use_pool,
             "pool_greedy_share": pool_greedy_share, "bomb_cost": bomb_cost,
             "opp_kind": opp_kind, "sample": sample, "mate_mix": mate_mix,
+            "consequence": consequence,
             "shaping": shaping}
