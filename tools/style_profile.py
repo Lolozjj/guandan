@@ -27,6 +27,7 @@ from guandan.rl import eval as ev
 from guandan.rl.net import QNet, load_state
 from guandan.rl.rule_policy import STYLES, rule_policy
 from guandan.rl.selfplay import net_play
+from tools.ruler import paired
 
 DEFAULT_SEEDS = [1002, 1003, 1004]
 DEFAULT_GAMES = 200
@@ -87,6 +88,23 @@ def main(argv=None) -> int:
         name = "/".join(p.replace("\\", "/").split("/")[-2:])
         print(f"{name:28s} {(f'{g:,}' if g else '?'):>9s} " +
               " ".join(f"{statistics.mean(wr[s]):>7.1%} " for s in styles))
+
+    # 逐种子的配对差：**判断「某一列是不是特异性地掉」只能看这个** ——
+    # 两个风格分贴在一起时（比如 normal 71.2% vs hold 69.7%），光看均值说不清是
+    # 真的差异还是同一副牌的抖动；配对把牌面消掉，t 才有意义。
+    print("\n逐风格配对比（同一个权重、同一副牌，逐种子对消；先列当基准）")
+    print("-" * 74)
+    if len(styles) < 2:
+        print("（只给了一个风格，没有可比的）")
+    for p, (_g, wr) in rows.items():
+        name = "/".join(p.replace("\\", "/").split("/")[-2:])
+        for s in styles[1:]:
+            d = [x - y for x, y in zip(wr[s], wr[styles[0]])]
+            m, sd, t = paired(d)
+            verdict = ("**成立**" if abs(t) > 3 else
+                       "看着像，种子不够" if abs(t) > 1.5 else "分辨不出")
+            print(f"{name:24s} {s:>6s} - {styles[0]:<6s} {m * 100:+6.2f}pp  "
+                  f"sd={sd * 100:4.1f}pp  t={t:+5.2f}  {verdict}")
     print("\n⚠️ 风格分之间**不要直接横比**（难度不同）—— 要比的是「同一个权重在不同风格上的差」，\n"
           "   以及「它相对规则式自己那一行的差」。修的时候也别只盯 normal 那一列。")
     return 0

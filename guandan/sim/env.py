@@ -130,8 +130,10 @@ def encode_state(obs: Observation) -> np.ndarray:
     v[_OFF_TURN + (obs.turn - obs.seat) % 4] = 1.0
     v[_OFF_LEVEL + obs.level] = 1.0            # 1..13 用第 1..13 格；0 与 14 恒为 0
 
-    # A2：显式特征（手数 / 未见牌 / 剩牌对比 / 火力 / 残局信号）
-    v[_OFF_EXTRA:] = features.extra_features(obs)
+    # A2：显式特征。**默认关**（`features.ENABLED`，理由见那个常量的注释）——
+    # 关着的时候这一块恒为 0：架构不变、开销为零，老权重与 A2 权重都装得上。
+    if features.ENABLED:
+        v[_OFF_EXTRA:] = features.extra_features(obs)
 
     return v
 

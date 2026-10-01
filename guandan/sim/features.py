@@ -24,6 +24,18 @@ from guandan.sim import meld, rules
 EXTRA_DIM = 2 + 15 + 4 + 3 + 3          # = 27
 
 
+#: **A2 的开关（默认关，2026-09-30）。**
+#:
+#: 为什么默认关：A2 的臂在 3 万局以内**没有任何超过 R11 的迹象**（中期判读见
+#: `plans/2026-09-30-beat-70-roadmap.md` §十一），而这一块特征**每局常驻 30 ms**
+#: （吞吐 19 → 10.9 局/秒）—— 在"涨分要靠局数"的账本上，这是**双重不利**。
+#:
+#: ⚠️ 关着的时候 `env.encode_state` 只是**不写**那一块（恒为 0）：
+#: `STATE_DIM` 不变、架构不变、老权重与 A2 权重都装得上，而**开销是零**。
+#: 打开它（`ENABLED = True`）就完全恢复 A2 —— 单变量、随时可复验。
+ENABLED = False
+
+
 #: `{点数: nat_values(点数)}` 的**全程预算表**（只有 15 个键，import 时算一次）。
 #: `fire_counts` / `_take_run` 都在热路径上，别在那儿反复调 `nat_values`。
 _NAT: dict = {idx: meld.nat_values(idx) for idx in range(1, 16)}

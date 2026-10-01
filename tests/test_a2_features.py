@@ -38,6 +38,31 @@ def test_dim_and_range():
     assert all(-1.0 <= x <= 1.0 for x in f), f
 
 
+def test_default_is_off_and_costs_nothing():
+    """⚠️ **默认关**（2026-09-30 的 A2 中期判读之后）：那一块恒为 0，且前 700 维不受影响。
+
+    这条钉的是两件事：① 关着时**零开销**（不调 `extra_features`）；
+    ② 架构不变 —— 状态还是 727 维，于是 A2 与老权重都装得上。
+    """
+    assert features.ENABLED is False
+    obs = _obs(hand=(A("S5"), A("S6"), A("S7"), A("S8"), A("S9")))
+    v = env.encode_state(obs)
+    assert v.shape == (727,)
+    assert not v[700:].any(), "关掉时那一块必须是 0（不然就是白付了开销）"
+    # 前 700 维仍是老编码：手牌 one-hot 在正确的位置
+    assert v[cards.slot(A("S5"))] == 1.0
+
+
+def test_switch_turns_the_block_back_on(monkeypatch):
+    """开关一开就完全恢复 A2（单变量、随时可复验）。"""
+    obs = _obs(hand=(A("S3"), A("H5")), left=[4, 20, 20, 20])
+    assert not env.encode_state(obs)[700:].any()
+    monkeypatch.setattr(features, "ENABLED", True)
+    v = env.encode_state(obs)
+    assert v[700:].any(), "开了开关那一块必须有内容"
+    assert list(v[700:]) == list(features.extra_features(obs))
+
+
 def test_features_react_to_the_public_state_they_should():
     """手数、未见牌、残局信号要对**公开信息 + 我的手牌**有反应。"""
     made = _obs(hand=(A("S5"), A("S6"), A("S7"), A("S8"), A("S9")), level=2)
