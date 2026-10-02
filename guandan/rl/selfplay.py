@@ -1275,6 +1275,7 @@ def main(argv=None) -> int:
 --no-consequence
 --opp-kind
 --opp-mix
+--seed
 --out-dir
 --pfsp
 --pool-greedy-share
@@ -1304,6 +1305,11 @@ def main(argv=None) -> int:
         kw["batch_games"] = int(argv[argv.index("--batch") + 1])
     if "--eps-games" in argv:
         kw["eps_games"] = int(argv[argv.index("--eps-games") + 1])
+    if "--seed" in argv:
+        # ⚠️ **2026-10-02 补**：`train(seed=)` 一直存在，但 CLI 从来没转发它 ——
+        # 昨晚 F2 那条"独立轨迹（--seed 1）"其实一直是 seed 0，与 O3b 几乎重复
+        # （这也解释了为什么把它并进 soup 毫无增益）。守卫装上之后立刻炸出来了。
+        kw["seed"] = int(argv[argv.index("--seed") + 1])
     if "--wild-cost" in argv:
         # **万能牌代价**：每用掉一张逢人配，从这一步起标签少这么多（默认 0 = 老行为）。
         # 用户 2026-10-01 实机：「炸个 8888 就行了，却用万能牌凑成五个 8」。

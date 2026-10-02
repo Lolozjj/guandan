@@ -106,3 +106,16 @@ def test_no_consequence_flag_turns_the_features_off(monkeypatch):
     monkeypatch.setattr(features, "CONSEQUENCE_ENABLED", True)
     sp.main(["1", "--no-consequence"])
     assert features.CONSEQUENCE_ENABLED is False
+
+def test_seed_flag_is_forwarded(monkeypatch):
+    """⚠️ `--seed` 原来**根本不是 CLI 参数**（`train(seed=)` 有，但没人转发）⇒
+    昨晚 F2 那条"独立轨迹（--seed 1）"其实一直是 seed 0，与 O3b 几乎重复。
+    装上"未知参数必须炸"的守卫之后才炸出来 —— 这条测试把那件事钉住。
+    """
+    seen = {}
+    monkeypatch.setattr(sp, "train", _fake_train(seen))
+    sp.main(["1", "--seed", "7"])
+    assert seen["seed"] == 7
+    seen.clear()
+    sp.main(["1"])
+    assert "seed" not in seen          # 不传就走签名默认（0）
