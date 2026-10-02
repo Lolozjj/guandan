@@ -74,7 +74,10 @@ def main(argv=None) -> int:
         load_state(net, d["net"])
         net.eval()
         n, st = measure(net)
-        print(f"== {p}（{d.get('games', 0):,} 局）")
+        # ⚠️ soup 存档（`tools/make_soup.py`）里 `games` 是 **None**（它是几个权重的平均，
+        # 没有单一局数）⇒ 不能直接 `:,` 格式化，否则 TypeError（2026-10-01 踩过）。
+        g = d.get("games")
+        print(f"== {p}（{g:,} 局）" if isinstance(g, int) else f"== {p}（soup，无单一局数）")
         print(f"   决策点 {n} 个，参与统计 {st['n_margins']}")
         print(f"   首选次选之差 中位 {st['median_margin']:.3f}  "
               f"p90 {st['p90_margin']:.3f}  打平(<0.01) {st['tie_share']:.1%}")
