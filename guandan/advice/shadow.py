@@ -85,6 +85,15 @@ def model_banner(weights: str) -> str:
     return line
 
 
+def _opp_hint(obs) -> str:
+    """对手情报（`advice/reasons.py`）；失败绝不许影响建议显示。"""
+    try:
+        from guandan.advice.reasons import opponent_hint
+        return opponent_hint(obs)
+    except Exception:
+        return ""
+
+
 class ShadowLog:
     def __init__(self, net=None, out_path=SHADOW, weights="", weights_note="",
                  topk=3, show_advice=True):
@@ -198,7 +207,8 @@ class ShadowLog:
             who = cards.names_sorted(m0.cards, st.level) if m0 is not None else []
             self.last_advice = (f"建议：{' '.join(who) if who else '过'}"
                                 f"（第 1/{len(got.cands)}，Q={got.q[i0]:.3f}）"
-                                + (f"   💡 {got.why}" if getattr(got, "why", "") else ""))
+                                + (f"   💡 {got.why}" if getattr(got, "why", "") else "")
+                                + (f"   ｜ {hint}" if (hint := _opp_hint(got.obs)) else ""))
         self._cands, self._q, self._order = got.cands, got.q, got.order
 
     def panel_text(self) -> str:

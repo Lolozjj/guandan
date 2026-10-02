@@ -48,3 +48,42 @@ def explain(obs, acts, chosen_i: int, *, feed_left: int = 2) -> str:
         return "这一手能直接走完，抢"
 
     return ""
+
+def opponent_hint(obs) -> str:
+    """**对手情报**（只用公开信息）：谁快走完了、还有几张王/级牌没露面。
+
+    为什么它值得显示（`plans/2026-10-03-human-play.md` §4.3）：**队友弱时胜负由配合与信息决定**，
+    而人不缺"出哪一手"，缺的是"场上什么情况" ✓ —— 这条**零动作影响**（不改建议），只是把人本来
+    要自己数的东西替他数出来（人也确实这么打：记牌）。
+    """
+    opps = [s for s in rules.SEATS if rules.TEAM[s] != rules.TEAM[obs.seat]]
+    if not opps:
+        return ""
+    short = min(obs.left[o] for o in opps)
+    parts = [f"剩 {min(obs.left[o] for o in opps)}~{max(obs.left[o] for o in opps)} 张"]
+    if short <= 3:
+        who = "、".join(f"座位{o}" for o in opps if obs.left[o] == short)
+        parts.append(f"**{who} 只剩 {short} 张**")
+    # 未见的大王/小王/级牌数量 —— 炸弹风险的最直接代理（全是公开信息）
+    seen = set(obs.hand)
+    for s in rules.SEATS:
+        seen |= set(obs.played[s])
+    from guandan.capture import cards as _c
+    jokers = 0
+    levels = 0
+    for cid in range(1, _c.MAX_ID + 1):
+        try:
+            rank, _suit, _deck = _c.parts(cid)
+        except Exception:
+            continue
+        if cid in seen:
+            continue
+        if rank >= meld.POINT_SMALL:
+            jokers += 1
+        elif rank == obs.level:
+            levels += 1
+    if jokers:
+        parts.append(f"未见王 {jokers} 张")
+    if levels >= 3:
+        parts.append(f"未见级牌 {levels} 张（可能成炸）")
+    return "对手：" + "，".join(parts)

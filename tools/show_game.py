@@ -302,6 +302,13 @@ def render_text(meta: dict, frames: list, quiet: bool = False, log=print) -> Non
             log(f"      #{st:<3d} {who_}：{w}")
         if len(whys) > 8:
             log(f"      …… 另有 {len(whys) - 8} 条")
+    try:
+        from guandan.advice.reasons import opponent_hint
+        _h = opponent_hint(frames[0].obs) if getattr(frames[0], "obs", None) is not None else ""
+        if _h:
+            log(f"  {_h}")
+    except Exception:
+        pass
     if meta.get("tidy", "off") != "off":
         log(f"  **擦浪费：{meta['tidy']}**"
             + (f"（阈值 {meta['tidy_margin']:g}）" if meta.get("tidy_margin") else ""))
