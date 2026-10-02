@@ -296,6 +296,16 @@ class Style:
     bomb_rank: int = 10
     #: 领出时是否"留炸"（False = 残局计划里也先动炸）
     hold_fire: bool = True
+    #: **盯剩张**（新增，默认关 = 老行为）：有对手剩 ≤ `short_left` 张时，
+    #: 领出改出**最强的普通牌**（压死、不给他接的机会），跟牌也**不再省着**，
+    #: 用最强的普通牌抢回出牌权。这是"会利用公开信息"的那条 —— 现有三种风格都只
+    #: 会在 `danger` 门槛上"拦不拦"，不会改**怎么出**。
+    short_push: bool = False
+    short_left: int = 3
+    #: **诱炸**（新增，默认关）：我方有炸、且对手有人剩 ≤ `bait_left` 张时**不动炸**
+    #: —— 留着让他先交资源（这也是"利用信息"：公开信息告诉我们他快走完了）。
+    bait: bool = False
+    bait_left: int = 5
 
 
 NORMAL = Style()
@@ -303,9 +313,15 @@ NORMAL = Style()
 BOMB = Style(name="bomb", bomb_rank=4, hold_fire=False)
 #: 龟：只在对手**非常**可能一手走完时才拦，几乎不主动动炸
 HOLD = Style(name="hold", danger=0.8, bomb_rank=13)
+#: **会利用信息**（2026-10-02 新增）：盯剩张 + 诱炸 + 存炸。
+#: 与前面三种的差别不是"炸不炸"的门槛，而是**在对手快走完时改怎么出** ——
+#: 动机：现有三种风格**都不惩罚信息劣势**（实测"擦浪费"在它们身上要付 −2.1pp、
+#: 连最会存炸的 `hold` 也只是打平）⇒ 信息类改进在旧尺子上会被判成"没用"。
+INFO = Style(name="info", danger=0.75, bomb_rank=13, hold_fire=True,
+             short_push=True, short_left=3, bait=True, bait_left=5)
 
 #: 名字 -> 风格。训练与尺子都按名字取，**别在别处再写一份字典**。
-STYLES = {s.name: s for s in (NORMAL, BOMB, HOLD)}
+STYLES = {s.name: s for s in (NORMAL, BOMB, HOLD, INFO)}
 
 
 def _lead(obs, acts, pool, style: Style = NORMAL) -> Optional[int]:
@@ -323,6 +339,14 @@ def _lead(obs, acts, pool, style: Style = NORMAL) -> Optional[int]:
     if 2 <= len(hands) <= SOURCE2_MAX_HANDS and any(map(is_fire, hands))             and not all(map(is_fire, hands)):
         i = (_cheapest_fire(acts, obs.hand, obs.level) if not style.hold_fire
              else _planned_plain(acts, hands, obs.hand, obs.level))
+        if i is not None:
+            return i
+
+    # [新增·盯剩张] 有对手剩 ≤ short_left 张 ⇒ 领出**最强的普通牌**（压死）：
+    # 出小牌等于给他接的机会，而公开信息已经告诉我们他快走完了。
+    if style.short_push and min((obs.left[o] for o in opponents(obs.seat)),
+                                default=99) <= style.short_left:
+        i = _strongest_plain(acts, obs.hand, obs.level)
         if i is not None:
             return i
 
@@ -404,19 +428,34 @@ def _follow(obs, acts, pool, style: Style = NORMAL) -> Optional[int]:
 
     danger = max((finish_risk(obs.left[o], pool) for o in opponents(obs.seat)),
                  default=0.0)
+    # 「有人快走完」的**直接**读数（公开信息：剩几张）—— `short_push` 用它
+    short_threat = min((obs.left[o] for o in opponents(obs.seat)), default=99)
 
     # [用户 2] 有对手面临「一手走完」-> **必须拦**：先普通牌，没有就动炸
     if danger >= style.danger:
-        i = _cheapest_plain(acts, obs.hand, obs.level)
+        # 盯剩张：拦的时候要**压死**（最强的普通牌），不是出最小的那手 ——
+        # 出最小的会让他下一轮还有机会，等于没拦。`short_push` 才走这条。
+        i = (_strongest_plain(acts, obs.hand, obs.level) if style.short_push
+             else _cheapest_plain(acts, obs.hand, obs.level))
         if i is not None:
             return i
         i = _cheapest_fire(acts, obs.hand, obs.level)
         return i if i is not None else _pass(acts)
 
+    # [新增·盯剩张] 不危险但**有人快走完**（≤ short_left 张）⇒ 抢回出牌权：
+    # 用最强的普通牌压，不再"省着"（省着 = 把主动权交回给他）。
+    if style.short_push and short_threat <= style.short_left:
+        i = _strongest_plain(acts, obs.hand, obs.level)
+        if i is not None:
+            return i
+
     # [源 2] 不危险：压最小的**普通牌**（火力留着）
     i = _cheapest_plain(acts, obs.hand, obs.level)
     if i is not None:
         return i
+    # [新增·诱炸] 有人快走完时**不动炸**：留着，让他先把资源交出来
+    if style.bait and short_threat <= style.bait_left:
+        return _pass(acts)
     # [源 3] 台面主点 > 门槛 且我凑得出炸 -> 才动炸（`style.bomb_rank` 越低越爱炸）
     if obs.table_rank > style.bomb_rank:
         i = _cheapest_fire(acts, obs.hand, obs.level)
