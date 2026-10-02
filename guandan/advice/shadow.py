@@ -197,7 +197,8 @@ class ShadowLog:
             m0 = got.cands[i0]
             who = cards.names_sorted(m0.cards, st.level) if m0 is not None else []
             self.last_advice = (f"建议：{' '.join(who) if who else '过'}"
-                                f"（第 1/{len(got.cands)}，Q={got.q[i0]:.3f}）")
+                                f"（第 1/{len(got.cands)}，Q={got.q[i0]:.3f}）"
+                                + (f"   💡 {got.why}" if getattr(got, "why", "") else ""))
         self._cands, self._q, self._order = got.cands, got.q, got.order
 
     def panel_text(self) -> str:

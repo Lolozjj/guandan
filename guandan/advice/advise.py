@@ -63,6 +63,7 @@ class Advice:
     cands: list                 # 候选，含 None（过）
     q: List[float]              # 与 cands 等长：每个候选的 Q 值
     order: List[int]            # 按 Q 降序的下标 —— `order[0]` 就是首选
+    why: str = ""               # **为什么**（解释型建议，`advice/reasons.py`；只解释不改动作）
 
 
 class _HandLike:
@@ -245,7 +246,13 @@ def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
                         bombs=mode != "wilds", wilds=mode != "bombs",
                         margin=tidy_margin(), leads=fl["leads"])
     order = [i0] + [i for i in sorted(range(len(q)), key=lambda i: -q[i]) if i != i0]
-    return Advice(obs=b.obs, hist=b.hist, cands=cands, q=q, order=order)
+    why = ""
+    try:
+        from guandan.advice.reasons import explain
+        why = explain(b.obs, cands, i0)
+    except Exception:
+        why = ""                     # 解释失败绝不许影响建议本身
+    return Advice(obs=b.obs, hist=b.hist, cands=cands, q=q, order=order, why=why)
 
 
 def resolve_weights(path: str = None) -> Optional[str]:
