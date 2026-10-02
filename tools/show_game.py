@@ -35,12 +35,18 @@ from guandan.advice import advise
 from guandan.capture.cards import names_sorted
 from guandan.sim import env, meld, rules
 from guandan.capture.state import Play
-from guandan.rl.eval import bomb_opportunity, is_wasted_bomb
+from guandan.rl.eval import (bomb_opportunity, is_upgraded_wild, is_wasted_bomb,
+                            is_wasted_wild, wild_opportunity)
 from guandan.rl.net import QNet, load_state, q_values
 from guandan.rl.policies import greedy_policy
 from guandan.rl.rule_policy import rule_choose
 from guandan.rl.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型的唯一产地，不另写一份
 from guandan.console import utf8_stdout
+
+#: 「擦浪费」开关 —— **看局工具与面板同一条口径**（`GUANDAN_TIDY`）。
+#: 模块级读一次：走局时不再反复查环境。
+_TIDY_MODE = advise.tidy_mode()
+_TIDY_MARGIN = advise.tidy_margin()
 
 TEAM_NAME = {0: "甲", 1: "乙"}
 
@@ -123,6 +129,7 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
     frames = []
     obs = e.observe()
     step = bombs = chance = waste = 0
+    wild_chance = wild_waste = wild_up = 0
     while not e.done:
         acts = e.legal()
         seat = e.hand.turn
@@ -136,6 +143,13 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
         else:
             q = q_values(net, obs, acts, hist)
             i = int(q.argmax())
+            # 「擦浪费」开关（`GUANDAN_TIDY`）：**看局工具必须与面板同一条口径**，
+            # 否则你用这个窗口看到的还是"原样乱炸"，会以为修了没效果（2026-10-02 踩到）。
+            if _TIDY_MODE != "off":
+                from guandan.rl.tidy import tidy_index
+                i = tidy_index(q, acts, i, has_table=e.hand.table is not None,
+                               bombs=_TIDY_MODE != "wilds", wilds=_TIDY_MODE != "bombs",
+                               margin=_TIDY_MARGIN)
         m = acts[i]
         step += 1
         if m is not None and m.is_bomb:
@@ -145,9 +159,15 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
         # 战报末尾那个数就变成两个策略混在一起，没法读
         hit_chance = (not is_opp) and bomb_opportunity(e.hand.table, acts)
         was_wasted = is_wasted_bomb(e.hand.table, acts, m)
+        wild_wasted = is_wasted_wild(e.hand.table, acts, m)
+        wild_upgraded = is_upgraded_wild(e.hand.table, acts, m)
         if hit_chance:
             chance += 1
             waste += int(was_wasted)
+        if (not is_opp) and wild_opportunity(e.hand.table, acts):
+            wild_chance += 1
+            wild_waste += int(wild_wasted)
+            wild_up += int(wild_upgraded)
         order = ([] if q is None
                  else sorted(range(len(acts)), key=lambda j: -float(q[j]))[:top])
         frames.append(Frame(
@@ -175,7 +195,9 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
             "opp_kind": opp_kind, "opp_team": opp_team,
             "ranks": ranks, "winner": winner,
             "points": rules.points(ranks), "steps": step,
-            "bombs": bombs, "chance": chance, "waste": waste}
+            "bombs": bombs, "chance": chance, "waste": waste,
+            "wild_chance": wild_chance, "wild_waste": wild_waste, "wild_up": wild_up,
+            "tidy": _TIDY_MODE, "tidy_margin": _TIDY_MARGIN}
     return meta, frames
 
 
@@ -251,6 +273,18 @@ def render_text(meta: dict, frames: list, quiet: bool = False, log=print) -> Non
         f"{'模型' if meta.get('opp_kind') else ''}"
         f"有「用普通牌压」的机会 {meta['chance']} 次，其中白炸 {meta['waste']} 次"
         + (f"（{meta['waste'] / meta['chance']:.0%}）" if meta["chance"] else ""))
+    # 万能牌那一类（用户 2026-10-01 的第二条抱怨）+ **擦浪费开关的状态**
+    # —— 开关状态必须印出来：不印的话"看了几局觉得没变"分不清是没生效还是本来如此。
+    if meta.get("wild_chance"):
+        log(f"  有「不用万能牌也能压」的机会 {meta['wild_chance']} 次，"
+            f"其中白用万能牌 {meta['wild_waste']} 次"
+            f"（{meta['wild_waste'] / meta['wild_chance']:.0%}）"
+            f"，其中『用万能牌放大炸弹』{meta['wild_up']} 次")
+    if meta.get("tidy", "off") != "off":
+        log(f"  **擦浪费：{meta['tidy']}**"
+            + (f"（阈值 {meta['tidy_margin']:g}）" if meta.get("tidy_margin") else ""))
+    else:
+        log("  擦浪费：关（设 `$env:GUANDAN_TIDY=\"margin:0.25\"` 再跑一次可对比）")
 
 
 def show(path: str = None, seed: int = 7, level: int = None, top: int = 3,

@@ -76,7 +76,13 @@ def model_banner(weights: str) -> str:
     # 分不出是哪一次训练（`basename(dirname)` 给的是 `pool`）。这个是测试抓出来的。
     parts = [x for x in os.path.normpath(weights).replace("\\", "/").split("/") if x]
     where = "/".join(parts[-3:]) if parts else weights
-    return "影子模式就绪 —— 模型：" + where + (f"（{games:,} 局）" if games else "")
+    line = "影子模式就绪 —— 模型：" + where + (f"（{games:,} 局）" if games else "")
+    # 「开关必须看得见」（本仓库的换源纪律）：`GUANDAN_TIDY` 开着就把它打出来。
+    # 不打的话，用户根本分不清"面板没生效"还是"我设错了变量"（2026-10-02 用户问"怎么启动"）。
+    mode = advise.tidy_mode()
+    if mode != "off":
+        line += f"  **擦浪费：{mode}**"
+    return line
 
 
 class ShadowLog:
