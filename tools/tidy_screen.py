@@ -44,6 +44,10 @@ def main(argv=None) -> int:
     ap.add_argument("--games", type=int, default=300)
     ap.add_argument("--seeds", type=int, default=12)
     ap.add_argument("--seed0", type=int, default=1002)
+    ap.add_argument("--no-styles", action="store_true",
+                    help="只跑 normal（跳过风格段；复核阈值时省一半时间）")
+    ap.add_argument("--margins", default="0",
+                    help="逗号分隔的阈值：只在「首选−最省档最高」≤ 阈值时才替换（0=硬替换）")
     a = ap.parse_args(argv)
 
     net = load_net(a.weights)
@@ -65,9 +69,24 @@ def main(argv=None) -> int:
     print("⇒ 若 |t| 小（分辨不出）⇒ **擦浪费在胜率上不付代价**，而行为更合人意（面板可默认开）。")
 
     # ---- 分风格再判一次：**惩罚浪费的尺子是 `hold`（龟）**，不是 normal ----
+    # ---- 阈值扫描：把"擦浪费"的取舍曲线画出来（浪费率 vs 配对代价）----
+    mgs = [float(x) for x in a.margins.split(",") if x.strip()]
+    if mgs != [0.0]:
+        print("\n阈值扫描（normal；同一批种子；浪费率另有独立走局）")
+        print(f"  {'margin':>7s}  {'胜率':>7s}  {'Δ vs 原样':>10s}  {'t':>6s}   {'白炸':>7s}  {'白用万能牌':>9s}")
+        for mg in mgs:
+            tp_m = tidy_net_policy(net, margin=mg)
+            wr = [match(tp_m, rule, games=a.games, seed=a.seed0 + k) for k in range(a.seeds)]
+            dd = [x - y for x, y in zip(wr, wr_raw)]
+            mm, ss, tt = _paired(dd)
+            w = ev._bomb_stats(tp_m, 150, a.seed0, opponent=rule)
+            ww = ev._wild_stats(tp_m, 150, a.seed0, opponent=rule)
+            print(f"  {mg:7.3f}  {statistics.mean(wr):6.1%}  {mm * 100:+9.2f}pp  {tt:+6.2f}"
+                  f"   {w[0] / max(w[1], 1):6.1%}  {ww[0] / max(ww[2], 1):8.1%}")
+
     print("\n分风格配对（同一副牌逐种子对消）—— 白炸在 normal 上不被惩罚，"
           "但在会存炸的 hold 上应当被惩罚：")
-    for st in STYLES:
+    for st in ([] if a.no_styles else STYLES):
         opp = rule_policy(style=st)
         r = [match(raw, opp, games=a.games, seed=a.seed0 + k) for k in range(a.seeds)]
         q = [match(tidy, opp, games=a.games, seed=a.seed0 + k) for k in range(a.seeds)]

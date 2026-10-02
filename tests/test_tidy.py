@@ -100,8 +100,17 @@ def test_tidy_mode_parsing_and_loud_rejection():
                           ("all", "all"), ("bombs", "bombs"), ("wilds", "wilds")):
             os.environ["GUANDAN_TIDY"] = raw
             assert tidy_mode() == want, raw
+        os.environ["GUANDAN_TIDY"] = "margin:0.25"
+        assert tidy_mode() == "margin:0.25"
+        from guandan.advice.advise import tidy_margin
+        assert tidy_margin() == 0.25
+        os.environ["GUANDAN_TIDY"] = "1"
+        assert tidy_margin() == 0.0          # 硬替换
         os.environ["GUANDAN_TIDY"] = "maybe"
         with pytest.raises(ValueError, match="GUANDAN_TIDY"):
+            tidy_mode()
+        os.environ["GUANDAN_TIDY"] = "margin:abc"
+        with pytest.raises(ValueError, match="阈值"):
             tidy_mode()
     finally:
         if old is None:
@@ -122,3 +131,20 @@ def test_pass_is_never_a_tidy_alternative():
     got = tidy.tidy_index(q, acts, has_table=True, chosen_i=1)
     assert acts[got] is not None, "不许把出炸改成过牌"
     assert got == 1, "没有更省的实体牌 ⇒ 一动不动"
+
+def test_margin_keeps_the_net_choice_when_it_is_committed():
+    """⚠️ `margin`：网络**强烈**偏好炸弹（「首选 − 最省档最高」超过阈值）时**不替换**。
+
+    这一档是给"该炸就炸（抢出牌权）"留的口子，用来把"擦浪费"的代价调便宜 ——
+    硬替换（margin=0）实测在 normal 上要付 −2.11pp（t=−3.33）。
+    """
+    acts = _acts()                       # [普通对子, 天然炸弹, 万能牌放大炸弹]
+    # 网络强烈偏好天然炸弹：0.7 − 0.2 = 0.5
+    q = [0.2, 0.7, 0.1]
+    assert tidy.tidy_index(q, acts, has_table=True, chosen_i=1) == 0                 # 硬替换
+    assert tidy.tidy_index(q, acts, has_table=True, chosen_i=1, margin=0.4) == 1     # 0.5 > 0.4 ⇒ 保留
+    assert tidy.tidy_index(q, acts, has_table=True, chosen_i=1, margin=0.6) == 0     # 0.5 < 0.6 ⇒ 替换
+
+    # 网络只是"略偏好"炸弹（0.35 − 0.30 = 0.05）⇒ 阈值 0.1 也会替换掉
+    q2 = [0.30, 0.35, 0.1]
+    assert tidy.tidy_index(q2, acts, has_table=True, chosen_i=1, margin=0.1) == 0

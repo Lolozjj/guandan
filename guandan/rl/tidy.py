@@ -24,26 +24,17 @@ from guandan.rl.net import q_values
 
 
 def tidy_index(q, acts, chosen_i: int, *, has_table: bool, bombs: bool = True,
-               wilds: bool = True) -> int:
+               wilds: bool = True, margin: float = 0.0) -> int:
     """在候选里挑"最省资源"的一手（**同级之内**仍按网络自己的 Q 挑）。没有更省的就不动。
 
-    ⚠️ **只有"桌上有牌要压"时才谈得上浪费**（`has_table`）—— 与 `rl/eval.py` 的
-    `bomb_opportunity` / `wild_opportunity` **同一口径**。我 2026-10-01 改字典序时
-    顺手删了 `table` 参数、把这条前提弄丢了，结果**主动出炸（领出）也被降级**
-    ⇒ 300 局里**一次炸都不出、万能牌也不用**。别再弄丢。
+    `margin`：**只在网络没有强烈偏好时才介入** —— 若"首选 − 最省候选的 Q 最高者"
+    超过 `margin`，就认为网络是**有理由**这么打的（例如必须靠这颗炸抢回出牌权），
+    一动不如一静。`margin=0`（默认）= 老行为（只要存在更省的候选就换）。
 
-    资源成本按 **字典序** 排（这是 2026-10-01 用户两条原话的直接编码）：
-
-    1. **不用炸弹** > 用炸弹（「有牌可以压制的情况下会使用炸弹进行压制」）；
-    2. **不用万能牌** > 用万能牌（「炸个 8888 就行了，却用万能牌凑成五个 8」）。
-
-    ⇒ 顺序是：普通牌 > 用万能牌的普通牌 > 天然炸弹 > 万能牌放大的炸弹。
-    `bombs=False` / `wilds=False` 可以把对应那一维**从字典序里去掉**（只在同级里按 Q 挑）。
-
-    ⚠️ 为什么必须是字典序而不是"两条 if 顺序判断"：先判"白炸"会让
-    「天然 8888 就在候选里、却用万能牌凑了 5 张炸」这类局面**永远轮不到**第二条规则
-    （它先被第一条降级成普通牌；而那个普通牌可能还是用万能牌的）。字典序一次说清。
-    """
+    ⚠️ 为什么要这个旋钮：硬替换的代价是实测 **−2.11pp（t=−3.33，normal）**，
+    而它擦掉的白炸只有 7.4 个百分点里的 7.4 个 —— 用户要的是"别乱炸"，
+    不是"别炸"。先用阈值把"网络自己都犹豫"的那些擦掉，看看性价比能不能好得多。
+    """ 
     if len(acts) <= 1 or not has_table:
         return chosen_i
 
@@ -64,14 +55,18 @@ def tidy_index(q, acts, chosen_i: int, *, has_table: bool, bombs: bool = True,
     if cost(chosen_i) == best:                     # 已经是最省的 ⇒ **一动不动**
         return chosen_i
     tier = [i for i in cands if cost(i) == best]
-    return max(tier, key=lambda i: float(q[i]))
+    alt = max(tier, key=lambda i: float(q[i]))     # 最省档里 Q 最高的那个
+    if margin > 0 and float(q[chosen_i]) - float(q[alt]) > margin:
+        # 网络**强烈**偏好这一手（差值超过阈值）⇒ 认为它有理由（例如靠这颗炸抢回出牌权）
+        return chosen_i
+    return alt
 
 
-def tidy_net_policy(net, *, bombs: bool = True, wilds: bool = True):
+def tidy_net_policy(net, *, bombs: bool = True, wilds: bool = True, margin: float = 0.0):
     """把网络策略包一层"擦浪费"。**Q 只算一次**，不浪费时与原来逐位一致。"""
     def pol(obs, acts, hist=None):
         q = q_values(net, obs, acts, hist)
         i = int(np.argmax(q))
         return tidy_index(q, acts, i, has_table=obs.table is not None,
-                          bombs=bombs, wilds=wilds)
+                          bombs=bombs, wilds=wilds, margin=margin)
     return pol

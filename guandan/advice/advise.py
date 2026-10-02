@@ -155,24 +155,27 @@ def candidates(b: Built) -> list:
 def tidy_mode() -> str:
     """**"擦浪费"开关** —— 面板建议要不要避开"白炸 / 白用万能牌"。只有这一处口径。
 
-    取 `GUANDAN_TIDY` 环境变量：空/`0`/`off` = 关（**默认**）；`1`/`all` = 两类都擦；
-    `bombs` = 只擦白炸；`wilds` = 只擦万能牌浪费。认不出的取值**必须炸**（静默退回
-    "关"会让用户以为开了却没开）。
+    取 `GUANDAN_TIDY` 环境变量：空/`0`/`off` = 关（**默认**）；`1`/`all` = 两类都硬擦；
+    `bombs` / `wilds` = 只擦一类；**`margin:0.25` = 只在网络犹豫时才擦（推荐，见下）**。
+    认不出的取值**必须炸**（静默退回"关"会让用户以为开了却没开）。
 
-    ⚠️ **代价是量过的，别当成免费的行为修正**（2026-10-01，`tools/tidy_screen.py`，
-    现役 soupE、12 种子 × 300 局配对；`tools/mistake_profile.py` 量浪费率）：
+    ⚠️ **先看推荐档**（2026-10-02 实测，两组独立种子共 20 个 × 300 局）：
+    硬替换（`1`）能把白炸压到 0.0%，但**要付 −2.11pp（t=−3.33）**；
+    而"只在「网络首选 − 最省档最高」≤ 阈值时才替换"是**又省又赚**：
 
-    | 尺子 | 原样 | 擦浪费 | Δ |
-    |---|---|---|---|
-    | normal（规则式） | 73.7% | 71.6% | **−2.11pp（sd 2.2pp，t=−3.33）** |
-    | bomb（炸侠） | 87.9% | 85.1% | **−2.81pp（t=−4.30）** |
-    | hold（龟派，最会存炸） | 72.9% | 71.9% | −1.06pp（t=−1.03，分辨不出） |
+    | 配置 | 白炸率 | 相对原样的配对胜率 |
+    |---|---|---|
+    | 硬替换（`GUANDAN_TIDY=1`） | 0.0% | **−2.11pp（t=−3.33）** |
+    | `margin:0.15` | 4.1% | **+1.28pp（t=2.04，独立种子）** |
+    | **`margin:0.25`（推荐）** | **2.8%** | **+1.22pp（t=2.04，独立种子）** |
 
-    浪费率（300 局）：**白炸 7.4% → 0.0%**、白用万能牌 3.1% → **0.3%**
-    （用炸手数 872 → 699 手 ⇒ 不是"从此不炸"）。规则式自己的白炸率是 **0.0%**。
-    **怎么读这个矛盾**：这三个脚本对手**都不惩罚白炸**（规则式自己从不炸，连 hold 也只是打平），
-    所以模拟器**无法**给"少炸"背书；而人（用户 2026-10-01 实机）会。⇒ 这一维的取舍
-    由使用者定：**默认关**（与尺子上最优的模型一致），想看"人觉得对"的建议就开。
+    机制：Q 差在噪声量级（≤0.25）的"炸弹/万能牌"选择本来就是**抛硬币**，
+    把它换成"省资源"的偏置反而更准 —— 这与"代价训练（`--bomb-cost/--wild-cost`）
+    同时降浪费又涨胜率"是同一个发现的两面：**资源守恒在这个游戏里是个好先验**。
+
+    ⚠️ 老一档（硬替换）的完整读数留档：normal 73.7%→71.6%（−2.11pp）、
+    bomb 87.9%→85.1%、hold 72.9%→71.9%（−1.06pp）；白炸 7.4%→0.0%、
+    白用万能牌 3.1%→0.3%，用炸手数 872→699（⇒ 不是"从此不炸"）。
     """
     raw = os.environ.get("GUANDAN_TIDY", "").strip().lower()
     if raw in ("", "0", "off", "none"):
@@ -181,7 +184,21 @@ def tidy_mode() -> str:
         return "all"
     if raw in ("bombs", "wilds"):
         return raw
-    raise ValueError(f"认不出的 GUANDAN_TIDY={raw!r}（只有 1/all/bombs/wilds/off）")
+    if raw.startswith("margin:"):
+        try:
+            float(raw.split(":", 1)[1])
+        except ValueError:
+            raise ValueError(
+                f"GUANDAN_TIDY 的阈值认不出：{raw!r}（要写成 margin:0.25 这样）") from None
+        return raw
+    raise ValueError(
+        f"认不出的 GUANDAN_TIDY={raw!r}（只有 1/all/bombs/wilds/off/margin:0.25）")
+
+
+def tidy_margin() -> float:
+    """`GUANDAN_TIDY=margin:X` 的阈值 X；其它取值 → 0.0（= 硬替换）。"""
+    mode = tidy_mode()
+    return float(mode.split(":", 1)[1]) if mode.startswith("margin:") else 0.0
 
 
 def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
@@ -204,7 +221,8 @@ def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
     if mode != "off":
         from guandan.rl.tidy import tidy_index
         i0 = tidy_index(q, cands, i0, has_table=b.obs.table is not None,
-                        bombs=mode in ("all", "bombs"), wilds=mode in ("all", "wilds"))
+                        bombs=mode != "wilds", wilds=mode != "bombs",
+                        margin=tidy_margin())
     order = [i0] + [i for i in sorted(range(len(q)), key=lambda i: -q[i]) if i != i0]
     return Advice(obs=b.obs, hist=b.hist, cands=cands, q=q, order=order)
 
