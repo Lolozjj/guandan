@@ -113,7 +113,7 @@ RUNS_DIR = str(paths.RUNS)
 
 
 #: 训练算法。`dmc` = 回归标量 Q + argmax（默认、老行为）；`pg` = 策略梯度（REINFORCE）。
-ALGOS = ("dmc", "pg")
+ALGOS = ("dmc", "pg", "ppo")
 
 
 def _check_algo(name: str) -> str:
@@ -530,6 +530,65 @@ def _pg_step(net, opt, samples, rewards, base, games, beta_ent: float = BETA_ENT
             "adv": float(adv.mean())}
 
 
+PPO_CLIP = 0.2        # PPO 的裁剪半径（`--ppo-clip`）
+PPO_EPOCHS = 4       # 每批数据重复更新几轮（PG 是 1 轮 —— 那正是它塌陷的原因）
+PPO_MINIBATCH = 256
+
+
+def _ppo_step(net, opt, samples, rewards, base, games, beta_ent, *, clip: float = PPO_CLIP,
+              epochs: int = PPO_EPOCHS, minibatch: int = PPO_MINIBATCH,
+              normalize_adv: bool = True, rng=None):
+    """**PPO**：一次采样、**多轮小批裁剪更新**。修的是 `--algo pg` 的塌陷。
+
+    为什么 PG 会塌（台账里的诊断）：`_pg_step` 只用一批数据更新**一次** ——
+    重要性比恒等于 1，所以"信任域"这件事在它那里**根本不存在**；
+    熵奖励是软约束，β 从 0.01 扫到 0.1 都治不了。PPO 的做法是：
+    同一批数据走 `epochs` 轮小批，每轮把 `π_new/π_old` **裁到 [1−ε, 1+ε]**，
+    超过半径的梯度直接归零 ⇒ 一步最多把策略推这么远。
+
+    ⚠️ **行为策略的 log-prob 在这里当场算**（`lp_old`）：PG 是 on-policy、
+       采样与更新之间没有别的更新 ⇒ 更新前那一刻的网络**就是**行为策略。
+       （所以不需要改采样路径去传 log-prob —— 那会让 worker 的记录格式变复杂。）
+
+    ⚠️ `epochs=1` 且 `clip` 很大、`normalize_adv=False` 时，它与 `_pg_step` **等价**
+       —— 这条被测试钉着（否则"改了什么"说不清）。
+    """
+    import numpy as _np
+
+    lp_old, _e0, zmax0 = log_prob_and_entropy(net, samples)
+    lp_old = lp_old.detach()
+    adv = torch.tensor(rewards, dtype=torch.float32, device=lp_old.device) - base.value
+    base.update(sum(rewards) / len(rewards))          # 顺序与 `_pg_step` 一致：先用旧基线
+    if normalize_adv and len(samples) > 1:
+        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+    check_logits(zmax0, games, 0.0)
+
+    order = list(range(len(samples)))
+    if rng is not None:
+        rng.shuffle(order)
+    out = {"loss": float("nan"), "entropy": float("nan"), "adv": float(adv.mean()),
+           "ratio": 1.0}
+    for _ep in range(epochs):
+        ents, max_ents = [], []
+        for i0 in range(0, len(order), minibatch):
+            ix = order[i0:i0 + minibatch]
+            sub = [samples[i] for i in ix]
+            lp, ent, zmax = log_prob_and_entropy(net, sub)
+            ratio = torch.exp(lp - lp_old[ix])
+            a = adv[ix]
+            loss = -(torch.min(ratio * a,
+                               torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * a).mean()
+                     ) - beta_ent * ent.mean()
+            check_logits(zmax, games, float(loss.detach()))
+            opt.zero_grad(); loss.backward(); opt.step()
+            ents += [float(x) for x in ent.detach()]
+            max_ents += [math.log(len(s[1])) for s in sub]
+            out = {"loss": float(loss.detach()), "entropy": float(ent.mean().detach()),
+                   "adv": float(a.mean()), "ratio": float(ratio.mean().detach())}
+        check_entropy(ents, max_ents)                  # 熵塌了要**响**（PG 就是这样被逮到的）
+    return out
+
+
 def _targets(net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
              fresh=None, shaping: float = 0.0):
     """这一批训练样本的目标值。**自举在这里、且只在这里进入标签。**
@@ -795,7 +854,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES,
           eval_rule_games: int = None, mate_mix: float = 0.0,
           close_weight: float = 1.0, shaping: float = 0.0,
-          rule_eval_seeds: int = 1):
+          rule_eval_seeds: int = 1, ppo_clip: float = PPO_CLIP, ppo_epochs: int = PPO_EPOCHS):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -834,6 +893,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
         + _pg_log(algo, beta_ent)      # 单进程没有权重广播 ⇒ 不打那一行
+        + (f"  **PPO clip={ppo_clip:g} × {ppo_epochs} 轮**" if algo == "ppo" else "")
         + f"\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
@@ -853,14 +913,18 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
                                learn_all_seats=learn_all_seats,
                                bomb_cost=bomb_cost, opp_kind=opp_kind,
                                mate_mix=mate_mix,
-                               sample=(algo == "pg"), shaping=shaping)
+                               sample=(algo in ("pg", "ppo")), shaping=shaping)
 
-        if algo == "pg":
+        if algo in ("pg", "ppo"):
             # **on-policy：不写 buffer**（写了就是 off-policy，要重要性采样）。
             # 标签仍由 `mc_targets` 产出 —— `generate_batch` 内部走的就是它。
             samples = [p for _rec, pts, _y in batch for p in pts]
             rewards = [r for _rec, _pts, y in batch for r in y]
-            out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
+            if algo == "ppo":
+                out = _ppo_step(net, opt, samples, rewards, base, games, beta_ent,
+                                clip=ppo_clip, epochs=ppo_epochs, rng=rng)
+            else:
+                out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
             loss = out["loss"]
             games += len(batch)
         else:
@@ -912,6 +976,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    algo: str = "dmc", mate_mix: float = 0.0, beta_ent: float = BETA_ENT,
                    close_weight: float = 1.0, shaping: float = 0.0,
                    rule_eval_seeds: int = 1,
+                   ppo_clip: float = PPO_CLIP, ppo_epochs: int = PPO_EPOCHS,
                    weight_sync_games: int = WEIGHT_SYNC_GAMES,
                    eval_rule_games: int = None,
                    _kill_worker_after: float = None):
@@ -987,7 +1052,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                                                      opp_kind=opp_kind,
                                                      mate_mix=mate_mix,
                                                      shaping=shaping,
-                                                     sample=(algo == "pg"))))
+                                                     sample=(algo in ("pg", "ppo")))))
              for k in range(workers)]
     log(f"device={next(net.parameters()).device}  预算 {seconds:.0f}s  "
         f"worker {workers} 个（各自 CPU）+ 主进程学习  batch={batch_games} 局  "
@@ -1012,6 +1077,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
         + ("" if algo == "pg" else _boot_log(mc_mix, n_step, tgt_sync))
         + (f"  热启动 {init}" if init else "")
         + _pg_log(algo, beta_ent, weight_sync_games)
+        + (f"  **PPO clip={ppo_clip:g} × {ppo_epochs} 轮**" if algo == "ppo" else "")
         + f"\n权重 -> {out_dir}")
 
     t0 = time.perf_counter()
@@ -1192,6 +1258,12 @@ def main(argv=None) -> int:
         kw["snap_every"] = int(argv[argv.index("--snap-every") + 1])
     if "--pool-size" in argv:
         kw["pool_size"] = int(argv[argv.index("--pool-size") + 1])
+    if "--ppo-clip" in argv:
+        # PPO 的裁剪半径（默认 0.2）。只有 `--algo ppo` 用得到。
+        kw["ppo_clip"] = float(argv[argv.index("--ppo-clip") + 1])
+    if "--ppo-epochs" in argv:
+        # 同一批数据重复更新几轮（默认 4）。`--algo pg` 等价于 1 轮 —— 那是它塌陷的原因。
+        kw["ppo_epochs"] = int(argv[argv.index("--ppo-epochs") + 1])
     if "--rule-eval-seeds" in argv:
         # 点③：训练内**规则式那把尺子跑几个种子取均值**（默认 1 = 老行为）。
         # 调大能压掉 best.pt 的选点偏差（实测偏差量级 ~0.6pp），代价是每次评测慢一点。
