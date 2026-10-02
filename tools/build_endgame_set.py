@@ -40,10 +40,42 @@ def load(path: str):
     return n
 
 
-def _rollout(net, e_snap, k_act, rng, my_team, max_steps: int = 200) -> float:
-    """走一步 `k_act` 之后：我方用网络、对手用规则式，返回我方终局回报（**确定性暗牌**）。"""
+def _configs(e_snap, m: int, rng) -> list:
+    """M 组「暗牌分配」——**同一个局面的所有候选共用这一批**。
+
+    这是**公共随机数**（common random numbers）：候选之间比的是差值，
+    而"这副牌本身好打不好打"这部分的噪声在配对相减时**互相抵消**
+    ⇒ 同样的 M 次采样能换到低得多的差值方差。
+
+    为什么必须要（2026-10-01 夜量的）：M=24 时每个候选的 rollout 值 SE ≈ 0.4 点，
+    而候选之间真正的差只有 ~0.36 点 ⇒ 不配对的话，**排序标签本身就有一半是噪声**，
+    网络学到的成对准确率只能到 0.63（贴着噪声天花板）。
+    """
+    obs0 = e_snap.observe()
+    out = []
+    for _ in range(m):
+        pool = _unseen_ids(obs0)
+        rng.shuffle(pool)
+        k, cfg = 0, []
+        for s in [x for x in rules.SEATS if x != obs0.seat]:
+            n = obs0.left[s]
+            cfg.append(set(pool[k:k + n]))
+            k += n
+        out.append(cfg)
+    return out
+
+
+def _rollout(net, e_snap, k_act, rng, my_team, max_steps: int = 200, cfg=None) -> float:
+    """走一步 `k_act` 之后：我方用网络、对手用规则式，返回我方终局回报。
+
+    `cfg` 给定则用这一组暗牌（**配对**）；不给就自己抽一组（独立）。
+    """
     e = copy.deepcopy(e_snap)
-    _determinize(e, e.observe(), rng)
+    if cfg is None:
+        _determinize(e, e.observe(), rng)
+    else:
+        for s, cards in zip([x for x in rules.SEATS if x != e.hand.turn], cfg):
+            e.hand.hands[s] = set(cards)
     e.step(k_act)
     steps = 0
     while not e.done and steps < max_steps:
@@ -103,9 +135,10 @@ def main(argv=None) -> int:
         # ⚠️ **必须存真实历史**：网络的前向是 (state, action, 15x147 历史)，
         # 用零历史微调 = 在一个推理时不会出现的输入分布上训练（口径漂）。
         hist = env.encode_history(e_snap.hand, seat)
+        cfgs = _configs(e_snap, a.samples, rng)          # **公共随机数**：候选共用
         for k in order:
-            v = statistics.mean([_rollout(net, e_snap, k, rng, team0)
-                                 for _ in range(a.samples)])
+            v = statistics.mean([_rollout(net, e_snap, k, rng, team0, cfg=c)
+                                 for c in cfgs])
             states.append(st)
             actions.append(env.encode_action_now(acts[k], obs.level, obs.hand))
             hists.append(hist)

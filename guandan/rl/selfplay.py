@@ -537,7 +537,7 @@ PPO_MINIBATCH = 256
 
 def _ppo_step(net, opt, samples, rewards, base, games, beta_ent, *, clip: float = PPO_CLIP,
               epochs: int = PPO_EPOCHS, minibatch: int = PPO_MINIBATCH,
-              normalize_adv: bool = True, rng=None):
+              normalize_adv: bool = True, rng=None, value_coef: float = 0.0):
     """**PPO**：一次采样、**多轮小批裁剪更新**。修的是 `--algo pg` 的塌陷。
 
     为什么 PG 会塌（台账里的诊断）：`_pg_step` 只用一批数据更新**一次** ——
@@ -550,8 +550,15 @@ def _ppo_step(net, opt, samples, rewards, base, games, beta_ent, *, clip: float 
        采样与更新之间没有别的更新 ⇒ 更新前那一刻的网络**就是**行为策略。
        （所以不需要改采样路径去传 log-prob —— 那会让 worker 的记录格式变复杂。）
 
-    ⚠️ `epochs=1` 且 `clip` 很大、`normalize_adv=False` 时，它与 `_pg_step` **等价**
+    ⚠️ `epochs=1` 且 `clip` 很大、`normalize_adv=False` 时，它的**梯度**与 `_pg_step` 相同
        —— 这条被测试钉着（否则"改了什么"说不清）。
+
+    ⚠️ **`value_coef > 0` 是 2026-10-01 夜加上的"尺度锚"**：这一版第一次烟测里，
+       `--algo ppo` 在 1740 个决策点就把熵跑塌了（中位熵/均匀熵 = 0.0066 < 0.05），
+       **比 PG 还快**。根因不是"没有信任域"——**是 Q 被当 logits 用，而这条路上没有任何东西
+       管它的尺度**（DMC 路径有 MSE 回归把 Q 钉在回报尺度上，所以 `check_q_scale` 有效；
+       actor 路径只把采样到的那一手的 logit 往上推 ⇒ 尺度单调漂移 ⇒ softmax 饱和）。
+       加一项小系数的 MC 值回归（就是 DMC 的目标，数据现成）把尺度钉回去。
     """
     import numpy as _np
 
@@ -579,6 +586,20 @@ def _ppo_step(net, opt, samples, rewards, base, games, beta_ent, *, clip: float 
             loss = -(torch.min(ratio * a,
                                torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * a).mean()
                      ) - beta_ent * ent.mean()
+            if value_coef:
+                # **尺度锚**：把「实际出的那一手」的 Q 拉回 MC 回报（就是 DMC 的目标）。
+                # 没有它，logits 的尺度会漂到 softmax 饱和 ⇒ 熵塌（见 docstring）。
+                st = torch.from_numpy(np.stack(
+                    [env.encode_state(o) for o, _a, _i, _s, _h in sub])).float().to(lp.device)
+                ac = torch.from_numpy(np.stack(
+                    [env.encode_action_now(a[i2], o.level, o.hand)
+                     for o, a, i2, _s, _h in sub])).float().to(lp.device)
+                hs = torch.from_numpy(np.stack(
+                    [h for _o, _a, _i, _s, h in sub])).float().to(lp.device)
+                q = net(st, ac, hs)
+                tgt = torch.tensor([rewards[i2] for i2 in ix], dtype=torch.float32,
+                                   device=lp.device)
+                loss = loss + value_coef * torch.nn.functional.mse_loss(q, tgt)
             check_logits(zmax, games, float(loss.detach()))
             opt.zero_grad(); loss.backward(); opt.step()
             ents += [float(x) for x in ent.detach()]
@@ -587,6 +608,25 @@ def _ppo_step(net, opt, samples, rewards, base, games, beta_ent, *, clip: float 
                    "adv": float(a.mean()), "ratio": float(ratio.mean().detach())}
         check_entropy(ents, max_ents)                  # 熵塌了要**响**（PG 就是这样被逮到的）
     return out
+
+
+def _rl_step(algo: str, net, opt, samples, rewards, base, games, beta_ent, *, rng=None,
+              ppo_clip: float = PPO_CLIP, ppo_epochs: int = PPO_EPOCHS,
+              ppo_value_coef: float = 0.0):
+    """`pg` / `ppo` 的**唯一分派处**（两条训练路线共用这一份）。
+
+    ⚠️ 为什么要有这个函数（2026-10-01 夜真踩过）：多进程那条路的**上层**分支当时写的是
+    `if algo == "pg": ... else: <DMC>` ⇒ `--algo ppo` **静默走了 DMC**，
+    臂的名字与日志头部都写着 PPO，实际跑的是对照算法 —— 只有"loss 量级不对"这一条线索
+    （PPO 的损失是 O(1)，日志里却是 3.8 的 DMC 损失）。现在分派只有一处，并被测试钉住。
+    """
+    if algo == "ppo":
+        return _ppo_step(net, opt, samples, rewards, base, games, beta_ent,
+                         clip=ppo_clip, epochs=ppo_epochs, rng=rng,
+                         value_coef=ppo_value_coef)
+    if algo == "pg":
+        return _pg_step(net, opt, samples, rewards, base, games, beta_ent)
+    raise ValueError(f"_rl_step 只处理 pg/ppo，收到 {algo!r}")
 
 
 def _targets(net_tgt, buf, rng, batch_games, bomb_cost, mc_mix, n_step,
@@ -854,7 +894,7 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
           beta_ent: float = BETA_ENT, weight_sync_games: int = WEIGHT_SYNC_GAMES,
           eval_rule_games: int = None, mate_mix: float = 0.0,
           close_weight: float = 1.0, shaping: float = 0.0,
-          rule_eval_seeds: int = 1, ppo_clip: float = PPO_CLIP, ppo_epochs: int = PPO_EPOCHS):
+          rule_eval_seeds: int = 1, ppo_clip: float = PPO_CLIP, ppo_epochs: int = PPO_EPOCHS, ppo_value_coef: float = 0.0):
     _check_boot_args(mc_mix, n_step, tgt_sync)
     torch.manual_seed(seed)
     rng = random.Random(seed)
@@ -920,11 +960,9 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
             # 标签仍由 `mc_targets` 产出 —— `generate_batch` 内部走的就是它。
             samples = [p for _rec, pts, _y in batch for p in pts]
             rewards = [r for _rec, _pts, y in batch for r in y]
-            if algo == "ppo":
-                out = _ppo_step(net, opt, samples, rewards, base, games, beta_ent,
-                                clip=ppo_clip, epochs=ppo_epochs, rng=rng)
-            else:
-                out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
+            out = _rl_step(algo, net, opt, samples, rewards, base, games, beta_ent,
+                           rng=rng, ppo_clip=ppo_clip, ppo_epochs=ppo_epochs,
+                           ppo_value_coef=ppo_value_coef)
             loss = out["loss"]
             games += len(batch)
         else:
@@ -977,6 +1015,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                    close_weight: float = 1.0, shaping: float = 0.0,
                    rule_eval_seeds: int = 1,
                    ppo_clip: float = PPO_CLIP, ppo_epochs: int = PPO_EPOCHS,
+                   ppo_value_coef: float = 0.0,
                    weight_sync_games: int = WEIGHT_SYNC_GAMES,
                    eval_rule_games: int = None,
                    _kill_worker_after: float = None):
@@ -1118,9 +1157,9 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                 # worker 顺手把胜负写在记录里了（实测重放一局 18.3 ms，太贵）
                 if rec.opp and rec.opp[0] == "member" and rec.won is not None:
                     wr.record(rec.opp[1], rec.won)
-                if algo != "pg":
-                    buf.add(rec)        # PG 是 on-policy ⇒ **不写 buffer**
-            if algo == "pg":
+                if algo not in ("pg", "ppo"):
+                    buf.add(rec)        # PG/PPO 都是 on-policy ⇒ **不写 buffer**
+            if algo in ("pg", "ppo"):
                 # 数据就是刚收到的这一批（worker 发的是紧凑记录 ⇒ learner 侧重放）
                 samples, rewards = [], []
                 for rec in recs:
@@ -1129,7 +1168,9 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
                     pts, y, _b = replay.expand(rec, bomb_cost=bomb_cost, shaping=shaping)
                     samples += pts
                     rewards += y
-                out = _pg_step(net, opt, samples, rewards, base, games, beta_ent)
+                out = _rl_step(algo, net, opt, samples, rewards, base, games, beta_ent,
+                               rng=rng, ppo_clip=ppo_clip, ppo_epochs=ppo_epochs,
+                               ppo_value_coef=ppo_value_coef)
                 loss = out["loss"]
             else:
                 # 采样 + 训一步（**与单进程那条路同一份实现**）
@@ -1140,7 +1181,7 @@ def train_parallel(seconds: float = 3600.0, workers: int = 1, seed: int = 0,
             steps += 1
             el = time.perf_counter() - t0
             if steps % 10 == 0:
-                if algo == "pg":
+                if algo in ("pg", "ppo"):
                     log(f"  {el:6.0f}s  局数 {games:7d}  loss={loss:.3f}  "
                         f"H={out['entropy']:.3f}  {games / el:.1f} 局/秒")
                 else:
@@ -1258,6 +1299,11 @@ def main(argv=None) -> int:
         kw["snap_every"] = int(argv[argv.index("--snap-every") + 1])
     if "--pool-size" in argv:
         kw["pool_size"] = int(argv[argv.index("--pool-size") + 1])
+    if "--ppo-value-coef" in argv:
+        # **尺度锚**（默认 0）：给 actor 路径加一项小系数的 MC 值回归。
+        # 没有它，`--algo ppo/pg` 会把 Q 当 logits 用而没人管尺度 ⇒ softmax 饱和 ⇒ 熵塌
+        # （2026-10-01 夜实测：1740 个决策点就塌，中位熵比 0.0066）。
+        kw["ppo_value_coef"] = float(argv[argv.index("--ppo-value-coef") + 1])
     if "--ppo-clip" in argv:
         # PPO 的裁剪半径（默认 0.2）。只有 `--algo ppo` 用得到。
         kw["ppo_clip"] = float(argv[argv.index("--ppo-clip") + 1])

@@ -71,10 +71,14 @@ def test_cli_forwards_the_pg_knobs(monkeypatch):
 
 
 def test_unknown_algo_is_rejected(monkeypatch):
-    """⚠️ **评审 M1**：`--algo ppo` 原来会**静默走 DMC**，而日志对非 pg 一个字都不提
-    ⇒ 一次手滑的「PG 臂」其实是对照臂，没有任何东西会响。"""
+    """⚠️ **评审 M1**：不认识的 `--algo` 必须**炸**，不能静默退回 DMC ——
+    否则一次手滑的「PG 臂」其实是对照臂，而且日志上一个字都不提。
+
+    ⚠️ 2026-10-01 更新：`ppo` **已经实现**（`_ppo_step`，见 `tests/test_ppo.py`），
+    所以这条测试改用一个真正不认识的取值来钉"必须炸"。
+    """
     with pytest.raises(ValueError):
-        sp.main(["1", "--algo", "ppo"])
+        sp.main(["1", "--algo", "a2c"])
     with pytest.raises(ValueError):
         sp.main(["1", "--algo", "PG"])
 
