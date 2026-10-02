@@ -16,7 +16,13 @@ def test_default_style_is_the_incumbent():
     """默认值必须就是现役的那些数（动了它 = 历史读数作废）。"""
     assert rp.NORMAL.danger == rp.DANGER
     assert (rp.NORMAL.bomb_rank, rp.NORMAL.hold_fire) == (10, True)
-    assert set(rp.STYLES) == {"normal", "bomb", "hold"}
+    # ⚠️ 这份清单是**护栏**：新增风格必须是有意的、并在这里留痕。
+    # 2026-10-02 新增 `info`（盯剩张 + 诱炸，见 `plans/2026-10-02-info-ruler.md`）：
+    # 判据①②**没通过**（它确实触发了 11.9% 的决策点，但胜率/用炸/白炸全不变）
+    # ⇒ 它**不是**判据尺子，只是留在 `STYLES` 里的备用风格。
+    assert set(rp.STYLES) == {"normal", "bomb", "hold", "info"}
+    # 新增的两个旋钮在 NORMAL 上必须**关**（否则默认行为就变了）
+    assert (rp.NORMAL.short_push, rp.NORMAL.bait) == (False, False)
 
 
 def test_rule_choose_defaults_to_normal_on_real_states():
