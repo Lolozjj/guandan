@@ -152,8 +152,44 @@ def candidates(b: Built) -> list:
     return list(moves) + [None]
 
 
+def tidy_mode() -> str:
+    """**"擦浪费"开关** —— 面板建议要不要避开"白炸 / 白用万能牌"。只有这一处口径。
+
+    取 `GUANDAN_TIDY` 环境变量：空/`0`/`off` = 关（**默认**）；`1`/`all` = 两类都擦；
+    `bombs` = 只擦白炸；`wilds` = 只擦万能牌浪费。认不出的取值**必须炸**（静默退回
+    "关"会让用户以为开了却没开）。
+
+    ⚠️ **代价是量过的，别当成免费的行为修正**（2026-10-01，`tools/tidy_screen.py`，
+    现役 soupE、12 种子 × 300 局配对；`tools/mistake_profile.py` 量浪费率）：
+
+    | 尺子 | 原样 | 擦浪费 | Δ |
+    |---|---|---|---|
+    | normal（规则式） | 73.2% | 71.2% | **−2.08pp（t=−2.00）** |
+    | bomb（炸侠） | 88.2% | 85.8% | **−2.42pp（t=−2.51）** |
+    | hold（龟派，最会存炸） | 72.5% | 72.6% | +0.08pp（t=0.07） |
+
+    浪费率：**白炸 7.4% → 0.2%**、白用万能牌 3.1% → 0.6%（用炸手数 872 → 689 手，
+    ⇒ 不是"从此不炸"）。
+    **怎么读这个矛盾**：这三个脚本对手**都不惩罚白炸**（规则式自己从不炸，连 hold 也只是打平），
+    所以模拟器**无法**给"少炸"背书；而人（用户 2026-10-01 实机）会。⇒ 这一维的取舍
+    由使用者定：**默认关**（与尺子上最优的模型一致），想看"人觉得对"的建议就开。
+    """
+    raw = os.environ.get("GUANDAN_TIDY", "").strip().lower()
+    if raw in ("", "0", "off", "none"):
+        return "off"
+    if raw in ("1", "all", "on", "both"):
+        return "all"
+    if raw in ("bombs", "wilds"):
+        return raw
+    raise ValueError(f"认不出的 GUANDAN_TIDY={raw!r}（只有 1/all/bombs/wilds/off）")
+
+
 def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
-    """算一次建议。算不了返回 `Skip(原因)` —— 调用方负责计数落盘。"""
+    """算一次建议。算不了返回 `Skip(原因)` —— 调用方负责计数落盘。
+
+    `GUANDAN_TIDY` 打开时（见 `tidy_mode`），把**首选**换成"不浪费"的那一手
+    （判定复用 `rl/eval.py`，与战报/尺子同一份口径），其余仍按 Q 排序。
+    """
     from guandan.rl.net import q_values
 
     b = build(st)
@@ -163,7 +199,13 @@ def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
     if not cands:
         return Skip(SKIP_NOCAND)
     q = [float(x) for x in q_values(net, b.obs, cands, b.hist)]
-    order = sorted(range(len(cands)), key=lambda i: -q[i])
+    i0 = max(range(len(q)), key=q.__getitem__)
+    mode = tidy_mode()
+    if mode != "off":
+        from guandan.rl.tidy import tidy_index
+        i0 = tidy_index(q, cands, i0, has_table=b.obs.table is not None,
+                        bombs=mode in ("all", "bombs"), wilds=mode in ("all", "wilds"))
+    order = [i0] + [i for i in sorted(range(len(q)), key=lambda i: -q[i]) if i != i0]
     return Advice(obs=b.obs, hist=b.hist, cands=cands, q=q, order=order)
 
 

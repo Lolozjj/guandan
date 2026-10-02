@@ -37,7 +37,7 @@ def worker_device() -> str:
 
 def worker_batch(net, rng, eps, n_games, opp_mix=0.5, greedy_share=0.8,
                  learn_all_seats=False, members=None, pick_fixed=None,
-                 bomb_cost: float = 0.0, opp_kind: str = "greedy",
+                 bomb_cost: float = 0.0, opp_kind: str = "greedy", wild_cost: float = 0.0,
                  sample: bool = False, mate_mix: float = 0.0,
                  shaping: float = 0.0):
     """打一批局，只取紧凑记录（张量与奖励都由 learner 侧重放出来）。
@@ -130,7 +130,7 @@ def run_worker(send_q, ctrl_q, cfg: dict) -> None:
                             opp_mix=cfg["opp_mix"], greedy_share=cfg["greedy_share"],
                             learn_all_seats=cfg.get("learn_all_seats", False),
                             members=members, pick_fixed=picker,
-                            bomb_cost=cfg.get("bomb_cost", 0.0),
+                            bomb_cost=cfg.get("bomb_cost", 0.0), wild_cost=cfg.get("wild_cost", 0.0),
                             opp_kind=cfg.get("opp_kind", "greedy"),
                             sample=cfg.get("sample", False),
                             mate_mix=cfg.get("mate_mix", 0.0),
@@ -142,6 +142,7 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
                learn_all_seats=False, init=None, members=None,
                pick_all=None, member_id=None, use_pool=False,
                pool_greedy_share=pool.GREEDY_SHARE, bomb_cost: float = 0.0,
+               wild_cost: float = 0.0,
                opp_kind: str = "greedy", sample: bool = False,
                mate_mix: float = 0.0, shaping: float = 0.0,
                consequence: bool = True) -> dict:
@@ -164,5 +165,6 @@ def worker_cfg(seed, eps, opp_mix, greedy_share, batch_games,
             "pick_all": pick_all, "member_id": member_id, "use_pool": use_pool,
             "pool_greedy_share": pool_greedy_share, "bomb_cost": bomb_cost,
             "opp_kind": opp_kind, "sample": sample, "mate_mix": mate_mix,
+            "wild_cost": wild_cost,
             "consequence": consequence,
             "shaping": shaping}

@@ -93,6 +93,7 @@ def _phi(base, played, seat) -> float:
 
 
 def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0, hands0=None,
+               wild_cost: float = 0.0,
                shaping: float = 0.0) -> list:
     """被保留的那些决策点的 DMC 标签 —— **现场与重放共用的唯一实现**。
 
@@ -119,14 +120,23 @@ def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0, hands0=None,
     """
     if bomb_cost < 0:
         raise ValueError(f"bomb_cost 不能为负：{bomb_cost}")
+    # `wild_cost`：**每用掉一张逢人配（万能牌）**，从这一步起的标签就少这么多。
+    # 为什么需要它（用户 2026-10-01 实机）：「炸个 8888 就行了，却用万能牌凑成五个 8」——
+    # 万能牌被白搭进去。终局回报**看不见**这种浪费（脚本对手也不惩罚它
+    # ⇒ `tools/tidy_screen.py` 量到：擦掉浪费反而掉 2pp），所以只能靠标签里的显式代价。
+    if wild_cost < 0:
+        raise ValueError(f"wild_cost 不能为负：{wild_cost}")
     if shaping and hands0 is None:
         raise ValueError("给了 shaping 就必须给 hands0 —— 否则势函数没法算，会**静默**变成没开")
     keep = set(learn) if learn else None
     tail, suffix = {}, [0] * len(seq)
+    tail_w, suffix_w = {}, [0] * len(seq)
     for i in range(len(seq) - 1, -1, -1):     # 倒着扫一遍就得到全部后缀计数
         seat, m = seq[i]
         tail[seat] = tail.get(seat, 0) + (1 if (m is not None and m.is_bomb) else 0)
         suffix[i] = tail[seat]
+        tail_w[seat] = tail_w.get(seat, 0) + (0 if m is None else int(m.wild_used))
+        suffix_w[i] = tail_w[seat]
 
     if shaping:
         played = {s: 0 for s in rules.SEATS}
@@ -143,7 +153,8 @@ def mc_targets(seq, ranks, learn=None, bomb_cost: float = 0.0, hands0=None,
     for i, (seat, _m) in enumerate(seq):
         if keep is not None and seat not in keep:
             continue
-        y = rules.reward(ranks, seat) - bomb_cost * suffix[i]
+        y = (rules.reward(ranks, seat) - bomb_cost * suffix[i]
+             - wild_cost * suffix_w[i])
         if shaping:
             y += shaping * (phi_end[i] - phi_t[i])
         out.append(y)
@@ -208,7 +219,7 @@ def _boot_source_ok(learn, tgt_seat: int, src_seat: int) -> bool:
     return rules.TEAM[src_seat] == rules.TEAM[tgt_seat]
 
 
-def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0,
+def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0, wild_cost: float = 0.0,
            shaping: float = 0.0):
     """把记录重放成 `(决策点, MC 标签, 自举源)`。
 
@@ -262,11 +273,13 @@ def expand(rec: GameRecord, bomb_cost: float = 0.0, n: int = 0,
         obs, _r, _done, _info = e.step(i)
     # 标签**只有一个产地**（`mc_targets`）—— 过滤也在它里面做
     return (points, mc_targets(seq, e.ranks, learn=rec.learn, bomb_cost=bomb_cost,
+                               wild_cost=wild_cost,
                              hands0=rec.hands, shaping=shaping),
             boot)
 
 
-def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.0, shaping: float = 0.0):
+def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.0,
+                   shaping: float = 0.0, wild_cost: float = 0.0):
     """打一局。返回 `(记录, 决策点, 终局 reward)`；`capture=False` 时决策点是空表。
 
     **为什么要 `capture`**：刚打完的一批局，每一步的决策点在生成时**本来就算过**了
@@ -294,7 +307,7 @@ def play_capturing(policy, rng, level=None, capture=False, bomb_cost: float = 0.
     if not capture:
         return rec, [], []
     # 标签走**同一个产地**（`mc_targets`）—— 三条路都收在一处，改一处就是改三处
-    return rec, points, mc_targets(seq, e.ranks, bomb_cost=bomb_cost,
+    return rec, points, mc_targets(seq, e.ranks, bomb_cost=bomb_cost, wild_cost=wild_cost,
                                      hands0=hands0, shaping=shaping)
 
 

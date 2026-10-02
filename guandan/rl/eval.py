@@ -167,6 +167,94 @@ def bomb_rate(policy, games: int = 40, seed: int = 0, opponent=None):
     return _bomb_stats(policy, games, seed, opponent)[2:]
 
 
+# ---------------------------------------------------------------- 万能牌（逢人配）
+#
+# 2026-10-01 用户实机反馈的第二类毛病：「明明 8888 就够，他要用万能牌凑成 88888」。
+# 与「白炸」同构：**桌上有牌要压**（所以每个合法候选都能压过）+ **存在不用万能牌的候选**
+# ⇒ 用万能牌就不是必需的。`Meld.wild_used` 是引擎给的口径（含补上的逢人配张数），
+# 不用自己数牌，也就不会数错。
+
+def wild_opportunity(has_table, acts) -> bool:
+    """这一步有没有「不用万能牌也能压」的机会：桌上有牌 + 有 `wild_used == 0` 的候选。"""
+    return bool(has_table) and any(x is not None and not x.wild_used for x in acts)
+
+
+def is_wasted_wild(has_table, acts, chosen) -> bool:
+    """**白用万能牌**：有机会不用万能牌压，却用了（`wild_used > 0`）。"""
+    return (wild_opportunity(has_table, acts)
+            and chosen is not None and bool(chosen.wild_used))
+
+
+def is_upgraded_wild(has_table, acts, chosen) -> bool:
+    """**过度升级**（用户举的那一手）：用万能牌把**同一牌型**做得更大。
+
+    判定：有机会不用万能牌压，却用了；而且候选里**存在同牌型且不用万能牌**的一手
+    （例如天然 8888 就在候选里，它却打了 8+8+8+8+逢人配 的 5 张炸）。
+    """
+    if not is_wasted_wild(has_table, acts, chosen):
+        return False
+    return any(x is not None and not x.wild_used and x.kind == chosen.kind for x in acts)
+
+
+def is_wild_enlarged_bomb(has_table, acts, chosen) -> bool:
+    """用户原话那一手：「炸个 8888 就行了，却用万能牌凑成五个 8」。
+
+    判定：选了**炸弹且用了万能牌**，而候选里**存在不用万能牌的炸弹**
+    （⇒ 天然炸弹就够压，万能牌是白搭进去把它做大的）。
+    """
+    if chosen is None or not chosen.is_bomb or not chosen.wild_used:
+        return False
+    return any(x is not None and x.is_bomb and not x.wild_used for x in acts)
+
+
+def _wild_stats(policy, games: int = 40, seed: int = 0, opponent=None):
+    """跑 N 局，一次量出万用牌三样：`(浪费, 过度升级, 机会, 用万能牌手数, 局数)`。
+
+    与 `_bomb_stats` 共用同一套走局/换边口径（**别各写一份**）。
+    """
+    waste = upgrade = chance = used = 0
+    rng = random.Random(seed)
+    for game in range(games):
+        e = env.GuandanEnv(seed=rng.randrange(1 << 30))
+        e.reset()
+        while not e.done:
+            obs, acts = e.observe(), e.legal()
+            hist = env.encode_history(e.hand, e.hand.turn)
+            seat = e.hand.turn
+            mine = opponent is None or (seat % 2) == (0 if game % 2 == 0 else 1)
+            pol = policy if mine else opponent
+            i = pol(obs, acts, hist)
+            m = acts[i]
+            if mine:
+                if m is not None and m.wild_used:
+                    used += 1
+                if wild_opportunity(obs.table, acts):
+                    chance += 1
+                    if is_wasted_wild(obs.table, acts, m):
+                        waste += 1
+                    if is_upgraded_wild(obs.table, acts, m):
+                        upgrade += 1
+            e.step(i)
+    return waste, upgrade, chance, used, games
+
+
+def wild_waste(policy, games: int = 40, seed: int = 0, opponent=None):
+    """**万能牌浪费率**：有机会不用万能牌压，却用了。返回 `(浪费, 机会)`。"""
+    return _wild_stats(policy, games, seed, opponent)[:2]
+
+
+def wild_upgrade(policy, games: int = 40, seed: int = 0, opponent=None):
+    """**万能牌过度升级率**：用万能牌把同一牌型做得更大。返回 `(过度升级, 机会)`。"""
+    w = _wild_stats(policy, games, seed, opponent)
+    return w[1], w[2]
+
+
+def wild_use_rate(policy, games: int = 40, seed: int = 0, opponent=None):
+    """**用万能牌率**：主动用了几手。返回 `(手数, 局数)`。与 `bomb_rate` 对称。"""
+    w = _wild_stats(policy, games, seed, opponent)
+    return w[3], w[4]
+
+
 def win_rate_vs(policy, opponent, games: int = 200, seed: int = 0,
                 level: int = None) -> float:
     """`policy` 对 `opponent` 的胜率 —— 名字更直白的包装，判据那几行读起来顺。"""
