@@ -48,6 +48,11 @@ def make_policy(spec: str):
     if spec.startswith("chk:"):
         p = spec.split(":", 1)[1]
         return net_play(load_net(p)), f"检查点 {p}"
+    if spec.startswith("combined"):
+        from guandan.rl.coop import combined_net_policy
+        base = load_net("models/best.pt")
+        return (combined_net_policy(base, margin=0.25, leads=True),
+                f"{spec}（配合护栏 + 擦浪费，基于 models/best.pt）")
     if spec.startswith("coop"):
         from guandan.rl.coop import coop_net_policy
         # ⚠️ `partner_ruler` 没有 `--weights`（它的 `--me/--mate/--opp` 各自带路径）

@@ -45,6 +45,11 @@ def make_policy(spec: str, weights: str = None):
 
     返回 `(policy, 人类可读的名字)` —— 名字要**打出来**（换源纪律）。
     """
+    if spec.startswith("combined"):
+        from guandan.rl.coop import combined_net_policy
+        base = load_net("models/best.pt")
+        return (combined_net_policy(base, margin=0.25, leads=True),
+                f"{spec}（配合护栏 + 擦浪费，基于 models/best.pt）")
     if spec.startswith("coop"):
         from guandan.rl.coop import coop_net_policy
         base = load_net(weights or "models/best.pt")

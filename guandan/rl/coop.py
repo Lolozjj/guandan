@@ -52,3 +52,23 @@ def coop_net_policy(net, *, feed_left: int = FEED_LEFT):
         mate = rules.PARTNER[obs.seat]
         return coop_index(q, acts, obs.left[mate], obs.table, i)
     return pol
+
+def combined_net_policy(net, *, margin: float = 0.25, leads: bool = True, feed_left: int = 2):
+    """**配合护栏 + 擦浪费**：先按"喂队友"改，再按"省资源"收 —— 两个索引级变换串起来。
+
+    顺序有意如此：`coop_index` 先选出"队友接得住"的候选（如果首选不对），
+    `tidy_index` 再在该候选上做资源检查（对子/单张通常不涉及炸弹，所以几乎不会互相抵消）✓
+    """
+    import numpy as np
+    from guandan.rl.net import q_values as _qv
+    from guandan.rl.tidy import tidy_index
+    from guandan.sim import rules as _rules
+
+    def pol(obs, acts, hist=None):
+        q = _qv(net, obs, acts, hist)
+        i = int(np.argmax(q))
+        mate = _rules.PARTNER[obs.seat]
+        i = coop_index(q, acts, obs.left[mate], obs.table, i)
+        return tidy_index(q, acts, i, has_table=bool(obs.table), margin=margin, leads=leads)
+
+    return pol
