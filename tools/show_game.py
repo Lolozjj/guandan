@@ -43,6 +43,9 @@ from guandan.rl.rule_policy import rule_choose
 from guandan.rl.selfplay import OPP_KIND_CN, OPP_KINDS   # 对手类型的唯一产地，不另写一份
 from guandan.console import utf8_stdout
 
+#: 与 `advice/reasons.py` 同口径：队友剩 ≤ 这么多张时解释为「喂队友」
+FEED_LEFT = 2
+
 #: 「擦浪费」开关 —— **看局工具与面板同一条口径**（`GUANDAN_TIDY`）。
 #: 模块级读一次：走局时不再反复查环境。
 _TIDY_MODE = advise.tidy_mode()
@@ -92,6 +95,7 @@ class Frame:
     passes: set                     # 出手之前谁已经要不起
     candidates: list = field(default_factory=list)   # [(q, meld|None)] 按 q 降序
     wasted: bool = False            # 这一手是不是「白炸」：本来能用普通牌压却出了炸
+    why: str = ""                   # **为什么**（解释型建议，`advice/reasons.py`；只解释不改动作）
     over: bool = False              # 这一步之后是不是终局
     opp: object = None              # 这手是**固定对手**出的：`kind` 字符串；None = 模型自己的
 
@@ -151,6 +155,13 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
                                bombs=_TIDY_MODE != "wilds", wilds=_TIDY_MODE != "bombs",
                                margin=_TIDY_MARGIN)
         m = acts[i]
+        why = ""
+        if not is_opp:
+            try:
+                from guandan.advice.reasons import explain
+                why = explain(obs, acts, i, feed_left=FEED_LEFT)
+            except Exception:            # 解释失败绝不许影响战报本身
+                why = ""
         step += 1
         if m is not None and m.is_bomb:
             bombs += 1
@@ -178,7 +189,8 @@ def replay_game(path: str = None, seed: int = 7, level: int = None,
             played={s: list(played[s]) for s in rules.SEATS},
             passes=set(e.hand.passed),
             candidates=[(float(q[j]), acts[j]) for j in order],
-            wasted=was_wasted and not is_opp, opp=(opp_kind if is_opp else None)))
+            wasted=was_wasted and not is_opp, opp=(opp_kind if is_opp else None),
+            why=why))
         if m is not None:
             played[seat].append(Play(seat=seat, cards=list(m.cards)))
         obs, _r, _done, _info = e.step(i)
@@ -256,6 +268,8 @@ def render_text(meta: dict, frames: list, quiet: bool = False, log=print) -> Non
         if f.chosen is None:
             what = f"**{what}**"          # 文字版把「过」加粗便于扫（图形版不要星号）
         flag = "   ⚠️ **白炸**（有普通牌能压）" if f.wasted else ""
+    if getattr(f, "why", ""):
+        flag += f"   💡 {f.why}"
         who = f"   ←{OPP_KIND_CN[f.opp]}对手" if f.opp else ""
         log(f"  #{f.step:<3d} {seat_label(f.seat)} {lead}  {what}{flag}{who}")
         if not quiet:
@@ -280,6 +294,14 @@ def render_text(meta: dict, frames: list, quiet: bool = False, log=print) -> Non
             f"其中白用万能牌 {meta['wild_waste']} 次"
             f"（{meta['wild_waste'] / meta['wild_chance']:.0%}）"
             f"，其中『用万能牌放大炸弹』{meta['wild_up']} 次")
+    # **解释型建议**汇总（`advice/reasons.py`）：只解释、不改动作 ⇒ 对强度零影响
+    whys = [(f.step, seat_label(f.seat), f.why) for f in frames if getattr(f, "why", "")]
+    if whys:
+        log(f"  💡 本次给出 {len(whys)} 条「为什么」（解释型建议，不改动作）：")
+        for st, who_, w in whys[:8]:
+            log(f"      #{st:<3d} {who_}：{w}")
+        if len(whys) > 8:
+            log(f"      …… 另有 {len(whys) - 8} 条")
     if meta.get("tidy", "off") != "off":
         log(f"  **擦浪费：{meta['tidy']}**"
             + (f"（阈值 {meta['tidy_margin']:g}）" if meta.get("tidy_margin") else ""))
