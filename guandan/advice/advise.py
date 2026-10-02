@@ -186,19 +186,35 @@ def tidy_mode() -> str:
         return raw
     if raw.startswith("margin:"):
         try:
-            float(raw.split(":", 1)[1])
+            float(raw.split(":", 1)[1].split(",")[0])
         except ValueError:
             raise ValueError(
                 f"GUANDAN_TIDY 的阈值认不出：{raw!r}（要写成 margin:0.25 这样）") from None
+        # 允许追加开关：`margin:0.25,leads=1,coop=1`（见 tidy_flags）
         return raw
     raise ValueError(
         f"认不出的 GUANDAN_TIDY={raw!r}（只有 1/all/bombs/wilds/off/margin:0.25）")
 
 
+def tidy_flags() -> dict:
+    """`GUANDAN_TIDY` 串里附加的开关：目前支持 `leads=1`（领出也擦浪费）与 `coop=1`（喂队友）。
+
+    ⚠️ 两个都有**实测依据**（`plans/2026-10-03-human-play.md`）：
+    - `leads=1`：联赛 **+1.45pp（t=3.51）**，独立种子复核 **+1.03pp（t=2.09）**，白炸减半 ⇒ **免费收益** ✓
+    - `coop=1`：喂到率 16.9% → **61.2%** ✓、联赛 **−0.21pp（t=−0.25，中性）** ⇒
+      **行为更合人意、强度不损**（单开它自己会 −1.6pp，与 leads 合起来才中性）✓
+    """
+    raw = tidy_mode()
+    return {"leads": "leads=1" in raw, "coop": "coop=1" in raw}
+
+
 def tidy_margin() -> float:
     """`GUANDAN_TIDY=margin:X` 的阈值 X；其它取值 → 0.0（= 硬替换）。"""
     mode = tidy_mode()
-    return float(mode.split(":", 1)[1]) if mode.startswith("margin:") else 0.0
+    if not mode.startswith("margin:"):
+        return 0.0
+    # ⚠️ 取逗号**前**那一段：`margin:0.25,leads=1,coop=1` 里的 0.25（不然 float() 会炸）
+    return float(mode.split(":", 1)[1].split(",")[0])
 
 
 def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
@@ -219,10 +235,15 @@ def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
     i0 = max(range(len(q)), key=q.__getitem__)
     mode = tidy_mode()
     if mode != "off":
+        from guandan.rl.coop import coop_index
         from guandan.rl.tidy import tidy_index
+        fl = tidy_flags()
+        if fl["coop"]:
+            from guandan.sim import rules as _rules
+            i0 = coop_index(q, cands, b.obs.left[_rules.PARTNER[b.obs.seat]], b.obs.table, i0)
         i0 = tidy_index(q, cands, i0, has_table=bool(b.obs.table),
                         bombs=mode != "wilds", wilds=mode != "bombs",
-                        margin=tidy_margin())
+                        margin=tidy_margin(), leads=fl["leads"])
     order = [i0] + [i for i in sorted(range(len(q)), key=lambda i: -q[i]) if i != i0]
     return Advice(obs=b.obs, hist=b.hist, cands=cands, q=q, order=order)
 
