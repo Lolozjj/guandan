@@ -51,6 +51,16 @@ def make_policy(spec: str, weights: str = None):
         if "margin=" in spec:
             mg = float(spec.split("margin=")[1].split(",")[0])
         return tidy_net_policy(base, margin=mg), f"{spec}（基于 {weights or 'models/best.pt'}）"
+    if spec.startswith("mixed"):
+        from guandan.rl.mix import mixed_net_policy
+        base = load_net(weights or "models/best.pt")
+        mg, tp = 0.15, 0.05
+        if "margin=" in spec:
+            mg = float(spec.split("margin=")[1].split(",")[0])
+        if "temp=" in spec:
+            tp = float(spec.split("temp=")[1].split(",")[0])
+        return (mixed_net_policy(base, margin=mg, temp=tp),
+                f"{spec}（混合策略，基于 {weights or 'models/best.pt'}）")
     if spec.startswith("raw"):
         base = load_net(weights or "models/best.pt")
         return tidy_net_policy(base, bombs=False, wilds=False), f"raw（基于 {weights}）"
