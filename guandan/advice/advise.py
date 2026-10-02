@@ -220,7 +220,7 @@ def advise(st: GameState, net, topk: int = 3) -> "Advice | Skip":
     mode = tidy_mode()
     if mode != "off":
         from guandan.rl.tidy import tidy_index
-        i0 = tidy_index(q, cands, i0, has_table=b.obs.table is not None,
+        i0 = tidy_index(q, cands, i0, has_table=bool(b.obs.table),
                         bombs=mode != "wilds", wilds=mode != "bombs",
                         margin=tidy_margin())
     order = [i0] + [i for i in sorted(range(len(q)), key=lambda i: -q[i]) if i != i0]

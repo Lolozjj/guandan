@@ -24,7 +24,7 @@ from guandan.rl.net import q_values
 
 
 def tidy_index(q, acts, chosen_i: int, *, has_table: bool, bombs: bool = True,
-               wilds: bool = True, margin: float = 0.0) -> int:
+               wilds: bool = True, margin: float = 0.0, leads: bool = False) -> int:
     """在候选里挑"最省资源"的一手（**同级之内**仍按网络自己的 Q 挑）。没有更省的就不动。
 
     `margin`：**只在网络没有强烈偏好时才介入** —— 若"首选 − 最省候选的 Q 最高者"
@@ -35,7 +35,13 @@ def tidy_index(q, acts, chosen_i: int, *, has_table: bool, bombs: bool = True,
     而它擦掉的白炸只有 7.4 个百分点里的 7.4 个 —— 用户要的是"别乱炸"，
     不是"别炸"。先用阈值把"网络自己都犹豫"的那些擦掉，看看性价比能不能好得多。
     """ 
-    if len(acts) <= 1 or not has_table:
+    # `leads=False`（默认）：**只跟牌**时谈得上浪费（老口径）。
+    # `leads=True`：**领出**也管 —— 2026-10-03 发现"带 bug 的版本"顺带管了领出，
+    # 在联赛尺子上量到 +1.80pp（而只跟牌的版本是 +0.08pp）⇒ 这一维**可能真的有价值**，
+    # 所以把它做成**明确的开关**（而不是靠 bug 撞出来），再用同样的判据复核。
+    if len(acts) <= 1:
+        return chosen_i
+    if not has_table and not leads:
         return chosen_i
 
     # ⚠️ **「过」不算"更省资源"**：它有它自己的代价（把出牌权让出去）。
@@ -62,11 +68,14 @@ def tidy_index(q, acts, chosen_i: int, *, has_table: bool, bombs: bool = True,
     return alt
 
 
-def tidy_net_policy(net, *, bombs: bool = True, wilds: bool = True, margin: float = 0.0):
+def tidy_net_policy(net, *, bombs: bool = True, wilds: bool = True, margin: float = 0.0,
+                    leads: bool = False):
     """把网络策略包一层"擦浪费"。**Q 只算一次**，不浪费时与原来逐位一致。"""
     def pol(obs, acts, hist=None):
         q = q_values(net, obs, acts, hist)
         i = int(np.argmax(q))
-        return tidy_index(q, acts, i, has_table=obs.table is not None,
-                          bombs=bombs, wilds=wilds, margin=margin)
+        # ⚠️ `obs.table` 领出时是**空元组**（不是 None）⇒ 必须 `bool(...)`。
+        # 写成 `is not None` 会让「擦浪费」**连领出也介入**（2026-10-03 又踩一次，见 show_game 的注释）
+        return tidy_index(q, acts, i, has_table=bool(obs.table),
+                          bombs=bombs, wilds=wilds, margin=margin, leads=leads)
     return pol

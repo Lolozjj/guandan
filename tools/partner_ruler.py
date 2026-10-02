@@ -48,9 +48,16 @@ def make_policy(spec: str):
     if spec.startswith("chk:"):
         p = spec.split(":", 1)[1]
         return net_play(load_net(p)), f"检查点 {p}"
+    if spec.startswith("coop"):
+        from guandan.rl.coop import coop_net_policy
+        # ⚠️ `partner_ruler` 没有 `--weights`（它的 `--me/--mate/--opp` 各自带路径）
+        # ⇒ coop 的底权重就是现役那份（要看别的权重就写 `chk:路径` 后缀那份）
+        base = load_net("models/best.pt")
+        return coop_net_policy(base), f"{spec}（喂队友护栏，基于 models/best.pt）"
     if spec.startswith("tidy"):
         mg = float(spec.split("margin=")[1].split(",")[0]) if "margin=" in spec else 0.0
-        return tidy_net_policy(load_net("models/best.pt"), margin=mg), spec
+        return tidy_net_policy(load_net("models/best.pt"), margin=mg,
+                               leads=("leads=1" in spec)), spec
     if spec.endswith(".pt"):
         return net_play(load_net(spec)), spec
     raise SystemExit(f"认不出的策略 {spec!r}（rule / greedy / chk:xx.pt / tidy:margin=0.25 / xx.pt）")

@@ -45,12 +45,17 @@ def make_policy(spec: str, weights: str = None):
 
     返回 `(policy, 人类可读的名字)` —— 名字要**打出来**（换源纪律）。
     """
+    if spec.startswith("coop"):
+        from guandan.rl.coop import coop_net_policy
+        base = load_net(weights or "models/best.pt")
+        return coop_net_policy(base), f"{spec}（喂队友护栏，基于 {weights or 'models/best.pt'}）"
     if spec.startswith("tidy"):
         base = load_net(weights or "models/best.pt")
         mg = 0.0
         if "margin=" in spec:
             mg = float(spec.split("margin=")[1].split(",")[0])
-        return tidy_net_policy(base, margin=mg), f"{spec}（基于 {weights or 'models/best.pt'}）"
+        return (tidy_net_policy(base, margin=mg, leads=("leads=1" in spec)),
+                f"{spec}（基于 {weights or 'models/best.pt'}）")
     if spec.startswith("mixed"):
         from guandan.rl.mix import mixed_net_policy
         base = load_net(weights or "models/best.pt")
