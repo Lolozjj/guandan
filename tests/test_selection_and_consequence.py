@@ -84,3 +84,25 @@ def test_worker_cfg_carries_the_consequence_switch():
     cfg = worker.worker_cfg(1, 0.1, 0.5, 0.8, 4, consequence=False)
     assert cfg["consequence"] is False
     assert worker.worker_cfg(1, 0.1, 0.5, 0.8, 4)["consequence"] is True
+
+def _ok_train(seconds=0, **kw):
+    return {"out_dir": "x", "wr_greedy": 1.0, "wr_random": 1.0, "games": 0,
+            "curve": [], "best_score": 1.0, "elapsed": 0.0}
+
+
+def test_unknown_flag_raises_instead_of_being_ignored(monkeypatch):
+    """⚠️ **手写 CLI + 静默忽略 = 假实验**（2026-10-01 夜因此踩了两次：
+    `--algo ppo` 静默走 DMC、`--no-consequence` 根本没实现却"看起来跑过了"）。
+    现在不认识的参数必须炸。
+    """
+    monkeypatch.setattr(sp, "train", _ok_train)
+    with pytest.raises(ValueError, match="认不出的参数"):
+        sp.main(["1", "--nonsense-flag"])
+
+
+def test_no_consequence_flag_turns_the_features_off(monkeypatch):
+    """`--no-consequence` 必须真的把全局开关关掉（宽度不变、那 3 维恒 0）。"""
+    monkeypatch.setattr(sp, "train", _ok_train)
+    monkeypatch.setattr(features, "CONSEQUENCE_ENABLED", True)
+    sp.main(["1", "--no-consequence"])
+    assert features.CONSEQUENCE_ENABLED is False

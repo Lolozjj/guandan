@@ -43,7 +43,7 @@ import numpy as np
 import torch
 
 from guandan import paths
-from guandan.sim import env, rules
+from guandan.sim import env, features, rules
 from guandan.rl import pool, replay
 from guandan.rl.eval import match
 from guandan.rl.net import (DEVICE, QNet, check_entropy, check_logits, check_q_scale,
@@ -925,6 +925,8 @@ def train(seconds: float = 3600.0, seed: int = 0, buffer_games: int = BUFFER_GAM
         f"对手混合 {opp_mix:.0%}"
         f"（其中{OPP_KIND_CN.get(opp_kind, opp_kind)} {greedy_share:.0%}）"
         + (f"  **规则尺子 {rule_eval_seeds} 种子**" if rule_eval_seeds > 1 else "")
+        + ("" if features.CONSEQUENCE_ENABLED
+           else "  **动作侧特征：关**（那 3 维恒 0）")
         + (f"  **队友混合 {mate_mix:.0%}**（队友={OPP_KIND_CN.get(opp_kind, opp_kind)}）"
            if mate_mix > 0 else "")
         + (f"  炸弹代价 λ={bomb_cost:g}" if bomb_cost else "")
@@ -1247,6 +1249,54 @@ def main(argv=None) -> int:
     if "--opp-mix" in argv:
         opp = float(argv[argv.index("--opp-mix") + 1])
     kw = {}
+    # ⚠️ **不认识的参数必须炸**（2026-10-01 夜加）：这个 CLI 是手写解析的，
+    # 未知参数原来被**静默忽略** —— 今晚就因此踩了两次：`--algo ppo` 静默走 DMC、
+    # `--no-consequence` 根本没实现却"看起来跑过了"。手工解析 + 静默忽略 = 假实验。
+    _KNOWN_FLAGS = set("""
+--algo
+--batch
+--beta-ent
+--bomb-cost
+--buffer
+--close-weight
+--eps-games
+--eps-start
+--eval-every
+--eval-games
+--eval-rule-games
+--greedy-share
+--init
+--learn-all-seats
+--mate-mix
+--mc-mix
+--n-step
+--no-consequence
+--opp-kind
+--opp-mix
+--out-dir
+--pfsp
+--pool-greedy-share
+--pool-size
+--ppo-clip
+--ppo-epochs
+--ppo-value-coef
+--rule-eval-seeds
+--shaping
+--snap-every
+--tgt-sync
+--weight-sync-games
+--workers
+""".split())
+    for _tok in argv:
+        if _tok.startswith("--") and _tok not in _KNOWN_FLAGS:
+            raise ValueError(
+                f"认不出的参数：{_tok}（这个 CLI 是手写解析的，静默忽略过一次真实验；"
+                f"已知参数共 {len(_KNOWN_FLAGS)} 个，见 guandan/rl/selfplay.py 的 main()）")
+    if "--no-consequence" in argv:
+        # 关掉**动作侧后果特征**（宽度不变、那 3 维恒 0）⇒ 点②的干净对照臂。
+        # 见 features.CONSEQUENCE_ENABLED 的 docstring。
+        from guandan.sim import features as _features
+        _features.CONSEQUENCE_ENABLED = False
     if "--batch" in argv:
         kw["batch_games"] = int(argv[argv.index("--batch") + 1])
     if "--eps-games" in argv:
